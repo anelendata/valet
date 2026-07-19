@@ -120,6 +120,25 @@ valet schedule-list --alias demo_billing --scope prefix --compare   # over-match
 valet call --json '{"op":"schedule_list","project_alias":"demo_billing","scope":"all"}'
 ```
 
+### Interactive mode
+
+Run `valet` with no subcommand (like running `python` bare) to open a REPL that
+holds one persistent connection to the daemon:
+
+```
+$ valet
+valet 0.1.0 interactive client. Type 'help' for commands, 'quit' to exit.
+valet> schedule-list demo_billing --scope prefix --compare
+{ ... sanitized response ... }
+valet> sl demo_billing            # 'sl' is an alias for schedule-list
+valet> call {"op":"schedule_list","project_alias":"demo_billing"}
+valet> quit
+```
+
+`help` lists commands, `ops` lists allowlisted operations, Ctrl-D exits. A bad
+line (unknown command, invalid scope) is reported without dropping the session,
+and the same allowlist/redaction rules apply — the REPL is just another client.
+
 Example response:
 
 ```json

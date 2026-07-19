@@ -19,7 +19,8 @@ from pathlib import Path
 
 from .config import default_config_path, load_config
 from .errors import ValetError
-from .server_uds import call_once, serve
+from .repl import interact
+from .server_uds import Connection, call_once, serve
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -73,6 +74,20 @@ def _cmd_call(args: argparse.Namespace) -> int:
     return _one_shot(args, request)
 
 
+def _cmd_repl(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    try:
+        conn = Connection(cfg.socket_path)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    try:
+        return interact(conn.request)
+    finally:
+        conn.close()
+
+
 def _cmd_schedule_list(args: argparse.Namespace) -> int:
     request = {
         "op": "schedule_list",
@@ -88,10 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="valet", description=__doc__)
     p.add_argument("-c", "--config", default=None,
                    help="path to config.toml (default: repo config.toml or $VALET_CONFIG)")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    # No subcommand => interactive REPL, like running `python` bare.
+    p.set_defaults(func=_cmd_repl)
+    sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("init", help="generate a fingerprint_salt").set_defaults(func=_cmd_init)
     sub.add_parser("serve", help="run the UDS broker daemon").set_defaults(func=_cmd_serve)
+    sub.add_parser("repl", help="interactive client (default when no subcommand)"
+                   ).set_defaults(func=_cmd_repl)
 
     call = sub.add_parser("call", help="send a raw JSON request to the daemon")
     call.add_argument("--json", required=True, help='e.g. \'{"op":"schedule_list",...}\'')

@@ -82,18 +82,43 @@ def serve(cfg: BrokerConfig) -> None:
             sock_path.unlink()
 
 
+class Connection:
+    """A persistent client connection to the daemon.
+
+    The daemon reads newline-delimited requests in a loop, so one connection
+    can serve many requests — used by the interactive REPL. Leftover bytes
+    after a response are buffered for the next ``request``.
+    """
+
+    def __init__(self, socket_path: str):
+        socket_path = os.path.expanduser(socket_path)
+        _check_sock_path(socket_path)
+        self.socket_path = socket_path
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.connect(socket_path)
+        self._buf = b""
+
+    def request(self, req: dict) -> dict:
+        self._sock.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        while b"\n" not in self._buf:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("daemon closed the connection")
+            self._buf += chunk
+        line, _, self._buf = self._buf.partition(b"\n")
+        return json.loads(line.decode("utf-8"))
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
 def call_once(socket_path: str, request: dict) -> dict:
     """Connect, send one request, return the parsed response. Used by client."""
-    socket_path = os.path.expanduser(socket_path)
-    _check_sock_path(socket_path)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.connect(socket_path)
-        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-    line = buf.split(b"\n", 1)[0]
-    return json.loads(line.decode("utf-8"))
+    conn = Connection(socket_path)
+    try:
+        return conn.request(request)
+    finally:
+        conn.close()
