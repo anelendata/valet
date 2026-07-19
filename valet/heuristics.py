@@ -51,16 +51,24 @@ def _already_redacted(val: str) -> bool:
     return val.lstrip("\"'").startswith("[REDACTED")
 
 
+# "key": value  — a JSON pair anywhere in the text (compact, pretty, or nested),
+# with a SCALAR value only (string / number / bool / null). Object and array
+# values are left alone so the scan recurses into them and catches inner keys.
+_JSON_PAIR_RE = re.compile(
+    r'"(?P<key>(?:[^"\\]|\\.)*)"\s*:\s*'
+    r'(?P<val>"(?:[^"\\]|\\.)*"|-?\d[\d.eE+\-]*|true|false|null)'
+)
+
 # KEY=VALUE (env / export), value is quoted or a run without space/semicolon.
 _ASSIGN_RE = re.compile(
     r"(?<![A-Za-z0-9_.\-])(?P<key>[A-Za-z_][A-Za-z0-9_.\-]*)(?P<eq>=)"
     r"(?P<val>\"[^\"]*\"|'[^']*'|[^\s;|&]+)"
 )
 
-# key: value (YAML / loose JSON), one line.
+# key: value with an UNQUOTED key (YAML / env colon form), one line.
 _COLON_RE = re.compile(
-    r"(?mi)^(?P<pre>\s*(?:-\s*)?[\"']?)(?P<key>[A-Za-z_][A-Za-z0-9_.\- ]*?)"
-    r"(?P<q>[\"']?)(?P<sep>\s*:\s*)(?P<val>.+?)(?P<trail>\s*,?\s*)$"
+    r"(?mi)^(?P<pre>\s*(?:-\s*)?)(?P<key>[A-Za-z_][A-Za-z0-9_.\- ]*?)"
+    r"(?P<sep>\s*:\s*)(?P<val>.+?)(?P<trail>\s*,?\s*)$"
 )
 
 _KV_KEY_RE = re.compile(r"^(?P<pre>\s*(?:-\s*)?)key\s*:\s*(?P<name>.+?)\s*$", re.I)
@@ -84,6 +92,13 @@ _TOKEN_PATTERNS = [
 ]
 
 
+def _sub_json(m: re.Match) -> str:
+    if key_is_sensitive(m.group("key")) and not _already_redacted(m.group("val")):
+        # Keep the result valid JSON: replace the scalar with a quoted tag.
+        return f'"{m.group("key")}": "{SUSPECTED}"'
+    return m.group(0)
+
+
 def _sub_assign(m: re.Match) -> str:
     if key_is_sensitive(m.group("key")) and not _already_redacted(m.group("val")):
         return f"{m.group('key')}{m.group('eq')}{SUSPECTED}"
@@ -92,7 +107,7 @@ def _sub_assign(m: re.Match) -> str:
 
 def _sub_colon(m: re.Match) -> str:
     if key_is_sensitive(m.group("key")) and not _already_redacted(m.group("val")):
-        return f"{m.group('pre')}{m.group('key')}{m.group('q')}{m.group('sep')}{SUSPECTED}"
+        return f"{m.group('pre')}{m.group('key')}{m.group('sep')}{SUSPECTED}{m.group('trail')}"
     return m.group(0)
 
 
@@ -115,6 +130,7 @@ def redact_suspected(text: str) -> str:
     if not text:
         return text
     text = _redact_kv_pairs(text)
+    text = _JSON_PAIR_RE.sub(_sub_json, text)
     text = _ASSIGN_RE.sub(_sub_assign, text)
     text = _COLON_RE.sub(_sub_colon, text)
     for pattern in _TOKEN_PATTERNS:

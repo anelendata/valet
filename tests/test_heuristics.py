@@ -50,6 +50,31 @@ def test_known_token_shapes():
         assert "[REDACTED" in out
 
 
+def test_json_all_shapes_redacted_and_valid():
+    import json
+
+    cases = [
+        '{\n  "AWS_PROFILE": "tiny",\n  "db_password": "hunter2secret",\n'
+        '  "port": 5432,\n  "nested": { "client_secret": "shhhh-nested" }\n}',
+        '{"db_password": "hunter2secret", "region": "us-east-1", "token": "abc123def456"}',
+        '{"password":"nowhitespacesecret"}',
+        '{"api_key": 1234567890}',
+        '[{"name":"a","secret":"leakme1"},{"name":"b","secret":"leakme2"}]',
+    ]
+    leaks = ["hunter2secret", "shhhh-nested", "abc123def456",
+             "nowhitespacesecret", "1234567890", "leakme1", "leakme2"]
+    for src in cases:
+        out = redact_suspected(src)
+        for s in leaks:
+            assert s not in out, (src, s)
+        json.loads(out)  # must remain valid JSON
+
+
+def test_json_keeps_non_sensitive_values():
+    out = redact_suspected('{"region": "us-east-1", "port": 5432}')
+    assert "us-east-1" in out and "5432" in out
+
+
 def test_non_secret_output_untouched():
     text = "total 24\ndrwxr-xr-x 3 user staff 96 Jul 19 file.txt\nregion: us-east-1"
     assert redact_suspected(text) == text
