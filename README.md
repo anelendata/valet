@@ -148,10 +148,17 @@ carry the constraints. Available now:
 - **wildcard file bans** (`deny_read_paths`) — glob patterns (`**`, `*`, `?`) of
   files a command may not reference; valet refuses to run a command that names
   an existing matching file, so its content is never revealed. `**/.env` bans
-  reading any `.env` anywhere; `~/.aws/**` bans anything under `~/.aws`. This is
-  a coarse guard on the command's own tokens — it catches explicit reveals
-  (`cat`/`less`/`grep` a path), while content redaction remains the backstop for
-  a program that opens a file internally.
+  reading any `.env` anywhere; `~/.aws/**` bans anything under `~/.aws`. The
+  analyzer is shell-aware: it splits on operators (`;` `&&` `||` `|` `&`,
+  newlines) and tracks `cd`/`pushd`, so `cd some/dir; cat .env` is caught the
+  same as `cat some/dir/.env`.
+
+  It is still **best-effort static analysis of the command line**: it catches
+  the realistic reveals (`cat`/`less`/`grep` a path, including after a `cd`), but
+  cannot see through a computed path (`eval`, `$(...)`, variable expansion,
+  base64) or a program that reads the file internally without naming it. Content
+  redaction is the backstop for those; only OS-level sandboxing would stop a
+  determined reader.
 
 Still to come:
 

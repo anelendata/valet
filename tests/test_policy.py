@@ -98,6 +98,41 @@ def test_nonexistent_path_not_falsely_denied(cfg, tmp_path):
     assert resp.get("error_class") != "PolicyDenied"
 
 
+def test_cd_then_cat_is_denied(cfg, tmp_path):
+    # The reported bypass: cd into the dir, then cat by bare name.
+    d = tmp_path / "root" / ".secrets"
+    d.mkdir(parents=True)
+    (d / "secrets_proj.yml").write_text("token: leak\n")
+    c = _deny_paths_cfg(cfg, ("**/.secrets/**",))
+    resp = Broker(c).handle({
+        "op": "exec",
+        "cmd": f"cd {d}; cat secrets_proj.yml",
+        "cwd": str(tmp_path),
+    })
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_cd_then_cat_env_with_and_operator(cfg, tmp_path):
+    d = tmp_path / "a" / "b"
+    d.mkdir(parents=True)
+    (d / ".env").write_text("SECRET=1\n")
+    c = _deny_paths_cfg(cfg, ("**/.env",))
+    resp = Broker(c).handle({
+        "op": "exec", "cmd": f"cd {d} && cat .env", "cwd": str(tmp_path),
+    })
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_pipe_from_denied_file_is_denied(cfg, tmp_path):
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    c = _deny_paths_cfg(cfg, ("**/.env",))
+    resp = Broker(c).handle({
+        "op": "exec", "cmd": "cat .env | base64", "cwd": str(tmp_path),
+    })
+    assert resp["error_class"] == "PolicyDenied"
+
+
 def test_home_prefix_pattern(cfg, tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     (fake_home / ".aws").mkdir(parents=True)
