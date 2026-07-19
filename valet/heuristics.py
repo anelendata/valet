@@ -17,10 +17,18 @@ debugging ("which setting exists") without revealing the secret.
 """
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 
 SUSPECTED = "[REDACTED:suspected]"
 TOKEN = "[REDACTED:token]"
+HIGH_ENTROPY = "[REDACTED:high-entropy]"
+
+# High-entropy scan tuning (opt-in; off by default). Kept as module constants so
+# they are easy to adjust.
+_ENTROPY_MIN_LEN = 20
+_ENTROPY_MIN_BITS = 3.0  # Shannon bits/char; random tokens are ~4+
 
 # Words that, when they appear in a key name, mark its value as sensitive.
 _SENSITIVE_WORDS = {
@@ -136,3 +144,53 @@ def redact_suspected(text: str) -> str:
     for pattern in _TOKEN_PATTERNS:
         text = pattern.sub(TOKEN, text)
     return text
+
+
+# --- opt-in high-entropy scan ------------------------------------------------
+# Token alphabet excludes '/' and '.' so filesystem paths, domains, and version
+# strings are not swept up as candidates.
+_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9_\-+=]{%d,}" % _ENTROPY_MIN_LEN)
+
+
+def _shannon_bits(s: str) -> float:
+    n = len(s)
+    if n == 0:
+        return 0.0
+    counts = Counter(s)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+def _char_classes(s: str) -> int:
+    return sum((
+        any(c.islower() for c in s),
+        any(c.isupper() for c in s),
+        any(c.isdigit() for c in s),
+    ))
+
+
+def _looks_non_secret(token: str) -> bool:
+    """True for shapes that are commonly high-entropy but not secrets."""
+    bare = token.replace("-", "").replace("_", "")
+    if re.fullmatch(r"[0-9a-fA-F]+", bare):   # hex: git SHA, md5/sha, UUID, hex id
+        return True
+    if bare.isdigit():                        # decimal id / timestamp
+        return True
+    return False
+
+
+def _sub_entropy(m: re.Match) -> str:
+    token = m.group(0)
+    if _looks_non_secret(token):
+        return token
+    if _char_classes(token) < 2:              # e.g. a long all-lowercase word
+        return token
+    if _shannon_bits(token) < _ENTROPY_MIN_BITS:
+        return token
+    return HIGH_ENTROPY
+
+
+def redact_high_entropy(text: str) -> str:
+    """Mask long high-entropy tokens anywhere in the text. Noisy; opt-in only."""
+    if not text:
+        return text
+    return _ENTROPY_CANDIDATE_RE.sub(_sub_entropy, text)

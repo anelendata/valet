@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from .heuristics import redact_suspected
+from .heuristics import redact_high_entropy, redact_suspected
 
 # --- generic backstop patterns ------------------------------------------------
 # Order matters: ARNs are matched before bare 12-digit account IDs so the whole
@@ -59,14 +59,16 @@ class Redactor:
     secret_values: tuple[str, ...]
     salt: str
     suspected: bool = True
+    high_entropy: bool = False
 
     @classmethod
     def build(cls, secret_values: Iterable[str], salt: str,
-              suspected: bool = True) -> "Redactor":
+              suspected: bool = True, high_entropy: bool = False) -> "Redactor":
         # Longest first so a value that is a substring of another is not
         # partially masked by the shorter one.
         vals = tuple(sorted({v for v in secret_values if v}, key=len, reverse=True))
-        return cls(secret_values=vals, salt=salt, suspected=suspected)
+        return cls(secret_values=vals, salt=salt, suspected=suspected,
+                   high_entropy=high_entropy)
 
     def redact(self, text: str) -> str:
         if not text:
@@ -81,6 +83,9 @@ class Redactor:
         # sensitively-named keys, key/value dumps, known token shapes).
         if self.suspected:
             text = redact_suspected(text)
+        # Layer 2b: opt-in high-entropy scan for bare unknown secrets.
+        if self.high_entropy:
+            text = redact_high_entropy(text)
         # Layer 3: generic backstop
         for pattern, replacement in _PATTERNS:
             text = pattern.sub(replacement, text)

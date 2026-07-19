@@ -1,5 +1,9 @@
 """Heuristic redaction: mask values that look secret without knowing them."""
-from valet.heuristics import key_is_sensitive, redact_suspected
+from valet.heuristics import (
+    key_is_sensitive,
+    redact_high_entropy,
+    redact_suspected,
+)
 
 
 def test_sensitive_key_names():
@@ -78,3 +82,34 @@ def test_json_keeps_non_sensitive_values():
 def test_non_secret_output_untouched():
     text = "total 24\ndrwxr-xr-x 3 user staff 96 Jul 19 file.txt\nregion: us-east-1"
     assert redact_suspected(text) == text
+
+
+# --- opt-in high-entropy scan ------------------------------------------------
+
+def test_high_entropy_masks_bare_unknown_secrets():
+    for s in ("xK9mQ2vL8pR4tZ7wN3jF6dH1sB5cY0a",
+              "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+              "hunter2-super-secret-password"):
+        out = redact_high_entropy(s)
+        assert s not in out
+        assert "high-entropy" in out
+
+
+def test_high_entropy_keeps_hashes_uuids_and_numbers():
+    for s in ("9f2c1ab3de4567890abcdef1234567890abcdef12",  # git sha (hex)
+              "550e8400-e29b-41d4-a716-446655440000",       # uuid
+              "12345678901234567890",                       # decimal id
+              "abc123"):                                    # too short
+        assert redact_high_entropy(s) == s
+
+
+def test_high_entropy_masks_mid_line():
+    out = redact_high_entropy("deploy id xK9mQ2vL8pR4tZ7wN3jF6dH1sB5cY0a done")
+    assert "xK9mQ2vL8pR4tZ7wN3jF6dH1sB5cY0a" not in out
+    assert out.startswith("deploy id ") and out.endswith(" done")
+
+
+def test_high_entropy_leaves_paths_alone():
+    # Paths contain '/', excluded from the candidate alphabet.
+    text = "/usr/local/lib/python3.11/site-packages/somepackage/module.py"
+    assert redact_high_entropy(text) == text

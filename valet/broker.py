@@ -132,6 +132,7 @@ class Broker:
         return Redactor.build(
             values, self.cfg.fingerprint_salt,
             suspected=self.cfg.redaction.redact_suspected,
+            high_entropy=self.cfg.redaction.redact_high_entropy,
         )
 
     @staticmethod

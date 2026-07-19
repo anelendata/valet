@@ -43,6 +43,9 @@ class RedactionConfig:
     # Heuristically mask values that *look* secret (sensitive key names, known
     # token shapes) even when valet does not know the exact value.
     redact_suspected: bool = True
+    # Opt-in, noisy: mask long high-entropy tokens anywhere in output (catches
+    # bare unknown secrets, but also some hashes/base64/IDs). Off by default.
+    redact_high_entropy: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             cwd_secret_files=tuple(red.get("cwd_secret_files", (".env", ".secrets"))),
             extra_values=tuple(red.get("extra_values", ())),
             redact_suspected=bool(red.get("redact_suspected", True)),
+            redact_high_entropy=bool(red.get("redact_high_entropy", False)),
         ),
         policy=PolicyConfig(
             allow=tuple(pol.get("allow", ())),

@@ -61,6 +61,13 @@ extra_values = []
 # output verbatim.
 redact_suspected = true
 
+# OFF by default and noisy: mask long high-entropy tokens ANYWHERE in output,
+# even a bare string with no key name or known shape (e.g. a token a command
+# just prints on its own). It skips git SHAs / hashes (hex), UUIDs, decimal ids,
+# and filesystem paths, but will still sometimes mask base64 blobs or random-
+# looking IDs that are not secrets. Enable per environment if you need it.
+redact_high_entropy = false
+
 [policy]
 # PERMISSIVE by default — everything below is off unless you set it.
 # An empty allow list means "allow everything".

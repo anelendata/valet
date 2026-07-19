@@ -82,6 +82,15 @@ non-standard shape can still slip through, which is exactly why the exact
 value-firewall and the `deny_read_paths` bans exist. Set `redact_suspected =
 false` to keep output verbatim.
 
+For the remaining case — a **bare** unknown secret with no key name and no known
+shape (a token a command just prints on its own) — there is an opt-in,
+**off-by-default** high-entropy scan (`redact_high_entropy`): it masks long
+high-entropy tokens anywhere in output, skipping git SHAs/hashes (hex), UUIDs,
+decimal ids, and filesystem paths. It is deliberately off because entropy is the
+only signal left and it will sometimes mask base64 blobs or random-looking ids
+that aren't secrets. Enable it per environment when the extra coverage is worth
+the noise.
+
 **Known limit.** Redaction matches secret values *literally*. If a command
 *transforms* a secret before printing it (uppercases it, base64-encodes it,
 splits it), the transformed form won't match and won't be redacted. valet
