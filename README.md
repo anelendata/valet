@@ -142,18 +142,22 @@ you type is run as a command**, and the output comes back redacted:
 ```
 $ valet
 valet 0.2.0 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
-valet> cat .secrets
+ws valet> cat .secrets
 DB_PASSWORD=[REDACTED:secret:h:38673aad]
 API_TOKEN=[REDACTED:secret:h:3bc13a30]
-valet> aws s3 ls | head
-valet> :cwd /path/to/project      # change working dir for the session
-valet> :shell off                 # run following lines as argv, not shell
-valet> :secrets                   # how many values are being redacted here
-valet> :quit
+ws valet> cd projects/x-com       # cd sticks for the session
+x-com valet> aws s3 ls | head     # runs in projects/x-com
+x-com valet> cd ../../..          # cd: cannot cd above the workspace
+x-com valet> :shell off           # run following lines as argv, not shell
+x-com valet> :quit
 ```
 
-Meta-commands are `:`-prefixed (`:help`, `:cwd`, `:shell`, `:secrets`, `:call`,
-`:quit`); everything else runs. Ctrl-D also exits.
+The prompt shows the current directory's name. **`cd` sticks** for the session,
+and is **jailed to the workspace** — `..` and symlinks can't climb above
+`[exec].workspace` (a bare `cd` returns to the workspace root). A compound line
+(`cd x && y`) is not intercepted: the `cd` there applies only to that
+subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
+`:shell`, `:secrets`, `:call`, `:quit`); everything else runs. Ctrl-D also exits.
 
 ---
 

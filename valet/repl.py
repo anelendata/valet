@@ -10,6 +10,8 @@ The line handler is factored into ``run_command`` (pure: line + session + send
 from __future__ import annotations
 
 import json
+import os
+import shlex
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -17,12 +19,16 @@ from . import __version__
 
 Send = Callable[[dict], dict]
 
+# Shell control characters; a line containing any of these is not a "pure cd".
+_OPERATOR_CHARS = set(";&|()<>\n")
+
 HELP = """\
-Type any command to run it; output has secrets redacted. Meta-commands:
+Type any command to run it; output has secrets redacted.
+`cd <dir>` sticks for the session (jailed to the workspace). Meta-commands:
   :help, :?            this help
-  :cwd [dir]           show or set the working directory for this session
+  :cwd [dir]           show or change the working directory (same as `cd`)
   :shell [on|off]      show or toggle shell mode (default on)
-  :secrets             how many secret values are being redacted for :cwd
+  :secrets             how many secret values are being redacted for the cwd
   :call <json>         send a raw request object to the daemon
   :quit, :exit         leave (Ctrl-D also works)
 """
@@ -39,6 +45,35 @@ class Session:
     shell: bool = True
 
 
+def _pure_cd_target(line: str) -> Optional[str]:
+    """If ``line`` is a standalone `cd [dir]`, return its target ("" for bare
+    `cd`); otherwise None. A compound line (`cd x && y`, pipes) is not a pure cd
+    — it runs as an exec, where the cd applies only to that subprocess."""
+    if any(ch in line for ch in _OPERATOR_CHARS):
+        return None
+    try:
+        tokens = shlex.split(line)
+    except ValueError:
+        return None
+    if tokens and tokens[0] == "cd":
+        return tokens[1] if len(tokens) > 1 else ""
+    return None
+
+
+def _change_dir(target: str, session: Session, send: Send) -> tuple[bool, Optional[str]]:
+    req = {"op": "chdir", "target": target}
+    if session.cwd:
+        req["cwd"] = session.cwd
+    try:
+        resp = send(req)
+    except ConnectionError:
+        return False, "connection to daemon lost. Exiting."
+    if resp.get("ok"):
+        session.cwd = resp.get("cwd")
+        return True, None  # shell-like: silent on success, prompt shows the dir
+    return True, f"cd: {resp.get('detail') or resp.get('error_class') or 'failed'}"
+
+
 def run_command(line: str, session: Session, send: Send) -> tuple[bool, Optional[str]]:
     """Handle one REPL line. Returns ``(keep_going, output_text)``."""
     stripped = line.strip()
@@ -47,6 +82,11 @@ def run_command(line: str, session: Session, send: Send) -> tuple[bool, Optional
 
     if stripped.startswith(":"):
         return _meta(stripped[1:].strip(), session, send)
+
+    # A standalone `cd` sticks for the session (handled by the daemon, jailed).
+    cd_target = _pure_cd_target(stripped)
+    if cd_target is not None:
+        return _change_dir(cd_target, session, send)
 
     # Anything else is a command to run.
     req = {"op": "exec", "cmd": line, "shell": session.shell}
@@ -70,8 +110,7 @@ def _meta(body: str, session: Session, send: Send) -> tuple[bool, Optional[str]]
         return True, HELP
     if name == "cwd":
         if arg:
-            session.cwd = arg
-            return True, f"cwd set to {arg}"
+            return _change_dir(arg, session, send)
         return True, f"cwd: {session.cwd or '(daemon default)'}"
     if name == "shell":
         if arg in ("on", "true", "1"):
@@ -129,10 +168,28 @@ def format_exec(resp: dict) -> Optional[str]:
     return "\n".join(parts) if parts else None
 
 
+def prompt_for(session: Session) -> str:
+    """`<lastdir> valet> `, or plain `valet> ` if the cwd is unknown."""
+    if session.cwd:
+        name = os.path.basename(session.cwd.rstrip("/")) or session.cwd
+        return f"{name} valet> "
+    return "valet> "
+
+
 def interact(send: Send, *, session: Optional[Session] = None,
              input_fn: Callable[[str], str] = input) -> int:
     """Run the prompt loop. ``send`` performs one request/response."""
     session = session or Session()
+    # Resolve the starting cwd (the workspace root) so the prompt and relative
+    # `cd`s have a concrete base.
+    if session.cwd is None:
+        try:
+            resp = send({"op": "chdir", "target": "."})
+            if resp.get("ok"):
+                session.cwd = resp.get("cwd")
+        except (ConnectionError, OSError):
+            pass
+
     try:  # arrow-key history/editing if available
         import readline  # noqa: F401
     except Exception:
@@ -141,7 +198,7 @@ def interact(send: Send, *, session: Optional[Session] = None,
     print(BANNER)
     while True:
         try:
-            line = input_fn("valet> ")
+            line = input_fn(prompt_for(session))
         except EOFError:
             print()
             break

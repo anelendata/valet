@@ -125,3 +125,43 @@ def test_whole_file_content_masked_as_one_blob(cfg, workspace, tmp_path):
     assert "EXAMPLE" not in out                 # no key material
     assert "aws_secret_access_key" not in out   # whole content masked, not just value
     assert out.strip().startswith("[REDACTED")
+
+
+# --- chdir (stateful cd, jailed to workspace) --------------------------------
+
+def test_chdir_within_workspace(cfg, workspace):
+    (workspace / "sub").mkdir()
+    resp = Broker(cfg).handle({"op": "chdir", "target": "sub"})
+    assert resp["ok"] is True
+    assert resp["cwd"].endswith("/sub")
+
+
+def test_chdir_above_workspace_is_blocked(cfg, workspace):
+    resp = Broker(cfg).handle({"op": "chdir", "cwd": str(workspace), "target": ".."})
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_chdir_dotdot_climb_blocked(cfg, workspace):
+    (workspace / "sub").mkdir()
+    resp = Broker(cfg).handle(
+        {"op": "chdir", "cwd": str(workspace / "sub"), "target": "../../../etc"}
+    )
+    assert resp["ok"] is False
+    assert resp["error_class"] in ("PolicyDenied", "ValidationError")
+
+
+def test_chdir_bare_returns_to_workspace_root(cfg, workspace):
+    (workspace / "a" / "b").mkdir(parents=True)
+    resp = Broker(cfg).handle(
+        {"op": "chdir", "cwd": str(workspace / "a" / "b"), "target": ""}
+    )
+    assert resp["ok"] is True
+    import os
+    assert resp["cwd"] == os.path.realpath(str(workspace))
+
+
+def test_chdir_nonexistent_rejected(cfg, workspace):
+    resp = Broker(cfg).handle({"op": "chdir", "target": "no_such_dir_xyz"})
+    assert resp["ok"] is False
+    assert resp["error_class"] == "ValidationError"

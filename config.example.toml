@@ -31,8 +31,10 @@ timeout_seconds = 60
 fingerprint_salt = "CHANGE_ME_or_run_valet_init"
 
 [exec]
-# Default working directory for commands, and the future write-jail root.
-# Leave unset to use the daemon's own working directory.
+# Default working directory for commands, and the root of the REPL's cd jail:
+# in the interactive shell `cd` sticks for the session but cannot climb above
+# this directory (.. and symlinks are resolved first). Leave unset to use the
+# daemon's own working directory and impose no cd jail.
 workspace = "~"
 
 # Run commands through a shell by default (pipes, globs, redirection).

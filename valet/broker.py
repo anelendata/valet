@@ -13,7 +13,13 @@ from typing import Any, Optional
 
 from . import __version__
 from .config import BrokerConfig
-from .errors import CommandError, TimeoutError_, ValetError, ValidationError
+from .errors import (
+    CommandError,
+    PolicyError,
+    TimeoutError_,
+    ValetError,
+    ValidationError,
+)
 from .executor import run
 from .policy import Policy
 from .sanitize import Redactor
@@ -37,6 +43,8 @@ class Broker:
             op = request.get("op", "exec")
             if op == "exec":
                 return {**base, **self._exec(request)}
+            if op == "chdir":
+                return {**base, **self._chdir(request)}
             if op == "ping":
                 return {**base, "ok": True, "pong": True}
             if op == "redaction_info":
@@ -97,6 +105,35 @@ class Broker:
             "stderr": self._safe(redactor, result.stderr),
             "redacted_value_count": len(redactor.secret_values),
         }
+
+    def _chdir(self, request: dict) -> dict:
+        """Resolve a `cd` for a stateful client, jailed to the workspace.
+
+        The daemon is stateless; the REPL holds the cwd and calls this to move
+        it. ``realpath`` resolves ``..`` and symlinks first, so neither can be
+        used to climb above the workspace root.
+        """
+        workspace = self.cfg.exec.workspace
+        target = str(request.get("target", "") or "")
+        cur = request.get("cwd") or workspace
+
+        # A bare `cd` (or `cd ~`) returns to the workspace root when jailed.
+        if target in ("", "~") and workspace:
+            newpath = os.path.realpath(os.path.expanduser(workspace))
+        else:
+            t = os.path.expanduser(os.path.expandvars(target)) if target else "."
+            base = os.path.expanduser(cur) if cur else os.getcwd()
+            newpath = os.path.realpath(t if os.path.isabs(t) else os.path.join(base, t))
+
+        if not os.path.isdir(newpath):
+            raise ValidationError("no such directory")
+
+        if workspace:
+            wroot = os.path.realpath(os.path.expanduser(workspace))
+            if newpath != wroot and not newpath.startswith(wroot + os.sep):
+                raise PolicyError("cannot cd above the workspace")
+
+        return {"op": "chdir", "ok": True, "cwd": newpath}
 
     def _redaction_info(self, request: dict) -> dict:
         cwd = request.get("cwd") or self.cfg.exec.workspace
