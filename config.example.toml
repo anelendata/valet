@@ -51,11 +51,25 @@ cwd_secret_files = [".env", ".secrets"]
 extra_values = []
 
 [policy]
-# PERMISSIVE in v0.2 — these are reserved hooks (see valet/policy.py).
-# An empty allow list means "allow everything". A deny list, if set, is honored
-# now so you can start locking down incrementally.
+# PERMISSIVE by default — everything below is off unless you set it.
+# An empty allow list means "allow everything".
 allow = []
+
+# Program-name deny list (matched on the command's basename).
 deny = []
+
+# Glob patterns of files a command may not reference — valet refuses to run a
+# command that names an existing file matching one of these, so its content is
+# never revealed. Supports ** (any depth), * and ?. Examples:
+#   "**/.env"          ban reading any .env, wherever it sits
+#   "**/.secrets/**"   ban anything under any .secrets directory
+#   "~/.aws/**"        ban anything under ~/.aws
+deny_read_paths = [
+    # "**/.env",
+    # "**/.secrets/**",
+    # "~/.aws/**",
+]
+
 # When true (future), a write operation may not touch anything outside the
 # workspace. Not enforced yet.
 enforce_workspace_writes = false

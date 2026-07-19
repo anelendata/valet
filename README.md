@@ -142,12 +142,23 @@ project's own secrets are redacted when you run there.
 ## Roadmap (the constraints coming next)
 
 The [`[policy]`](config.example.toml) section and [`valet/policy.py`](valet/policy.py)
-are the seams for:
+carry the constraints. Available now:
 
-- **command allow/deny lists** — a `deny` list is already honored; an `allow`
-  list (empty = allow all today) will become an allowlist when populated.
-- **workspace write-jail** — `enforce_workspace_writes` will forbid a command
-  from writing outside the configured `workspace`.
+- **command deny list** (`deny`) — refuse commands by program name.
+- **wildcard file bans** (`deny_read_paths`) — glob patterns (`**`, `*`, `?`) of
+  files a command may not reference; valet refuses to run a command that names
+  an existing matching file, so its content is never revealed. `**/.env` bans
+  reading any `.env` anywhere; `~/.aws/**` bans anything under `~/.aws`. This is
+  a coarse guard on the command's own tokens — it catches explicit reveals
+  (`cat`/`less`/`grep` a path), while content redaction remains the backstop for
+  a program that opens a file internally.
+
+Still to come:
+
+- **command allow list** (`allow`, empty = allow all today) becomes a strict
+  allowlist when populated.
+- **workspace write-jail** (`enforce_workspace_writes`) will forbid writes
+  outside the configured `workspace`.
 
 `Policy.check` is the single choke point; new constraints go there and stay
 fail-closed.

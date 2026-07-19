@@ -47,6 +47,8 @@ class PolicyConfig:
     # Empty allow == allow everything (permissive v1). Reserved for future use.
     allow: tuple[str, ...] = ()
     deny: tuple[str, ...] = ()
+    # Glob patterns of files a command may not reference (supports ** / * / ?).
+    deny_read_paths: tuple[str, ...] = ()
     # When true (future), commands may not write outside the workspace.
     enforce_workspace_writes: bool = False
 
@@ -109,6 +111,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
         policy=PolicyConfig(
             allow=tuple(pol.get("allow", ())),
             deny=tuple(pol.get("deny", ())),
+            deny_read_paths=tuple(pol.get("deny_read_paths", ())),
             enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", False)),
         ),
     )
