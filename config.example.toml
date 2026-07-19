@@ -29,10 +29,15 @@ workspace = "~"
 shell = true
 
 [redaction]
-# Files whose VALUES valet loads at runtime and blocks from all output. valet
-# reads these so it can redact their literal contents — this is the core "value
-# firewall". Supported: AWS credentials/config ini, .env / .secrets (KEY=VALUE),
-# and .json. Missing files are skipped.
+# Secret files. For each, valet redacts:
+#   1. the ENTIRE file content as one blob — so `cat`/`less`/any full dump of the
+#      file is masked wholesale, regardless of format (ini, .env, JSON, a bare
+#      token, a PEM key, ...); and
+#   2. the individual structured values (KEY=VALUE / ini / json) — so a single
+#      secret leaking on its own (e.g. `echo $KEY`) is caught even without the
+#      surrounding file.
+# Missing files are skipped. Files over ~1 MB skip the whole-blob step but are
+# still parsed for values.
 secret_sources = [
     "~/.aws/credentials",
     "~/.aws/config",

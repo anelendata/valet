@@ -97,15 +97,16 @@ def _from_json(text: str) -> Iterable[str]:
     return out
 
 
-def _parse_source(path: Path) -> Iterable[str]:
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return []
-    suffix = path.suffix.lower()
-    name = path.name.lower()
+# A secret file larger than this is not loaded as a single whole-content blob
+# (it is still parsed for structured values). Secret files are small; this only
+# guards against someone pointing a source at a huge file.
+MAX_WHOLE_FILE_BYTES = 1_000_000
+
+
+def _parse_text(name: str, suffix: str, text: str) -> list[str]:
+    """Extract structured values (KEY=VALUE / ini / json) from file text."""
     if suffix == ".json":
-        return _from_json(text)
+        return list(_from_json(text))
     if suffix in (".env",) or name in (".secrets", ".env") or "credentials" in name or name == "config":
         # AWS credentials/config are ini; .env/.secrets are dotenv. Try both
         # and keep whatever each yields — they don't overlap destructively.
@@ -114,16 +115,41 @@ def _parse_source(path: Path) -> Iterable[str]:
     return list(_from_dotenv(text)) + list(_from_ini(text))
 
 
+def _load_one(path: Path) -> list[str]:
+    """Redaction values for one secret file.
+
+    Includes the ENTIRE file content as one blob (so any dump of the file —
+    `cat`, `less`, a bare token file, a PEM key, whatever the format — is masked
+    wholesale) PLUS the structured values (so a single secret leaking on its own,
+    e.g. `echo $KEY`, is still caught). The whole-content blob is longest, so the
+    Redactor (which sorts longest-first) masks the full file before anything
+    else.
+    """
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return []
+
+    values: list[str] = list(_parse_text(path.name.lower(), path.suffix.lower(), text))
+
+    whole = text.strip()
+    if whole and len(text.encode("utf-8", "replace")) <= MAX_WHOLE_FILE_BYTES:
+        values.append(whole)
+
+    return values
+
+
 def load_secret_values(sources: Iterable[str]) -> list[str]:
     """Return the de-duplicated, redaction-worthy secret values from sources.
 
-    Longest values first, so that when one secret value contains another the
-    longer (more specific) redaction is applied first.
+    For each source, both the whole file content and its structured values are
+    collected. Longest first, so that when one value contains another (e.g. the
+    whole-file blob contains an individual value) the longer, more specific
+    redaction is applied first.
     """
     found: set[str] = set()
     for src in sources:
-        path = Path(src)
-        for value in _parse_source(path):
+        for value in _load_one(Path(src)):
             if _keep(value):
                 found.add(value.strip() if isinstance(value, str) else str(value))
     return sorted(found, key=len, reverse=True)

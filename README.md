@@ -45,12 +45,21 @@ secret values straight into the model's context.
 
 ### Why this is stronger than a regex scrubber
 
-valet can read the credential files the agent cannot, so it loads the *actual
-secret values* and blocks those exact strings from every byte of output
-([`valet/secrets.py`](valet/secrets.py) → [`valet/sanitize.py`](valet/sanitize.py)).
-A guessing scrubber can miss a weird-looking token; valet cannot miss a value
-it already holds. A generic pattern backstop (account IDs, ARNs, `AKIA…` keys,
-PEM blocks, home-dir credential paths, emails) is layered on top as defense in
+valet can read the credential files the agent cannot, so for each file listed in
+`secret_sources` it redacts **the entire file content as one blob** *and* the
+individual structured values ([`valet/secrets.py`](valet/secrets.py) →
+[`valet/sanitize.py`](valet/sanitize.py)):
+
+- **Whole-file blob** — a `cat`, `less`, or any full dump of a declared secret
+  file is masked wholesale, regardless of format (ini, `.env`, JSON, a bare
+  one-line token, a PEM key). You never rely on the parser recognizing the
+  format.
+- **Individual values** — a single secret leaking on its own (`echo $KEY`, a
+  `grep` of one line) is caught even without the surrounding file.
+
+A guessing scrubber can miss a weird-looking token; valet cannot miss content it
+already holds. A generic pattern backstop (account IDs, ARNs, `AKIA…` keys, PEM
+blocks, home-dir credential paths, emails) is layered on top as defense in
 depth. Redaction is **fail-closed**: if a known secret value somehow survives a
 pass, the whole field is withheld rather than returned.
 
