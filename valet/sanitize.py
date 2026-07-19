@@ -22,6 +22,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from .heuristics import redact_suspected
+
 # --- generic backstop patterns ------------------------------------------------
 # Order matters: ARNs are matched before bare 12-digit account IDs so the whole
 # ARN is masked as one unit.
@@ -56,13 +58,15 @@ class Redactor:
 
     secret_values: tuple[str, ...]
     salt: str
+    suspected: bool = True
 
     @classmethod
-    def build(cls, secret_values: Iterable[str], salt: str) -> "Redactor":
+    def build(cls, secret_values: Iterable[str], salt: str,
+              suspected: bool = True) -> "Redactor":
         # Longest first so a value that is a substring of another is not
         # partially masked by the shorter one.
         vals = tuple(sorted({v for v in secret_values if v}, key=len, reverse=True))
-        return cls(secret_values=vals, salt=salt)
+        return cls(secret_values=vals, salt=salt, suspected=suspected)
 
     def redact(self, text: str) -> str:
         if not text:
@@ -73,7 +77,11 @@ class Redactor:
             if value and value in text:
                 tag = "[REDACTED:secret:" + fingerprint(value, self.salt) + "]"
                 text = text.replace(value, tag)
-        # Layer 2: generic backstop
+        # Layer 2: heuristic redaction of things that *look* secret (values of
+        # sensitively-named keys, key/value dumps, known token shapes).
+        if self.suspected:
+            text = redact_suspected(text)
+        # Layer 3: generic backstop
         for pattern, replacement in _PATTERNS:
             text = pattern.sub(replacement, text)
         return text

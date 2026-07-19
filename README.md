@@ -63,6 +63,25 @@ blocks, home-dir credential paths, emails) is layered on top as defense in
 depth. Redaction is **fail-closed**: if a known secret value somehow survives a
 pass, the whole field is withheld rather than returned.
 
+### Heuristic redaction (for secrets valet doesn't know)
+
+Some secrets never sit in a file valet can pre-load — a tool may fetch them from
+a parameter store and print them at runtime (e.g. `handoff secrets print`). For
+those, valet also runs **heuristic** redaction (on by default,
+`redact_suspected`, [`valet/heuristics.py`](valet/heuristics.py)): it masks the
+*value* of an assignment whose *key name* looks sensitive
+(`AWS_SECRET_ACCESS_KEY=…`, `password: …`, `"api_key": "…"`), the `value:` field
+of a `key:`/`value:` object pair (the secrets-dump shape), and known token
+shapes (AWS, GitHub/GitLab, Slack, Stripe, Google, JWT, PEM). The key name stays
+visible; only the value is masked, so `export AWS_PROFILE=tiny; … secrets print`
+returns with `AWS_PROFILE=tiny` intact and every secret value replaced by
+`[REDACTED:suspected]`.
+
+This is precision-first: a secret with a non-suggestive key name *and* a
+non-standard shape can still slip through, which is exactly why the exact
+value-firewall and the `deny_read_paths` bans exist. Set `redact_suspected =
+false` to keep output verbatim.
+
 **Known limit.** Redaction matches secret values *literally*. If a command
 *transforms* a secret before printing it (uppercases it, base64-encodes it,
 splits it), the transformed form won't match and won't be redacted. valet

@@ -50,6 +50,17 @@ cwd_secret_files = [".env", ".secrets"]
 # Extra literal strings to always redact (e.g. a token not stored in a file).
 extra_values = []
 
+# Heuristically mask values that *look* secret, even when valet does not know
+# the exact value (e.g. secrets a command fetched from a parameter store at
+# runtime, like `handoff secrets print`). On by default. It masks:
+#   - the VALUE of an assignment whose KEY name looks sensitive
+#     (password / secret / token / api_key / credential / auth / ...),
+#   - the `value:` field of a key:/value: object pair (secrets-dump format), and
+#   - known token shapes (AWS/GitHub/GitLab/Slack/Stripe/Google, JWT, PEM).
+# The key name stays visible; only the value is masked. Set to false to keep
+# output verbatim.
+redact_suspected = true
+
 [policy]
 # PERMISSIVE by default — everything below is off unless you set it.
 # An empty allow list means "allow everything".

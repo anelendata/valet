@@ -129,7 +129,10 @@ class Broker:
                 sources.append(os.path.join(cwd, name))
         values = load_secret_values(sources)
         values.extend(v for v in self.cfg.redaction.extra_values if v)
-        return Redactor.build(values, self.cfg.fingerprint_salt)
+        return Redactor.build(
+            values, self.cfg.fingerprint_salt,
+            suspected=self.cfg.redaction.redact_suspected,
+        )
 
     @staticmethod
     def _safe(redactor: Redactor, text: str) -> str:

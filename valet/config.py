@@ -40,6 +40,9 @@ class RedactionConfig:
     cwd_secret_files: tuple[str, ...] = (".env", ".secrets")
     # Extra literal strings to always redact.
     extra_values: tuple[str, ...] = ()
+    # Heuristically mask values that *look* secret (sensitive key names, known
+    # token shapes) even when valet does not know the exact value.
+    redact_suspected: bool = True
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             secret_sources=tuple(_expand(s) for s in red.get("secret_sources", ())),
             cwd_secret_files=tuple(red.get("cwd_secret_files", (".env", ".secrets"))),
             extra_values=tuple(red.get("extra_values", ())),
+            redact_suspected=bool(red.get("redact_suspected", True)),
         ),
         policy=PolicyConfig(
             allow=tuple(pol.get("allow", ())),

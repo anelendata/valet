@@ -33,7 +33,13 @@ def test_backstop_masks_access_key_id():
     red = Redactor.build([], salt="s")
     out = red.redact("key AKIAIOSFODNN7EXAMPLE here")
     assert "AKIAIOSFODNN7EXAMPLE" not in out
-    assert "[REDACTED:aws_key_id]" in out
+    assert "[REDACTED" in out  # caught by the token/heuristic or backstop layer
+
+
+def test_suspected_can_be_disabled():
+    red = Redactor.build([], salt="s", suspected=False)
+    out = red.redact("DB_PASSWORD=plaintextsecret")
+    assert out == "DB_PASSWORD=plaintextsecret"  # heuristics off, nothing masked
 
 
 def test_fingerprint_is_stable_and_opaque():
