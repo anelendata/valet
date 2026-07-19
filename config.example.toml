@@ -5,8 +5,18 @@
 #
 # valet is a secret-redacting command runner: it runs a command and returns the
 # output with known secret VALUES scrubbed out. v0.2 is intentionally
-# permissive — it will run (almost) any command. Command allow/deny lists and a
-# workspace write-jail come later via the [policy] section.
+# permissive — it will run (almost) any command.
+#
+# Two families of controls do fundamentally different things:
+#   [redaction] — let the command RUN, scrub its OUTPUT (masks content)
+#   [policy]    — decide whether the command RUNS AT ALL (blocks execution)
+#
+# Rule of thumb:
+#   "a command should be able to USE this file"  -> redaction.secret_sources
+#                                                   / redaction.cwd_secret_files
+#   "no one should SEE this file"                -> policy.deny_read_paths
+#   "this program shouldn't run"                 -> policy.deny
+# See the "Choosing what to configure" section in README.md for the full table.
 
 [broker]
 # Unix-domain-socket the daemon listens on. Created 0600, owned by you, so the
@@ -29,7 +39,11 @@ workspace = "~"
 shell = true
 
 [redaction]
-# Secret files. For each, valet redacts:
+# ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
+#
+# secret_sources: fixed secret files (by ABSOLUTE path) that trusted commands
+# legitimately USE. Masked in EVERY command's output no matter where it runs.
+# For each, valet redacts:
 #   1. the ENTIRE file content as one blob — so `cat`/`less`/any full dump of the
 #      file is masked wholesale, regardless of format (ini, .env, JSON, a bare
 #      token, a PEM key, ...); and
@@ -43,8 +57,9 @@ secret_sources = [
     "~/.aws/config",
 ]
 
-# Additionally, for each command, auto-load these filenames from its working
-# directory (so a project's own .env/.secrets are redacted when you run there).
+# cwd_secret_files: like secret_sources but by FILENAME, auto-loaded from each
+# command's working directory — so a project's own .env/.secrets are redacted
+# when you run there, without listing every project. One line covers all of them.
 cwd_secret_files = [".env", ".secrets"]
 
 # Extra literal strings to always redact (e.g. a token not stored in a file).
@@ -69,16 +84,25 @@ redact_suspected = true
 redact_high_entropy = false
 
 [policy]
+# ==== FAMILY 2: block EXECUTION — decide whether the command runs at all ====
+#
 # PERMISSIVE by default — everything below is off unless you set it.
 # An empty allow list means "allow everything".
 allow = []
 
-# Program-name deny list (matched on the command's basename).
+# Program-name deny list (matched on the command's basename). Use to forbid a
+# whole tool, e.g. deny = ["rm", "curl"].
 deny = []
 
-# Glob patterns of files a command may not reference — valet refuses to run a
-# command that names an existing file matching one of these, so its content is
-# never revealed. Supports ** (any depth), * and ?. Examples:
+# deny_read_paths: glob patterns of files a command may not reference — valet
+# refuses to run a command that names an existing matching file, so its content
+# is never revealed. Use this to flatly forbid DISPLAYING a file (cat/less/grep);
+# it is all-or-nothing, and only catches files named on the command line.
+# (Contrast with redaction.secret_sources above, which lets the command run and
+# scrubs the output — use that for files trusted tools must USE.)
+# The analyzer is shell-aware: it splits on ; && || | and tracks cd, so
+# `cd dir; cat .env` is caught the same as `cat dir/.env`.
+# Supports ** (any depth), * and ?. Examples:
 #   "**/.env"          ban reading any .env, wherever it sits
 #   "**/.secrets/**"   ban anything under any .secrets directory
 #   "~/.aws/**"        ban anything under ~/.aws

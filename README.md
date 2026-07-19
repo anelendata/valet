@@ -165,6 +165,44 @@ secret sources valet loads so it can redact their values. See
 auto-loads `.env`/`.secrets` from the command's working directory, so a
 project's own secrets are redacted when you run there.
 
+### Choosing what to configure
+
+The knobs split into two families that do fundamentally different things:
+
+- **`[redaction]`** — *let the command run, scrub its **output**.* (masks content)
+- **`[policy]`** — *decide whether the command **runs at all**.* (blocks execution)
+
+| Knob | What it does | Use it when | Example |
+|---|---|---|---|
+| `redaction.secret_sources` | Loads specific files **by absolute path** and masks their content + values in *any* command's output | You have **fixed, known** secret files that trusted tools legitimately **use** | `~/.aws/credentials` |
+| `redaction.cwd_secret_files` | Same, but **by filename**, auto-loaded from **whatever dir the command runs in** | Per-**project** secrets that live in each project dir | `.env`, `.secrets` |
+| `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
+| `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
+
+**`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
+difference is only *how the file is located*. `secret_sources` is one fixed
+path, masked in **every** command's output. `cwd_secret_files` is a **name**
+resolved **relative to each command's cwd**, so one line covers all projects.
+
+**`secret_sources` vs `deny_read_paths`** — the important pairing. Your
+`handoff` case needs both:
+
+| | `handoff … schedule list` (reads creds **internally**, output safe) | `cat ~/.aws/credentials` (a reveal) |
+|---|---|---|
+| `secret_sources = ["~/.aws/credentials"]` | ✅ runs; any leak masked | ✅ runs, content masked |
+| `deny_read_paths = ["~/.aws/**"]` | ✅ runs (doesn't *name* the file) | ⛔ refused before running |
+
+Use **`secret_sources`** for files trusted commands must **use** (keeps them
+working, scrubs incidental leaks, and catches a program that opens the file
+without naming it). Use **`deny_read_paths`** to flatly forbid **displaying** a
+file (`cat`/`less`/`grep`) — all-or-nothing, but only for files named on the
+command line. They're complementary: the ban stops the obvious `cat`, redaction
+scrubs whatever slips through another way.
+
+> **Rule of thumb:** "a command should be able to *use* this file" →
+> `secret_sources` / `cwd_secret_files`. "no one should *see* this file" →
+> `deny_read_paths`. "this program shouldn't run" → `policy.deny`.
+
 ---
 
 ## Roadmap (the constraints coming next)
