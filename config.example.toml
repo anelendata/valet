@@ -1,60 +1,56 @@
 # valet — example config. Copy to config.toml (git-ignored) and edit.
 #
 #   cp config.example.toml config.toml
-#   valet init            # generates a random fingerprint_salt in place
+#   valet init            # (optional) generate a stable fingerprint_salt
 #
-# Everything below uses FICTIONAL aliases and paths. Never commit the real
-# config.toml: it names customer project directories and AWS profiles.
+# valet is a secret-redacting command runner: it runs a command and returns the
+# output with known secret VALUES scrubbed out. v0.2 is intentionally
+# permissive — it will run (almost) any command. Command allow/deny lists and a
+# workspace write-jail come later via the [policy] section.
 
 [broker]
-# Unix-domain-socket the daemon listens on. Created 0600, owned by you, so
-# the OS is the access-control layer — no port, no token, no network surface.
+# Unix-domain-socket the daemon listens on. Created 0600, owned by you, so the
+# OS is the access-control layer — no port, no token, no network surface.
 socket_path = "~/.valet/broker.sock"
 
-# The command valet is allowed to run. valet ONLY ever executes this binary,
-# and only with argv it constructs itself (see valet/operations.py). It never
-# runs a command supplied by the caller.
-handoff_bin = "handoff"          # or an absolute path into the project's venv
-
-# Hard wall-clock limit per underlying command run.
+# Hard wall-clock limit per command (seconds).
 timeout_seconds = 60
 
-# Per-install random salt for rule fingerprints. `valet init` fills this in.
-# Keep it secret and stable: stable so fingerprints stay comparable across
-# runs, secret so a fingerprint can't be brute-forced back to a rule name.
-fingerprint_salt = "CHANGE_ME_RUN_valet_init"
+# Optional. If set, redaction tags are stable across restarts. If left as
+# CHANGE_ME (or removed), valet generates an ephemeral salt at startup.
+fingerprint_salt = "CHANGE_ME_or_run_valet_init"
 
-# ---------------------------------------------------------------------------
-# One [projects.<alias>] block per project the agent may ask about.
-# The alias is the ONLY project identifier the agent ever sends or sees.
-# ---------------------------------------------------------------------------
-[projects.demo_billing]
-project_dir   = "/home/you/etl/demo_billing"
-workspace_dir = "/home/you/etl/demo_billing/.workspace"
+[exec]
+# Default working directory for commands, and the future write-jail root.
+# Leave unset to use the daemon's own working directory.
+workspace = "~"
 
-# Exported as AWS_PROFILE to the child process only. The agent never sees it.
-aws_profile   = "demo-billing-prod"
+# Run commands through a shell by default (pipes, globs, redirection).
+shell = true
 
-# Stages the agent is allowed to target for this project.
-stages = ["prod", "dev"]
-
-# Files whose *values* valet loads at runtime and blocks from all output.
-# valet reads these so it can redact their literal contents — this is the
-# core "value firewall". Supported: AWS credentials/config ini, .env / .secrets
-# (KEY=VALUE), and .json. Missing files are skipped with a warning.
+[redaction]
+# Files whose VALUES valet loads at runtime and blocks from all output. valet
+# reads these so it can redact their literal contents — this is the core "value
+# firewall". Supported: AWS credentials/config ini, .env / .secrets (KEY=VALUE),
+# and .json. Missing files are skipped.
 secret_sources = [
     "~/.aws/credentials",
     "~/.aws/config",
-    "/home/you/etl/demo_billing/.secrets",
-    "/home/you/etl/demo_billing/.env",
 ]
 
-[projects.demo_analytics]
-project_dir   = "/home/you/etl/demo_analytics"
-workspace_dir = "/home/you/etl/demo_analytics/.workspace"
-aws_profile   = "demo-analytics-prod"
-stages = ["prod"]
-secret_sources = [
-    "~/.aws/credentials",
-    "/home/you/etl/demo_analytics/.secrets",
-]
+# Additionally, for each command, auto-load these filenames from its working
+# directory (so a project's own .env/.secrets are redacted when you run there).
+cwd_secret_files = [".env", ".secrets"]
+
+# Extra literal strings to always redact (e.g. a token not stored in a file).
+extra_values = []
+
+[policy]
+# PERMISSIVE in v0.2 — these are reserved hooks (see valet/policy.py).
+# An empty allow list means "allow everything". A deny list, if set, is honored
+# now so you can start locking down incrementally.
+allow = []
+deny = []
+# When true (future), a write operation may not touch anything outside the
+# workspace. Not enforced yet.
+enforce_workspace_writes = false

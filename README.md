@@ -1,15 +1,17 @@
 # valet
 
-A narrow local broker that lets an AI agent validate the behavior of
-credential-using commands **without ever putting raw secrets into model
-context**.
+A local **secret-redacting command runner**. valet runs a command on your
+behalf and returns the output with every known secret **value** scrubbed out —
+so an AI agent can see what a command actually did without the secrets entering
+model context.
 
 The name *valet*: it holds your keys, brings the car around, and hands you back
 only what you asked for — never the keys.
 
-Built for the [handoff](https://github.com/anelendata/handoff) `cloud schedule
-list` use case, but the core is command-agnostic: point it at any read-only
-command that touches secrets.
+> **v0.2 is intentionally permissive.** valet will run (almost) any command; the
+> guarantee it makes today is about *output* (secrets are redacted), not about
+> *which commands may run*. Command allow/deny lists and a workspace write-jail
+> are the next step and already have their hook in [`valet/policy.py`](valet/policy.py).
 
 ---
 
@@ -18,66 +20,45 @@ command that touches secrets.
 **Actors**
 
 - **The agent (e.g. Codex)** runs inside a sandbox that *denies* filesystem
-  reads of `~/.aws`, `.secrets`, `.env`. This is correct and stays in place —
-  secrets must not enter model context.
+  reads of `~/.aws`, `.secrets`, `.env`. This stays in place — secrets must not
+  enter model context.
 - **valet** runs *outside* that sandbox, started by a human in a normal shell.
-  It **can** read those credentials at runtime.
+  It **can** read those credential files at runtime.
 
-**The problem.** The agent sometimes needs to *check the effect* of a
-credential-using command — e.g. "does `schedule list` with `scope=prefix`
-over-match sibling tasks?" — to review a PR. Running the command itself would
-pull AWS ARNs, account IDs, rule names, and possibly secret values into the
-model's context.
+**The problem.** The agent often needs to see the *result* of a command that
+uses credentials (`aws s3 ls`, `terraform plan`, a project script) to do its
+job. Running it directly would pull ARNs, account IDs, tokens, and possibly
+secret values straight into the model's context.
 
-**The boundary valet creates.**
+**What valet does.**
 
 ```
 ┌────────────────────────────┐        ┌───────────────────────────────────┐
 │  Agent sandbox (the model) │        │  valet daemon (normal shell)      │
 │  • CANNOT read ~/.aws       │  UDS   │  • CAN read ~/.aws, .secrets, .env │
-│  • CANNOT read .secrets     │ ─────▶ │  • runs ONE allowlisted read-only  │
-│  • sees only derived facts: │ ◀───── │    command with a fixed argv       │
-│    counts, booleans, hashes │        │  • redacts known secret VALUES     │
-└────────────────────────────┘        │    from all output before replying │
-      request {op,alias,stage,scope}   └───────────────────────────────────┘
+│  • CANNOT read .secrets     │ ─────▶ │  • runs the command                │
+│  • sees output with secret  │ ◀───── │  • loads the real secret VALUES    │
+│    values already scrubbed  │        │    and scrubs them from the output │
+└────────────────────────────┘        └───────────────────────────────────┘
+      request {op:"exec", cmd, cwd}      response {exit_code, stdout, stderr}
 ```
-
-**What crosses the boundary back to the agent** — only derived, sanitized data:
-
-- success / failure and the command exit code
-- count of schedules, and count by scope
-- whether `prefix` scope over-matches `declared` (issue #134), on request
-- **redacted** rule/project identifiers as stable salted hashes
-  (`h:xxxxxxxx`) so identity can be *compared* across runs without being
-  *revealed*
-- a high-level error class (`CredentialsError`, `Timeout`, `ConfigError`,
-  `HandoffError`, `ValidationError`) if execution failed
-
-**What never crosses** — raw stdout/stderr, ARNs, 12-digit account IDs, access
-keys, secret file paths, and above all the **literal contents of any secret**.
 
 ### Why this is stronger than a regex scrubber
 
 valet can read the credential files the agent cannot, so it loads the *actual
 secret values* and blocks those exact strings from every byte of output
-(`valet/secrets.py` → `valet/sanitize.py`). A guessing scrubber can miss a
-weird-looking token; valet cannot miss a value it already holds. A generic
-pattern backstop (account IDs, ARNs, `AKIA…` keys, PEM blocks, home-dir
-credential paths, emails) is layered on top as defense in depth for the
-free-text error channel.
+([`valet/secrets.py`](valet/secrets.py) → [`valet/sanitize.py`](valet/sanitize.py)).
+A guessing scrubber can miss a weird-looking token; valet cannot miss a value
+it already holds. A generic pattern backstop (account IDs, ARNs, `AKIA…` keys,
+PEM blocks, home-dir credential paths, emails) is layered on top as defense in
+depth. Redaction is **fail-closed**: if a known secret value somehow survives a
+pass, the whole field is withheld rather than returned.
 
-### Structural guarantees (not blocklists)
-
-- **No arbitrary execution.** valet builds the entire argv itself; the caller
-  supplies only `alias`, `stage`, `scope`, each checked against an allowlist
-  *before* use. `subprocess` runs with `shell=False`. There is no code path
-  that turns caller input into a command.
-- **No mutations.** Exactly one operation is registered — `schedule_list`,
-  read-only. `create` / `delete` / `deploy` are not implemented, so they cannot
-  be called.
-- **Fail-closed redaction.** Every string returned is passed through the
-  redactor and asserted secret-free; if a known value somehow survived, the
-  field is dropped rather than returned.
+**Known limit.** Redaction matches secret values *literally*. If a command
+*transforms* a secret before printing it (uppercases it, base64-encodes it,
+splits it), the transformed form won't match and won't be redacted. valet
+defends against secrets appearing verbatim (an accidental `cat .env`, `env`,
+error dumps) — not against a command deliberately obfuscating one.
 
 ---
 
@@ -85,17 +66,10 @@ free-text error channel.
 
 **Unix domain socket** (primary). The socket file is `0600`, owned by the user
 who started the daemon, so the OS is the access-control layer — no port, no
-bearer token, no network surface, no DNS-rebinding risk. Protocol is
-newline-delimited JSON: one request object per line, one response object per
-line.
-
-*Why not a WebSocket "virtual terminal"?* A terminal is generic command
-execution by definition (breaks the allowlist), and streaming "redacted"
-stdout is best-effort — a secret split across two chunks defeats a stream
-scrubber. valet returns **structured derived facts, not a stream**, so there is
-nothing to stream. A loopback-HTTP adapter (token-protected) is a possible
-future addition for sandboxes that permit localhost TCP but not the socket
-path; the core (`valet/broker.py`) is transport-agnostic.
+token, no network surface, no DNS-rebinding risk. Protocol is newline-delimited
+JSON: one request object per line, one response per line. The core
+([`valet/broker.py`](valet/broker.py)) is transport-agnostic; a token-protected
+loopback-HTTP adapter is a possible future addition.
 
 ---
 
@@ -103,90 +77,86 @@ path; the core (`valet/broker.py`) is transport-agnostic.
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[yaml]"          # yaml lets it parse handoff's output
+pip install -e .
 
-cp config.example.toml config.toml   # config.toml is git-ignored
-$EDITOR config.toml                  # set real project dirs + AWS profiles
-valet init                           # generate a random fingerprint_salt
+cp config.example.toml config.toml     # config.toml is git-ignored
+$EDITOR config.toml                     # set workspace + secret_sources
+valet init                              # optional: stable redaction tags
 
-valet serve                          # start the daemon (keep this shell open)
+valet serve                             # start the daemon (keep this shell open)
 ```
 
 Then, from anywhere (including the agent):
 
 ```bash
-valet schedule-list --alias demo_billing --stage prod --scope declared
-valet schedule-list --alias demo_billing --scope prefix --compare   # over-match check
-valet call --json '{"op":"schedule_list","project_alias":"demo_billing","scope":"all"}'
+valet run -- aws s3 ls                   # argv, no shell (exact)
+valet sh 'aws s3 ls | grep prod'         # shell: pipes, globs, redirection
+valet call --json '{"op":"exec","cmd":"env"}'
 ```
 
-### Interactive mode
+`run`/`sh` print redacted stdout/stderr and exit with the command's code, so
+they drop into scripts like the real command would.
 
-Run `valet` with no subcommand (like running `python` bare) to open a REPL that
-holds one persistent connection to the daemon:
+### Interactive mode — a redacting shell
+
+Run `valet` with no subcommand (like `python` bare) to open a prompt. **Any line
+you type is run as a command**, and the output comes back redacted:
 
 ```
 $ valet
-valet 0.1.0 interactive client. Type 'help' for commands, 'quit' to exit.
-valet> schedule-list demo_billing --scope prefix --compare
-{ ... sanitized response ... }
-valet> sl demo_billing            # 'sl' is an alias for schedule-list
-valet> call {"op":"schedule_list","project_alias":"demo_billing"}
-valet> quit
+valet 0.2.0 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
+valet> cat .secrets
+DB_PASSWORD=[REDACTED:secret:h:38673aad]
+API_TOKEN=[REDACTED:secret:h:3bc13a30]
+valet> aws s3 ls | head
+valet> :cwd /path/to/project      # change working dir for the session
+valet> :shell off                 # run following lines as argv, not shell
+valet> :secrets                   # how many values are being redacted here
+valet> :quit
 ```
 
-`help` lists commands, `ops` lists allowlisted operations, Ctrl-D exits. A bad
-line (unknown command, invalid scope) is reported without dropping the session,
-and the same allowlist/redaction rules apply — the REPL is just another client.
-
-Example response:
-
-```json
-{
-  "op": "schedule_list", "ok": true, "exit_code": 0,
-  "project_alias": "demo_billing", "stage": "prod", "scope": "prefix",
-  "count": 6,
-  "by_scope": { "declared": 4, "prefix": 6 },
-  "prefix_over_match": { "over_matches": true, "extra_beyond_declared": 2 },
-  "rule_fingerprints": ["h:3f9a1c8b", "h:77b2e0d4"],
-  "broker_version": "0.1.0"
-}
-```
-
-Every value above is safe to paste into a public PR review.
+Meta-commands are `:`-prefixed (`:help`, `:cwd`, `:shell`, `:secrets`, `:call`,
+`:quit`); everything else runs. Ctrl-D also exits.
 
 ---
 
 ## Config
 
-`config.toml` (never committed) maps public **aliases** to real project dirs
-and AWS profiles, and lists the secret sources valet loads so it can redact
-their values. See [`config.example.toml`](config.example.toml). The alias is
-the only project identifier the agent ever sends or sees.
+`config.toml` (never committed) sets the socket, the default workspace, and the
+secret sources valet loads so it can redact their values. See
+[`config.example.toml`](config.example.toml). Per command, valet also
+auto-loads `.env`/`.secrets` from the command's working directory, so a
+project's own secrets are redacted when you run there.
+
+---
+
+## Roadmap (the constraints coming next)
+
+The [`[policy]`](config.example.toml) section and [`valet/policy.py`](valet/policy.py)
+are the seams for:
+
+- **command allow/deny lists** — a `deny` list is already honored; an `allow`
+  list (empty = allow all today) will become an allowlist when populated.
+- **workspace write-jail** — `enforce_workspace_writes` will forbid a command
+  from writing outside the configured `workspace`.
+
+`Policy.check` is the single choke point; new constraints go there and stay
+fail-closed.
 
 ---
 
 ## Tests
 
 ```bash
-pip install -e ".[test,yaml]"
+pip install -e ".[test]"
 pytest
 ```
 
-The suite proves: arbitrary/mutating commands can't run, unknown aliases are
-rejected, invalid scopes are rejected, known secret values and sensitive
-patterns are redacted, and the handoff command is built with exactly the
-expected read-only arguments.
+The suite covers: commands run and their output is captured; known secret
+values (from `secret_sources`, cwd `.env`/`.secrets`, and `extra_values`) are
+redacted from stdout and stderr; the pattern backstop masks ARNs/account
+IDs/keys; nonzero exits and missing binaries are reported; unknown ops, missing
+`cmd`, and bad `cwd` are rejected; the deny list blocks a command; and the REPL
+runs lines and handles meta-commands.
 
----
-
-## Adding another operation
-
-Register a read-only op in `valet/operations.py` (build a fixed argv, run it,
-summarize into derived facts) and dispatch it in `valet/broker.py`. Keep the
-two invariants: valet builds the whole argv, and every returned string goes
-through the redactor. Never add an op that mutates state or that accepts a
-caller-supplied command.
-
-See [`docs/codex_usage.md`](docs/codex_usage.md) for how an agent uses valet
-during PR validation.
+See [`docs/codex_usage.md`](docs/codex_usage.md) for how an agent uses valet.

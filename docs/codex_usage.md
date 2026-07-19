@@ -1,74 +1,67 @@
-# How Codex should call valet during PR validation
+# How Codex should use valet
 
-valet exists so an agent can *check the runtime effect* of a credential-using
-command while reviewing a handoff PR, without any secret entering model context.
+valet lets an agent see the *result* of a credential-using command without any
+secret entering model context. valet runs the command outside the sandbox,
+where it can read `~/.aws` / `.secrets` / `.env`, and returns the output with
+those secret values scrubbed.
 
 ## One-time human setup (outside the sandbox)
 
-A human, in a normal shell that has the AWS profiles and project `.secrets`:
+In a normal shell that has the AWS profiles and project secrets:
 
 ```bash
 cp config.example.toml config.toml
-$EDITOR config.toml        # map aliases → real project dirs + AWS profiles
-valet init                # generate fingerprint_salt
-valet serve               # leave running; listens on ~/.valet/broker.sock (0600)
+$EDITOR config.toml        # set [exec].workspace and [redaction].secret_sources
+valet init                # optional: stable redaction tags
+valet serve               # leave running; socket at ~/.valet/broker.sock (0600)
 ```
 
-The agent's sandbox keeps denying `~/.aws` / `.secrets`. Nothing about that
-changes. The agent only ever talks to the socket.
+The agent's sandbox keeps denying `~/.aws` / `.secrets`. The agent only talks to
+the socket.
 
 ## What the agent runs
 
-The agent shells out to the thin client (it reads no secrets itself — it just
-talks to the daemon):
+The agent shells out to the client (it reads no secrets itself):
 
 ```bash
-valet schedule-list --alias demo_billing --stage prod --scope declared
+valet run -- aws s3 ls                 # exact argv, no shell
+valet sh 'terraform plan | tail -40'   # shell features
 ```
 
-To answer the specific question behind issue **#134** ("does `scope=prefix`
-over-match sibling tasks?"), ask for the comparison:
+Both print redacted stdout/stderr and exit with the command's own code. Example:
 
-```bash
-valet schedule-list --alias demo_billing --scope prefix --compare
+```
+$ valet run -- cat .env
+DB_PASSWORD=[REDACTED:secret:h:38673aad]
+API_TOKEN=[REDACTED:secret:h:3bc13a30]
 ```
 
-Response (safe to read into context and to paste into a public PR):
+The `[REDACTED:secret:h:xxxx]` tags are stable salted hashes: the agent can tell
+two occurrences are the *same* secret without learning its value.
+
+## Rules the agent should follow
+
+- Treat all valet output as safe to reason over, but remember redaction is
+  **literal**: do not ask valet to transform a secret (base64, uppercase, split)
+  and then trust the result — the transformed form is not redacted.
+- If a call returns `ok: false` with an `error_class` (e.g. `Timeout`,
+  `CommandError`, `PolicyDenied`), report that class rather than guessing at the
+  underlying message, which valet withholds.
+- Do not try to exfiltrate secrets through valet (e.g. writing `.env` to a
+  world-readable path and reading it back). valet redacts known values wherever
+  they appear in output; the human's policy settings govern what may run.
+
+## Programmatic use
+
+One request per line of newline-delimited JSON over the socket:
 
 ```json
-{
-  "ok": true, "exit_code": 0, "scope": "prefix",
-  "count": 6,
-  "by_scope": { "declared": 4, "prefix": 6 },
-  "prefix_over_match": { "over_matches": true, "extra_beyond_declared": 2 },
-  "rule_fingerprints": ["h:3f9a1c8b", "h:77b2e0d4"]
-}
+{"op": "exec", "cmd": "aws sts get-caller-identity", "cwd": "/path", "shell": true}
 ```
 
-## How the agent should use the result in a review
+Response:
 
-- `prefix_over_match.over_matches == true` with `extra_beyond_declared == 2`
-  confirms the bug the PR addresses: `scope=prefix` matches 2 rules that are
-  **not** declared for this project (a sibling task whose name extends this
-  one). The agent can state this in the PR review with the numbers, since they
-  carry no secret.
-- After the fix, re-running with `--scope declared` should show `count` equal
-  to the number of locally declared schedules, and `by_scope.prefix` should no
-  longer exceed it.
-- `rule_fingerprints` are stable salted hashes: the agent can assert "the same
-  N rules appear before and after" by comparing fingerprint sets across runs,
-  without ever learning a real rule name.
-
-## Rules the agent must follow
-
-- Only `schedule_list` exists. Requests for any other `op` (create, delete,
-  deploy, or an arbitrary command) return `ValidationError` — do not try to
-  work around this; there is no generic-exec path by design.
-- Use only aliases the human configured (`demo_billing`, …). An unknown alias
-  is rejected.
-- Never ask valet for raw output or to "print the ARN / account id / secret."
-  valet does not expose them; that is the point.
-- If a call returns `ok: false`, report the `error_class` (e.g.
-  `CredentialsError`, `Timeout`) — not a guess at the underlying message, which
-  valet deliberately withholds.
+```json
+{"ok": true, "exit_code": 0, "stdout": "...redacted...", "stderr": "",
+ "redacted_value_count": 4, "broker_version": "0.2.0"}
 ```

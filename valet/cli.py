@@ -1,13 +1,16 @@
 """``valet`` command-line entrypoint.
 
 Subcommands:
-  valet init            generate a fingerprint_salt in config.toml
+  valet                 interactive redacting shell (default; like `python` bare)
+  valet repl            same as above, explicitly
   valet serve           run the UDS broker daemon (outside the agent sandbox)
-  valet call ...        one-shot client: send a request to a running daemon
-  valet schedule-list   convenience wrapper for the one operation
+  valet run CMD...      run an argv (no shell) and print redacted output
+  valet sh 'CMDLINE'    run a shell command line and print redacted output
+  valet call --json ..  send a raw request object to the daemon
+  valet init            generate a fingerprint_salt in config.toml
 
-The agent (Codex) uses ``valet call`` / ``valet schedule-list`` — those read no
-secrets themselves; they just talk to the daemon, which does the privileged work.
+The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
+themselves; the daemon does the privileged work and redacts before replying.
 """
 from __future__ import annotations
 
@@ -30,9 +33,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
               file=sys.stderr)
         print(f"  cp config.example.toml {path}", file=sys.stderr)
         return 2
+    import re
     text = path.read_text()
     salt = _secrets.token_urlsafe(32)
-    import re
     new, n = re.subn(
         r'(?m)^(\s*fingerprint_salt\s*=\s*).*$',
         lambda m: f'{m.group(1)}"{salt}"',
@@ -47,22 +50,74 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
-    serve(cfg)
+    serve(load_config(args.config))
     return 0
 
 
-def _one_shot(args: argparse.Namespace, request: dict) -> int:
-    # Resolve socket path from config without loading secrets.
+def _connect(args: argparse.Namespace) -> Connection:
     cfg = load_config(args.config)
+    return Connection(cfg.socket_path)
+
+
+def _cmd_repl(args: argparse.Namespace) -> int:
     try:
-        response = call_once(cfg.socket_path, request)
+        conn = _connect(args)
     except (ConnectionRefusedError, FileNotFoundError):
         print("valet: no daemon at socket. Start it with `valet serve`.",
               file=sys.stderr)
         return 2
-    print(json.dumps(response, indent=2))
-    return 0 if response.get("ok") else 1
+    try:
+        return interact(conn.request)
+    finally:
+        conn.close()
+
+
+def _one_shot(args: argparse.Namespace, request: dict) -> int:
+    cfg = load_config(args.config)
+    try:
+        resp = call_once(cfg.socket_path, request)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    return _print_response(resp)
+
+
+def _print_response(resp: dict) -> int:
+    if resp.get("op") == "exec":
+        if resp.get("stdout"):
+            print(resp["stdout"], end="" if resp["stdout"].endswith("\n") else "\n")
+        if resp.get("stderr"):
+            print(resp["stderr"], end="" if resp["stderr"].endswith("\n") else "\n",
+                  file=sys.stderr)
+        if resp.get("ok") is False and "exit_code" not in resp:
+            print(f"valet: {resp.get('error_class')}: {resp.get('detail','')}",
+                  file=sys.stderr)
+        return int(resp.get("exit_code", 0) or (0 if resp.get("ok") else 1))
+    print(json.dumps(resp, indent=2))
+    return 0 if resp.get("ok") else 1
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    command = list(args.command)
+    if command and command[0] == "--":  # `valet run -- cmd ...`
+        command = command[1:]
+    if not command:
+        print("valet run: no command given", file=sys.stderr)
+        return 2
+    req = {"op": "exec", "cmd": command, "shell": False,
+           "timeout": args.timeout}
+    if args.cwd:
+        req["cwd"] = args.cwd
+    return _one_shot(args, req)
+
+
+def _cmd_sh(args: argparse.Namespace) -> int:
+    req = {"op": "exec", "cmd": args.command, "shell": True,
+           "timeout": args.timeout}
+    if args.cwd:
+        req["cwd"] = args.cwd
+    return _one_shot(args, req)
 
 
 def _cmd_call(args: argparse.Namespace) -> int:
@@ -74,55 +129,35 @@ def _cmd_call(args: argparse.Namespace) -> int:
     return _one_shot(args, request)
 
 
-def _cmd_repl(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
-    try:
-        conn = Connection(cfg.socket_path)
-    except (ConnectionRefusedError, FileNotFoundError):
-        print("valet: no daemon at socket. Start it with `valet serve`.",
-              file=sys.stderr)
-        return 2
-    try:
-        return interact(conn.request)
-    finally:
-        conn.close()
-
-
-def _cmd_schedule_list(args: argparse.Namespace) -> int:
-    request = {
-        "op": "schedule_list",
-        "project_alias": args.alias,
-        "stage": args.stage,
-        "scope": args.scope,
-        "compare": args.compare,
-    }
-    return _one_shot(args, request)
-
-
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="valet", description=__doc__)
+    p = argparse.ArgumentParser(prog="valet", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-c", "--config", default=None,
                    help="path to config.toml (default: repo config.toml or $VALET_CONFIG)")
-    # No subcommand => interactive REPL, like running `python` bare.
-    p.set_defaults(func=_cmd_repl)
+    p.set_defaults(func=_cmd_repl)  # no subcommand => REPL
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("init", help="generate a fingerprint_salt").set_defaults(func=_cmd_init)
     sub.add_parser("serve", help="run the UDS broker daemon").set_defaults(func=_cmd_serve)
-    sub.add_parser("repl", help="interactive client (default when no subcommand)"
+    sub.add_parser("repl", help="interactive redacting shell (default)"
                    ).set_defaults(func=_cmd_repl)
 
-    call = sub.add_parser("call", help="send a raw JSON request to the daemon")
-    call.add_argument("--json", required=True, help='e.g. \'{"op":"schedule_list",...}\'')
-    call.set_defaults(func=_cmd_call)
+    run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
+    run.add_argument("--cwd", default=None)
+    run.add_argument("--timeout", type=int, default=60)
+    run.add_argument("command", nargs=argparse.REMAINDER,
+                     help="the command and its arguments")
+    run.set_defaults(func=_cmd_run)
 
-    sl = sub.add_parser("schedule-list", help="run the schedule_list operation")
-    sl.add_argument("--alias", required=True)
-    sl.add_argument("--stage", default="prod")
-    sl.add_argument("--scope", default="declared", choices=["declared", "prefix", "all"])
-    sl.add_argument("--compare", action="store_true",
-                    help="also compute prefix-vs-declared over-match")
-    sl.set_defaults(func=_cmd_schedule_list)
+    sh = sub.add_parser("sh", help="run a shell command line, print redacted output")
+    sh.add_argument("--cwd", default=None)
+    sh.add_argument("--timeout", type=int, default=60)
+    sh.add_argument("command", help="the command line to run via the shell")
+    sh.set_defaults(func=_cmd_sh)
+
+    call = sub.add_parser("call", help="send a raw JSON request to the daemon")
+    call.add_argument("--json", required=True, help='e.g. \'{"op":"exec","cmd":"env"}\'')
+    call.set_defaults(func=_cmd_call)
     return p
 
 

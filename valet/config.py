@@ -1,19 +1,20 @@
-"""Load and validate valet's local config, and enforce the allowlists.
+"""Load valet's local config.
 
-The config file is never committed (see .gitignore); it maps public aliases to
-real project directories and AWS profiles. All allowlist checks live here so
-there is a single, auditable choke point.
+The config file is not committed (see .gitignore). It says where the socket
+lives, which files hold secret values to redact, and the (currently permissive)
+execution policy. Everything is optional with sensible defaults so valet is
+usable out of the box.
 """
 from __future__ import annotations
 
 import os
+import secrets as _secrets
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from . import SCHEDULE_SCOPES
-from .errors import ConfigError, ValidationError
+from .errors import ConfigError
 
 DEFAULT_CONFIG_ENV = "VALET_CONFIG"
 DEFAULT_CONFIG_NAME = "config.toml"
@@ -24,47 +25,40 @@ def _expand(path: str) -> str:
 
 
 @dataclass(frozen=True)
-class Project:
-    alias: str
-    project_dir: str
-    workspace_dir: str
-    aws_profile: Optional[str]
-    stages: tuple[str, ...]
-    secret_sources: tuple[str, ...]
+class ExecConfig:
+    # Default working directory for commands, and the future write-jail root.
+    workspace: Optional[str] = None
+    # Run through a shell by default (permissive shell-wrapper behavior).
+    shell: bool = True
 
-    def check_stage(self, stage: str) -> str:
-        if stage not in self.stages:
-            # Do not echo the caller's value verbatim into a message that might
-            # be logged widely; keep it terse. The allowed set is not secret.
-            raise ValidationError(
-                f"stage not allowed for project; allowed: {list(self.stages)}"
-            )
-        return stage
+
+@dataclass(frozen=True)
+class RedactionConfig:
+    # Files whose *values* are loaded and blocked from all output.
+    secret_sources: tuple[str, ...] = ()
+    # Filenames auto-loaded from each command's cwd (e.g. project .env/.secrets).
+    cwd_secret_files: tuple[str, ...] = (".env", ".secrets")
+    # Extra literal strings to always redact.
+    extra_values: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PolicyConfig:
+    # Empty allow == allow everything (permissive v1). Reserved for future use.
+    allow: tuple[str, ...] = ()
+    deny: tuple[str, ...] = ()
+    # When true (future), commands may not write outside the workspace.
+    enforce_workspace_writes: bool = False
 
 
 @dataclass(frozen=True)
 class BrokerConfig:
     socket_path: str
-    handoff_bin: str
     timeout_seconds: int
     fingerprint_salt: str
-    projects: dict[str, Project] = field(default_factory=dict)
-
-    # ---- allowlist accessors -------------------------------------------------
-
-    def project(self, alias: str) -> Project:
-        """Return the project for ``alias`` or reject it. Alias allowlist."""
-        if not isinstance(alias, str) or alias not in self.projects:
-            raise ValidationError("unknown project_alias")
-        return self.projects[alias]
-
-    @staticmethod
-    def check_scope(scope: str) -> str:
-        if scope not in SCHEDULE_SCOPES:
-            raise ValidationError(
-                f"invalid scope; allowed: {list(SCHEDULE_SCOPES)}"
-            )
-        return scope
+    exec: ExecConfig = field(default_factory=ExecConfig)
+    redaction: RedactionConfig = field(default_factory=RedactionConfig)
+    policy: PolicyConfig = field(default_factory=PolicyConfig)
 
 
 def default_config_path() -> Path:
@@ -88,37 +82,33 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
         raise ConfigError(f"config is not valid TOML: {exc}") from exc
 
     broker = raw.get("broker", {})
+    exec_ = raw.get("exec", {})
+    red = raw.get("redaction", {})
+    pol = raw.get("policy", {})
+
+    # A stable salt keeps redaction tags comparable across runs; if unset we
+    # generate an ephemeral one so the tool works with zero setup.
     salt = broker.get("fingerprint_salt", "")
     if not salt or salt.startswith("CHANGE_ME"):
-        raise ConfigError(
-            "broker.fingerprint_salt is unset. Run `valet init` to generate one."
-        )
+        salt = _secrets.token_urlsafe(24)
 
-    projects: dict[str, Project] = {}
-    for alias, pj in raw.get("projects", {}).items():
-        missing = [k for k in ("project_dir", "workspace_dir") if k not in pj]
-        if missing:
-            raise ConfigError(
-                f"project '{alias}' is missing keys: {missing}"
-            )
-        projects[alias] = Project(
-            alias=alias,
-            project_dir=_expand(pj["project_dir"]),
-            workspace_dir=_expand(pj["workspace_dir"]),
-            aws_profile=pj.get("aws_profile"),
-            stages=tuple(pj.get("stages", ("prod", "dev"))),
-            secret_sources=tuple(
-                _expand(s) for s in pj.get("secret_sources", ())
-            ),
-        )
-
-    if not projects:
-        raise ConfigError("config defines no [projects.<alias>] blocks")
-
+    workspace = exec_.get("workspace")
     return BrokerConfig(
         socket_path=_expand(broker.get("socket_path", "~/.valet/broker.sock")),
-        handoff_bin=broker.get("handoff_bin", "handoff"),
         timeout_seconds=int(broker.get("timeout_seconds", 60)),
         fingerprint_salt=salt,
-        projects=projects,
+        exec=ExecConfig(
+            workspace=_expand(workspace) if workspace else None,
+            shell=bool(exec_.get("shell", True)),
+        ),
+        redaction=RedactionConfig(
+            secret_sources=tuple(_expand(s) for s in red.get("secret_sources", ())),
+            cwd_secret_files=tuple(red.get("cwd_secret_files", (".env", ".secrets"))),
+            extra_values=tuple(red.get("extra_values", ())),
+        ),
+        policy=PolicyConfig(
+            allow=tuple(pol.get("allow", ())),
+            deny=tuple(pol.get("deny", ())),
+            enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", False)),
+        ),
     )

@@ -1,85 +1,74 @@
-"""Run the underlying command safely: fixed argv, no shell, timeout, capture.
+"""Run a command and capture its output.
 
-The executor never sees caller-supplied strings as a command. It takes an argv
-LIST built by an operation (valet/operations.py) and runs it with
-``shell=False``, so there is no shell to interpret metacharacters and no code
-path that turns caller input into a command.
+Supports two modes:
+  - shell=False: ``cmd`` is an argv list, run directly (no shell).
+  - shell=True:  ``cmd`` is a string, run via the system shell (/bin/sh -c),
+    giving pipes/globs/redirection — the "shell wrapper" behavior.
+
+stdout/stderr are captured here and stay internal to the broker; callers get
+them back only after redaction.
 """
 from __future__ import annotations
 
 import os
 import subprocess
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
-from .errors import TimeoutError_
+from .errors import CommandError, TimeoutError_
+
+Command = Union[str, Sequence[str]]
 
 
 @dataclass
 class RunResult:
-    argv: tuple[str, ...]
     exit_code: int
     stdout: str
     stderr: str
 
 
 def run(
-    argv: Sequence[str],
+    cmd: Command,
     *,
+    shell: bool = False,
     cwd: Optional[str] = None,
     timeout: int = 60,
-    aws_profile: Optional[str] = None,
     extra_env: Optional[dict[str, str]] = None,
 ) -> RunResult:
-    """Execute ``argv`` and capture output. Raises Timeout on overrun.
+    if shell:
+        if not isinstance(cmd, str):
+            raise CommandError("shell mode requires a command string")
+        popen_arg: Command = cmd
+    else:
+        if isinstance(cmd, str) or not cmd:
+            raise CommandError("non-shell mode requires a non-empty argv list")
+        popen_arg = list(cmd)
 
-    stdout/stderr are captured here and stay internal to the broker; callers
-    receive only redacted / derived data, never this raw text.
-    """
-    if not argv or not isinstance(argv, (list, tuple)):
-        raise ValueError("argv must be a non-empty list")
-
-    env = dict(os.environ)
-    if aws_profile:
-        env["AWS_PROFILE"] = aws_profile
+    env = None
     if extra_env:
+        env = dict(os.environ)
         env.update(extra_env)
 
     try:
         proc = subprocess.run(
-            list(argv),
+            popen_arg,
+            shell=shell,
             cwd=cwd,
             env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
-            shell=False,  # explicit: never a shell
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError_("command timed out") from exc
+    except FileNotFoundError:
+        # argv mode with a missing executable — normalize to a 127 result so
+        # callers get a uniform shape (matches how a shell reports not-found).
+        return RunResult(exit_code=127, stdout="", stderr="command not found")
 
     return RunResult(
-        argv=tuple(argv),
         exit_code=proc.returncode,
         stdout=proc.stdout or "",
         stderr=proc.stderr or "",
     )
-
-
-def classify_failure(result: RunResult) -> str:
-    """Map a nonzero run to a high-level error class, from stderr patterns.
-
-    Only the returned label leaves the boundary — never the stderr text.
-    """
-    blob = (result.stderr + "\n" + result.stdout).lower()
-    cred_markers = (
-        "expiredtoken", "credential", "accessdenied", "access denied",
-        "unable to locate credentials", "invalidclienttokenid",
-        "not authorized", "unauthorized", "signature",
-    )
-    if any(m in blob for m in cred_markers):
-        return "CredentialsError"
-    if "unrecognized command" in blob or "no such" in blob:
-        return "ConfigError"
-    return "HandoffError"

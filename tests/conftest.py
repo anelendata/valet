@@ -2,12 +2,17 @@ import textwrap
 
 import pytest
 
-from valet.config import BrokerConfig, Project
+from valet.config import (
+    BrokerConfig,
+    ExecConfig,
+    PolicyConfig,
+    RedactionConfig,
+)
 
 
 @pytest.fixture
 def secret_file(tmp_path):
-    """A fake .secrets file with a long secret value and a trivial one."""
+    """A fake .secrets file with a long secret value and trivial ones."""
     p = tmp_path / ".secrets"
     p.write_text(textwrap.dedent(
         """\
@@ -21,25 +26,24 @@ def secret_file(tmp_path):
 
 
 @pytest.fixture
-def project(tmp_path, secret_file):
-    proj_dir = tmp_path / "demo_billing"
-    proj_dir.mkdir()
-    return Project(
-        alias="demo_billing",
-        project_dir=str(proj_dir),
-        workspace_dir=str(proj_dir / ".workspace"),
-        aws_profile="demo-billing-prod",
-        stages=("prod", "dev"),
-        secret_sources=(str(secret_file),),
-    )
+def workspace(tmp_path):
+    d = tmp_path / "ws"
+    d.mkdir()
+    return d
 
 
 @pytest.fixture
-def cfg(project):
+def cfg(workspace, secret_file):
+    """A permissive broker config that redacts the fixture secret file."""
     return BrokerConfig(
-        socket_path=str("/tmp/valet-test.sock"),
-        handoff_bin="handoff",
+        socket_path="/tmp/valet-test.sock",
         timeout_seconds=5,
         fingerprint_salt="test-salt-fixed",
-        projects={project.alias: project},
+        exec=ExecConfig(workspace=str(workspace), shell=True),
+        redaction=RedactionConfig(
+            secret_sources=(str(secret_file),),
+            cwd_secret_files=(".env", ".secrets"),
+            extra_values=(),
+        ),
+        policy=PolicyConfig(),
     )

@@ -5,19 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "valet"
 version = "0.1.0"
-description = "A narrow local broker that lets AI agents validate credential-using commands without exposing raw secrets."
+description = "A local secret-redacting command runner: run a command, get output with secrets scrubbed."
 requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-# Zero required third-party deps: tomllib (config) and json/yaml handling
-# for handoff output are the only parsers, and PyYAML is optional (see
-# valet/operations.py, which degrades gracefully without it).
+# Zero required third-party deps — only the standard library.
 dependencies = []
 
 [project.optional-dependencies]
-# handoff prints its result as YAML; installing PyYAML lets the schedule_list
-# summarizer parse it. Without it, valet still runs and value-redacts output.
-yaml = ["PyYAML>=5.1"]
 test = ["pytest>=7"]
 
 [project.scripts]

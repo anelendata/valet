@@ -1,49 +1,47 @@
 """Transport-agnostic core: one request dict -> one response dict.
 
-Every path that returns to the caller funnels through here, and every string
-field is passed through the Redactor and asserted clean before it leaves. UDS
-and HTTP adapters are thin shells over ``Broker.handle``.
+The single operation is ``exec``: run a command and return its output with
+known secret values redacted. Every string returned is passed through the
+Redactor and asserted clean before it leaves. UDS and REPL are thin shells over
+``Broker.handle``.
 """
 from __future__ import annotations
 
-from typing import Any
+import os
+import shlex
+from typing import Any, Optional
 
 from . import __version__
 from .config import BrokerConfig
-from .errors import ValetError, ValidationError
-from .executor import RunResult, classify_failure, run
-from .operations import (
-    READ_ONLY_OPS,
-    _parse_handoff_output,
-    build_schedule_list_argv,
-    run_schedule_list,
-    summarize_schedule_list,
-)
+from .errors import CommandError, TimeoutError_, ValetError, ValidationError
+from .executor import run
+from .policy import Policy
 from .sanitize import Redactor
 from .secrets import load_secret_values
+
+_WITHHELD = "[REDACTED: output withheld — residual secret detected]"
 
 
 class Broker:
     def __init__(self, cfg: BrokerConfig):
         self.cfg = cfg
+        self.policy = Policy.from_config(cfg.policy, cfg.exec.workspace)
 
     # -- public entrypoint -----------------------------------------------------
 
     def handle(self, request: Any) -> dict:
-        """Validate, dispatch, and return a sanitized response dict."""
         base = {"broker_version": __version__}
         try:
             if not isinstance(request, dict):
                 raise ValidationError("request must be a JSON object")
-            op = request.get("op")
-            if op not in READ_ONLY_OPS:
-                # Unknown or mutating op: rejected. There is no generic-exec path.
-                raise ValidationError("unknown or non-allowlisted op")
-
-            if op == "schedule_list":
-                return {**base, **self._schedule_list(request)}
-
-            raise ValidationError("unhandled op")  # pragma: no cover
+            op = request.get("op", "exec")
+            if op == "exec":
+                return {**base, **self._exec(request)}
+            if op == "ping":
+                return {**base, "ok": True, "pong": True}
+            if op == "redaction_info":
+                return {**base, **self._redaction_info(request)}
+            raise ValidationError(f"unknown op: {op!r}")
         except ValetError as exc:
             return {
                 **base,
@@ -53,98 +51,88 @@ class Broker:
                 "detail": str(exc),
             }
         except Exception:
-            # Never leak an unexpected exception's message — it could embed a
-            # path or credential from deep in a dependency.
-            return {
-                **base,
-                "ok": False,
-                "error_class": "InternalError",
-                "detail": "internal error",
-            }
+            # Never leak an unexpected exception's message.
+            return {**base, "ok": False, "error_class": "InternalError",
+                    "detail": "internal error"}
 
     # -- operations ------------------------------------------------------------
 
-    def _schedule_list(self, request: dict) -> dict:
-        alias = request.get("project_alias")
-        stage = request.get("stage", "prod")
-        scope = request.get("scope", "declared")
-        compare = bool(request.get("compare", False))
+    def _exec(self, request: dict) -> dict:
+        raw_cmd = request.get("cmd")
+        if not raw_cmd:
+            raise ValidationError("missing 'cmd'")
 
-        project = self.cfg.project(alias)                 # alias allowlist
-        stage = project.check_stage(stage)                # stage allowlist
-        scope = BrokerConfig.check_scope(scope)           # scope allowlist
+        shell = bool(request.get("shell", self.cfg.exec.shell))
+        cmd = self._normalize_cmd(raw_cmd, shell)
 
-        redactor = Redactor.build(
-            load_secret_values(project.secret_sources), self.cfg.fingerprint_salt
-        )
+        cwd = request.get("cwd") or self.cfg.exec.workspace
+        cwd = os.path.expanduser(cwd) if cwd else None
+        if cwd is not None and not os.path.isdir(cwd):
+            raise ValidationError("cwd does not exist")
 
-        summary = run_schedule_list(self.cfg, project, stage, scope, redactor)
+        timeout = int(request.get("timeout", self.cfg.timeout_seconds))
 
-        response: dict = {
-            "op": "schedule_list",
-            "project_alias": alias,
-            "stage": stage,
-            **summary,
-        }
+        # Policy gate (permissive in v0.2; see valet/policy.py).
+        self.policy.check(cmd, cwd)
 
-        # Over-match answer for issue #134: only when explicitly requested, run
-        # the declared + prefix baselines and compare. Off by default so the
-        # common call stays a single handoff run.
-        if compare:
-            self._add_over_match(project, stage, redactor, response)
+        redactor = self._redactor_for(cwd)
 
-        # If we could not parse structured output (e.g. PyYAML not installed or
-        # handoff changed its format), fall back to value-redacted raw output so
-        # the caller still gets something safe. This is the only place output
-        # text is ever returned, and it is guaranteed clean below.
-        if not summary.get("parsed"):
-            argv = build_schedule_list_argv(self.cfg, project, stage, scope)
-            raw = run(argv, cwd=project.project_dir,
-                      timeout=self.cfg.timeout_seconds,
-                      aws_profile=project.aws_profile)
-            response["redacted_output"] = self._redact_output(raw, redactor)
-            response.setdefault("error_class",
-                                None if raw.exit_code == 0 else classify_failure(raw))
-
-        return self._scrub_response(response, redactor)
-
-    def _add_over_match(self, project, stage, redactor, response: dict) -> None:
-        by_scope = dict(response.get("by_scope", {}))
-        for sc in ("declared", "prefix"):
-            if sc not in by_scope:
-                s = run_schedule_list(self.cfg, project, stage, sc, redactor)
-                if s.get("count") is not None:
-                    by_scope[sc] = s["count"]
-        declared = by_scope.get("declared")
-        prefix = by_scope.get("prefix")
-        response["by_scope"] = by_scope
-        if declared is not None and prefix is not None:
-            response["prefix_over_match"] = {
-                "over_matches": prefix > declared,
-                "extra_beyond_declared": max(prefix - declared, 0),
+        try:
+            result = run(cmd, shell=shell, cwd=cwd, timeout=timeout)
+        except (TimeoutError_, CommandError) as exc:
+            return {
+                "op": "exec", "ok": False, "error_class": exc.error_class,
+                "detail": str(exc), "cwd": cwd, "shell": shell,
             }
 
-    # -- redaction gate --------------------------------------------------------
+        echoed = cmd if isinstance(cmd, str) else shlex.join(cmd)
+        return {
+            "op": "exec",
+            "ok": result.exit_code == 0,
+            "exit_code": result.exit_code,
+            "cwd": cwd,
+            "shell": shell,
+            "cmd": self._safe(redactor, echoed),
+            "stdout": self._safe(redactor, result.stdout),
+            "stderr": self._safe(redactor, result.stderr),
+            "redacted_value_count": len(redactor.secret_values),
+        }
 
-    def _redact_output(self, raw: RunResult, redactor: Redactor) -> str:
-        text = redactor.redact(raw.stdout + ("\n---stderr---\n" + raw.stderr
-                                             if raw.stderr else ""))
-        # Belt-and-suspenders: if any known secret value somehow survived,
-        # refuse to return the text at all.
-        if not redactor.is_clean(text):
-            return "[REDACTED:output withheld — residual secret detected]"
-        return text
+    def _redaction_info(self, request: dict) -> dict:
+        cwd = request.get("cwd") or self.cfg.exec.workspace
+        cwd = os.path.expanduser(cwd) if cwd else None
+        redactor = self._redactor_for(cwd)
+        return {"ok": True, "cwd": cwd,
+                "redacted_value_count": len(redactor.secret_values)}
 
-    def _scrub_response(self, response: dict, redactor: Redactor) -> dict:
-        """Final pass: redact every string value and assert cleanliness."""
-        def scrub(node):
-            if isinstance(node, str):
-                out = redactor.redact(node)
-                return out if redactor.is_clean(out) else "[REDACTED]"
-            if isinstance(node, dict):
-                return {k: scrub(v) for k, v in node.items()}
-            if isinstance(node, list):
-                return [scrub(v) for v in node]
-            return node
+    # -- helpers ---------------------------------------------------------------
 
-        return scrub(response)
+    @staticmethod
+    def _normalize_cmd(raw_cmd, shell: bool):
+        """Coerce the request's cmd into the shape the chosen mode needs."""
+        if shell:
+            if isinstance(raw_cmd, (list, tuple)):
+                return shlex.join([str(t) for t in raw_cmd])
+            return str(raw_cmd)
+        # non-shell: need an argv list
+        if isinstance(raw_cmd, str):
+            try:
+                return shlex.split(raw_cmd)
+            except ValueError as exc:
+                raise ValidationError(f"could not parse command: {exc}") from exc
+        return [str(t) for t in raw_cmd]
+
+    def _redactor_for(self, cwd: Optional[str]) -> Redactor:
+        sources = list(self.cfg.redaction.secret_sources)
+        if cwd:
+            for name in self.cfg.redaction.cwd_secret_files:
+                sources.append(os.path.join(cwd, name))
+        values = load_secret_values(sources)
+        values.extend(v for v in self.cfg.redaction.extra_values if v)
+        return Redactor.build(values, self.cfg.fingerprint_salt)
+
+    @staticmethod
+    def _safe(redactor: Redactor, text: str) -> str:
+        out = redactor.redact(text or "")
+        # Fail closed: if any known secret value somehow survived, withhold.
+        return out if redactor.is_clean(out) else _WITHHELD

@@ -13,7 +13,7 @@ class ValetError(Exception):
 
 
 class ValidationError(ValetError):
-    """Caller sent something not on an allowlist (op, alias, stage, scope)."""
+    """Caller sent a malformed or unacceptable request."""
 
     error_class = "ValidationError"
 
@@ -24,19 +24,19 @@ class ConfigError(ValetError):
     error_class = "ConfigError"
 
 
+class PolicyError(ValetError):
+    """A command was refused by policy (allow/deny list, workspace jail)."""
+
+    error_class = "PolicyDenied"
+
+
 class TimeoutError_(ValetError):
-    """The underlying command exceeded the configured timeout."""
+    """The command exceeded the configured timeout."""
 
     error_class = "Timeout"
 
 
-class CredentialsError(ValetError):
-    """The underlying command failed in a way that looks credential-related."""
-
-    error_class = "CredentialsError"
-
-
 class CommandError(ValetError):
-    """The underlying command failed for some other reason."""
+    """The command could not be launched (e.g. executable not found)."""
 
-    error_class = "HandoffError"
+    error_class = "CommandError"

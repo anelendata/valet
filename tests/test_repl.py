@@ -1,82 +1,100 @@
-"""The interactive REPL's line handler builds correct requests and is safe."""
+"""The redacting-shell REPL: runs typed lines, handles :meta-commands."""
 import json
 
-from valet.repl import interact, run_command
+from valet.repl import Session, format_exec, interact, run_command
 
 
-def _recorder():
+def _recorder(resp=None):
     sent = []
 
     def send(req):
         sent.append(req)
-        return {"ok": True, "echo": req}
+        return resp if resp is not None else {"op": "exec", "ok": True,
+                                              "exit_code": 0, "stdout": "hi\n",
+                                              "stderr": ""}
 
     return send, sent
 
 
-def test_schedule_list_builds_request():
+def test_plain_line_runs_as_command():
     send, sent = _recorder()
-    keep, out = run_command("schedule-list demo_billing --scope prefix --compare", send)
+    sess = Session()
+    keep, out = run_command("echo hi", sess, send)
     assert keep is True
-    assert sent[0] == {
-        "op": "schedule_list", "project_alias": "demo_billing",
-        "stage": "prod", "scope": "prefix", "compare": True,
-    }
-    assert json.loads(out)["ok"] is True
+    assert sent[0]["op"] == "exec"
+    assert sent[0]["cmd"] == "echo hi"
+    assert sent[0]["shell"] is True
+    assert out == "hi"
 
 
-def test_sl_alias_and_defaults():
+def test_cwd_is_included_when_set():
     send, sent = _recorder()
-    run_command("sl demo_billing", send)
-    assert sent[0]["scope"] == "declared"
-    assert sent[0]["stage"] == "prod"
-    assert sent[0]["compare"] is False
+    sess = Session(cwd="/tmp")
+    run_command("ls", sess, send)
+    assert sent[0]["cwd"] == "/tmp"
 
 
-def test_quit_stops_loop():
+def test_meta_quit_stops_loop():
     send, _ = _recorder()
-    assert run_command("quit", send) == (False, None)
-    assert run_command("exit", send) == (False, None)
+    assert run_command(":quit", Session(), send) == (False, None)
+    assert run_command(":exit", Session(), send) == (False, None)
 
 
-def test_help_and_ops_do_not_send():
+def test_meta_cwd_get_and_set():
     send, sent = _recorder()
-    _, help_out = run_command("help", send)
-    _, ops_out = run_command("ops", send)
-    assert "schedule-list" in help_out
-    assert "schedule_list" in ops_out
-    assert sent == []  # neither hit the daemon
+    sess = Session()
+    _, out = run_command(":cwd /work", sess, send)
+    assert sess.cwd == "/work"
+    assert "/work" in out
+    _, out2 = run_command(":cwd", sess, send)
+    assert "/work" in out2
+    assert sent == []  # meta-commands don't run commands
 
 
-def test_bad_scope_does_not_crash_or_send():
+def test_meta_shell_toggle_changes_requests():
     send, sent = _recorder()
-    keep, out = run_command("sl demo_billing --scope everything", send)
-    assert keep is True          # REPL survives a bad line
-    assert sent == []            # nothing sent to the daemon
-    assert "everything" in out or "invalid choice" in out
+    sess = Session()
+    run_command(":shell off", sess, send)
+    assert sess.shell is False
+    run_command("echo hi", sess, send)
+    assert sent[0]["shell"] is False
 
 
-def test_unknown_command_is_reported_not_sent():
+def test_meta_help_does_not_send():
     send, sent = _recorder()
-    keep, out = run_command("rm -rf /", send)
-    assert keep is True
+    _, out = run_command(":help", Session(), send)
+    assert "meta-command" in out.lower()
     assert sent == []
-    assert "unknown command" in out
 
 
-def test_raw_call_passes_json_through():
+def test_unknown_meta_reported():
     send, sent = _recorder()
-    run_command('call {"op":"schedule_list","project_alias":"x"}', send)
-    assert sent[0] == {"op": "schedule_list", "project_alias": "x"}
+    _, out = run_command(":bogus", Session(), send)
+    assert "unknown meta-command" in out
+    assert sent == []
+
+
+def test_meta_call_passes_json_through():
+    send, sent = _recorder(resp={"ok": True, "pong": True})
+    run_command(':call {"op":"ping"}', Session(), send)
+    assert sent[0] == {"op": "ping"}
+
+
+def test_format_exec_shows_stderr_and_exit():
+    out = format_exec({"op": "exec", "ok": False, "exit_code": 2,
+                       "stdout": "", "stderr": "boom"})
+    assert "boom" in out
+    assert "[exit 2]" in out
+
+
+def test_format_exec_error_response():
+    out = format_exec({"ok": False, "error_class": "Timeout", "detail": "timed out"})
+    assert "Timeout" in out
 
 
 def test_interact_loop_with_scripted_input():
     send, sent = _recorder()
-    lines = iter(["sl demo_billing", "quit"])
-
-    def fake_input(prompt):
-        return next(lines)
-
-    rc = interact(send, input_fn=fake_input)
+    lines = iter(["echo hi", ":quit"])
+    rc = interact(send, input_fn=lambda p: next(lines))
     assert rc == 0
     assert len(sent) == 1
