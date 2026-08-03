@@ -12,6 +12,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -21,6 +25,11 @@ Send = Callable[[dict], dict]
 
 # Shell control characters; a line containing any of these is not a "pure cd".
 _OPERATOR_CHARS = set(";&|()<>\n")
+_COMMAND_SEPARATORS = set(";&|")
+_SHELL_BUILTINS = (
+    "cd", "echo", "exit", "export", "false", "pwd", "read", "set", "test",
+    "true", "type", "umask", "unset",
+)
 
 HELP = """\
 Type any command to run it; output has secrets redacted.
@@ -176,6 +185,376 @@ def prompt_for(session: Session) -> str:
     return "valet> "
 
 
+def _word_start(line: str) -> int:
+    """Return the start offset of the word being completed in ``line``."""
+    start = 0
+    quote: Optional[str] = None
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+        elif char.isspace() or char in _OPERATOR_CHARS:
+            start = index + 1
+    return start
+
+
+def _is_command_position(line: str) -> bool:
+    """Whether the next word after ``line`` starts a shell command."""
+    has_word = False
+    in_word = False
+    quote: Optional[str] = None
+    escaped = False
+    for char in line:
+        if escaped:
+            escaped = False
+            has_word = True
+            in_word = True
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            has_word = True
+            in_word = True
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+            has_word = True
+            in_word = True
+        elif char.isspace():
+            in_word = False
+        elif char in _COMMAND_SEPARATORS:
+            has_word = False
+            in_word = False
+        elif not in_word:
+            has_word = True
+            in_word = True
+    return not has_word
+
+
+def _unescape_word(word: str) -> tuple[str, Optional[str]]:
+    """Turn a partially typed shell word into a pathname and quote context."""
+    quote = word[0] if word[:1] in ("'", '"') else None
+    if quote:
+        word = word[1:]
+
+    out: list[str] = []
+    escaped = False
+    for char in word:
+        if escaped:
+            out.append(char)
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        else:
+            out.append(char)
+    if escaped:
+        out.append("\\")
+    return "".join(out), quote
+
+
+def _escape_unquoted(word: str) -> str:
+    """Escape a completion so the shell treats it as one word."""
+    special = " \t\\'\"$`!&;|<>()[]{}*?"
+    return "".join("\\" + char if char in special else char for char in word)
+
+
+def _render_completion(value: str, quote: Optional[str]) -> str:
+    if quote == "'":
+        return "'" + value
+    if quote == '"':
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"')
+    return _escape_unquoted(value)
+
+
+def _completion_path(candidate: str, cwd: Optional[str]) -> str:
+    """Resolve a rendered completion to its on-disk path."""
+    value, _ = _unescape_word(candidate)
+    value = os.path.expanduser(value)
+    return value if os.path.isabs(value) else os.path.join(cwd or os.getcwd(), value)
+
+
+def path_candidates(prefix: str, cwd: Optional[str]) -> list[str]:
+    """Complete a filename relative to ``cwd`` (or an absolute/tilde path)."""
+    typed, quote = _unescape_word(prefix)
+    if "/" in typed:
+        dirname, leaf = typed.rsplit("/", 1)
+        search_dir = dirname or os.sep
+        display_dir = typed[:len(typed) - len(leaf)]
+    else:
+        search_dir = "."
+        leaf = typed
+        display_dir = ""
+
+    search_dir = os.path.expanduser(search_dir)
+    if not os.path.isabs(search_dir):
+        search_dir = os.path.join(cwd or os.getcwd(), search_dir)
+
+    try:
+        entries = list(os.scandir(search_dir))
+    except OSError:
+        return []
+
+    matches = []
+    for entry in entries:
+        if not entry.name.startswith(leaf) or (not leaf.startswith(".") and entry.name.startswith(".")):
+            continue
+        try:
+            suffix = "/" if entry.is_dir() else ""
+        except OSError:
+            continue
+        matches.append(_render_completion(display_dir + entry.name + suffix, quote))
+    return sorted(matches, key=str.casefold)
+
+
+def command_candidates(prefix: str, cwd: Optional[str], path: Optional[str] = None) -> list[str]:
+    """Complete shell builtins and executable files found on ``PATH``."""
+    typed, quote = _unescape_word(prefix)
+    if "/" in typed or typed.startswith("~"):
+        return [candidate for candidate in path_candidates(prefix, cwd)
+                if candidate.endswith("/") or os.access(_completion_path(candidate, cwd), os.X_OK)]
+
+    candidates = {name for name in _SHELL_BUILTINS if name.startswith(typed)}
+    search_path = path if path is not None else os.environ.get("PATH", "")
+    for directory in search_path.split(os.pathsep):
+        directory = os.path.expanduser(directory or (cwd or os.getcwd()))
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                if not entry.name.startswith(typed):
+                    continue
+                try:
+                    executable = entry.is_file() and os.access(entry.path, os.X_OK)
+                except OSError:
+                    continue
+                if executable:
+                    candidates.add(entry.name)
+    return sorted((_render_completion(name, quote) for name in candidates), key=str.casefold)
+
+
+def completion_candidates(line: str, cwd: Optional[str], path: Optional[str] = None) -> list[str]:
+    """Return candidates for the word at the end of a partially typed line."""
+    start = _word_start(line)
+    prefix = line[start:]
+    if _is_command_position(line[:start]):
+        return command_candidates(prefix, cwd, path)
+    return path_candidates(prefix, cwd)
+
+
+def format_candidate_columns(candidates: list[str]) -> str:
+    """Render candidates in two readable columns for readline's display hook."""
+    if not candidates:
+        return ""
+    left_width = max(len(item) for item in candidates[::2]) + 2
+    rows = []
+    for index in range(0, len(candidates), 2):
+        left = candidates[index]
+        right = candidates[index + 1] if index + 1 < len(candidates) else ""
+        rows.append(f"{left:<{left_width}}{right}".rstrip())
+    return "\n".join(rows)
+
+
+def _display_matches(matches: list[str]) -> None:
+    """Display a completion list, letting ``more`` page a long list on a TTY."""
+    candidates = list(dict.fromkeys(matches))
+    rendered = format_candidate_columns(candidates)
+    if not rendered:
+        return
+
+    rows = (len(candidates) + 1) // 2
+    terminal = shutil.get_terminal_size(fallback=(80, 24))
+    if rows <= max(1, terminal.lines - 2) or not shutil.which("more"):
+        print("\n" + rendered)
+        return
+
+    # ``more FILE`` keeps stdin attached to the terminal, so q cancels paging.
+    with tempfile.NamedTemporaryFile("w", prefix="valet-completions-", delete=False) as fh:
+        fh.write(rendered)
+        fh.write("\n")
+        filename = fh.name
+    try:
+        print()
+        subprocess.run(["more", filename], check=False)
+    finally:
+        try:
+            os.unlink(filename)
+        except OSError:
+            pass
+
+
+def tab_completion_binding(readline_doc: Optional[str]) -> str:
+    """Return the Tab binding appropriate for GNU readline or macOS libedit."""
+    if "libedit" in (readline_doc or "").lower():
+        return "bind ^I rl_complete"
+    return "tab: complete"
+
+
+def _uses_libedit(readline_doc: Optional[str]) -> bool:
+    return "libedit" in (readline_doc or "").lower()
+
+
+def _configure_completion(readline, session: Session) -> None:
+    """Install a readline completer that follows the REPL's current directory."""
+    matches: list[str] = []
+
+    def complete(_text: str, state: int) -> Optional[str]:
+        nonlocal matches
+        if state == 0:
+            line = readline.get_line_buffer()[:readline.get_endidx()]
+            matches = completion_candidates(line, session.cwd)
+        return matches[state] if state < len(matches) else None
+
+    def display(_substitution: str, display_matches: list[str], _longest: int) -> None:
+        _display_matches(display_matches)
+
+    readline.set_completer_delims(" \t\n|&;()<>")
+    readline.set_completer(complete)
+    readline.set_completion_display_matches_hook(display)
+    readline.parse_and_bind(tab_completion_binding(readline.__doc__))
+
+
+def _redraw_line(prompt: str, buffer: list[str], cursor: int) -> None:
+    """Redraw a raw-mode input line and put the cursor back in place."""
+    line = "".join(buffer)
+    sys.stdout.write("\r\033[2K" + prompt + line)
+    if cursor < len(buffer):
+        sys.stdout.write(f"\033[{len(buffer) - cursor}D")
+    sys.stdout.flush()
+
+
+def _replace_current_word(buffer: list[str], cursor: int, completion: str) -> tuple[list[str], int]:
+    before = "".join(buffer[:cursor])
+    start = _word_start(before)
+    updated = buffer[:start] + list(completion) + buffer[cursor:]
+    return updated, start + len(completion)
+
+
+def _libedit_input(prompt: str, session: Session, readline) -> str:
+    """A tiny line editor for libedit, whose Python display hook is ignored.
+
+    It deliberately covers the familiar editing keys needed at the prompt while
+    owning Tab so completion lists are consistently two columns.
+    """
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    original = termios.tcgetattr(fd)
+    history = [readline.get_history_item(index)
+               for index in range(1, readline.get_current_history_length() + 1)]
+    history = [item for item in history if item is not None]
+    history_index = len(history)
+    buffer: list[str] = []
+    cursor = 0
+
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    tty.setraw(fd)
+    try:
+        while True:
+            char = sys.stdin.read(1)
+            if char in ("\r", "\n"):
+                line = "".join(buffer)
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                if line:
+                    readline.add_history(line)
+                return line
+            if char == "\x03":  # Ctrl-C
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                raise KeyboardInterrupt
+            if char == "\x04":  # Ctrl-D
+                if not buffer:
+                    sys.stdout.write("\r\n")
+                    sys.stdout.flush()
+                    raise EOFError
+                if cursor < len(buffer):
+                    del buffer[cursor]
+                    _redraw_line(prompt, buffer, cursor)
+                continue
+            if char in ("\x7f", "\b"):
+                if cursor:
+                    del buffer[cursor - 1]
+                    cursor -= 1
+                    _redraw_line(prompt, buffer, cursor)
+                continue
+            if char == "\x01":  # Ctrl-A
+                cursor = 0
+                _redraw_line(prompt, buffer, cursor)
+                continue
+            if char == "\x05":  # Ctrl-E
+                cursor = len(buffer)
+                _redraw_line(prompt, buffer, cursor)
+                continue
+            if char == "\x15":  # Ctrl-U
+                del buffer[:cursor]
+                cursor = 0
+                _redraw_line(prompt, buffer, cursor)
+                continue
+            if char == "\t":
+                before = "".join(buffer[:cursor])
+                candidates = completion_candidates(before, session.cwd)
+                if len(candidates) == 1:
+                    buffer, cursor = _replace_current_word(buffer, cursor, candidates[0])
+                elif candidates:
+                    common = os.path.commonprefix(candidates)
+                    start = _word_start(before)
+                    if len(common) > len(before[start:]):
+                        buffer, cursor = _replace_current_word(buffer, cursor, common)
+
+                    # Restore cooked mode while `more` owns terminal input.
+                    termios.tcsetattr(fd, termios.TCSADRAIN, original)
+                    _display_matches(candidates)
+                    tty.setraw(fd)
+                else:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+                _redraw_line(prompt, buffer, cursor)
+                continue
+            if char == "\x1b":  # Arrow-key sequences.
+                sequence = sys.stdin.read(2)
+                if sequence == "[D" and cursor:
+                    cursor -= 1
+                elif sequence == "[C" and cursor < len(buffer):
+                    cursor += 1
+                elif sequence == "[A" and history_index:
+                    history_index -= 1
+                    buffer = list(history[history_index])
+                    cursor = len(buffer)
+                elif sequence == "[B":
+                    if history_index < len(history) - 1:
+                        history_index += 1
+                        buffer = list(history[history_index])
+                    else:
+                        history_index = len(history)
+                        buffer = []
+                    cursor = len(buffer)
+                _redraw_line(prompt, buffer, cursor)
+                continue
+            if char.isprintable():
+                buffer.insert(cursor, char)
+                cursor += 1
+                _redraw_line(prompt, buffer, cursor)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original)
+
+
 def interact(send: Send, *, session: Optional[Session] = None,
              input_fn: Callable[[str], str] = input) -> int:
     """Run the prompt loop. ``send`` performs one request/response."""
@@ -190,15 +569,21 @@ def interact(send: Send, *, session: Optional[Session] = None,
         except (ConnectionError, OSError):
             pass
 
-    try:  # arrow-key history/editing if available
-        import readline  # noqa: F401
+    line_input = input_fn
+    try:  # arrow-key history/editing and tab completion if available
+        import readline
+        if input_fn is input:
+            if _uses_libedit(readline.__doc__) and sys.stdin.isatty() and sys.stdout.isatty():
+                line_input = lambda prompt: _libedit_input(prompt, session, readline)
+            else:
+                _configure_completion(readline, session)
     except Exception:
         pass
 
     print(BANNER)
     while True:
         try:
-            line = input_fn(prompt_for(session))
+            line = line_input(prompt_for(session))
         except EOFError:
             print()
             break

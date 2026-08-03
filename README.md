@@ -176,6 +176,10 @@ and is **jailed to the workspace** — `..` and symlinks can't climb above
 (`cd x && y`) is not intercepted: the `cd` there applies only to that
 subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
 `:shell`, `:secrets`, `:call`, `:quit`); everything else runs. Ctrl-D also exits.
+Press Tab to complete commands from `PATH` (and shell builtins) or files from the
+current directory. File candidates include a trailing `/` for directories. When
+there is more than one match, valet displays them in two columns; lists taller
+than the terminal are shown through `more`, where `q` returns to the prompt.
 
 ---
 

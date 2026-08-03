@@ -2,7 +2,18 @@
 import json
 import posixpath
 
-from valet.repl import Session, format_exec, interact, prompt_for, run_command
+from valet.repl import (
+    Session,
+    command_candidates,
+    completion_candidates,
+    format_candidate_columns,
+    format_exec,
+    interact,
+    path_candidates,
+    prompt_for,
+    run_command,
+    tab_completion_binding,
+)
 
 
 def _recorder(resp=None):
@@ -145,3 +156,52 @@ def test_interact_loop_with_scripted_input():
     assert rc == 0
     execs = [r for r in sent if r.get("op") == "exec"]
     assert len(execs) == 1
+
+
+def test_command_completion_uses_path_and_skips_non_executables(tmp_path):
+    executable = tmp_path / "valet-tool"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    (tmp_path / "valet-note").write_text("not executable\n")
+
+    assert command_candidates("valet-", str(tmp_path), str(tmp_path)) == ["valet-tool"]
+
+
+def test_command_completion_allows_explicit_executable_paths(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "tool"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    (bin_dir / "note").write_text("not executable\n")
+
+    assert command_candidates("./bin/t", str(tmp_path)) == ["./bin/tool"]
+
+
+def test_path_completion_includes_files_and_directories(tmp_path):
+    (tmp_path / "report.txt").write_text("ok\n")
+    (tmp_path / "reports").mkdir()
+    (tmp_path / ".hidden").write_text("hidden\n")
+
+    assert path_candidates("rep", str(tmp_path)) == ["report.txt", "reports/"]
+    assert path_candidates(".", str(tmp_path)) == [".hidden"]
+
+
+def test_completion_uses_commands_at_command_positions_and_files_elsewhere(tmp_path):
+    executable = tmp_path / "deploy"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    (tmp_path / "data.json").write_text("{}\n")
+
+    assert completion_candidates("dep", str(tmp_path), str(tmp_path)) == ["deploy"]
+    assert completion_candidates("echo dat", str(tmp_path), str(tmp_path)) == ["data.json"]
+    assert completion_candidates("echo ok | dep", str(tmp_path), str(tmp_path)) == ["deploy"]
+
+
+def test_candidate_list_is_two_columns():
+    assert format_candidate_columns(["alpha", "beta", "gamma"]) == "alpha  beta\ngamma"
+
+
+def test_tab_completion_binding_supports_libedit_and_gnu_readline():
+    assert tab_completion_binding("Importing this module enables libedit") == "bind ^I rl_complete"
+    assert tab_completion_binding("GNU readline") == "tab: complete"
