@@ -23,7 +23,7 @@ from pathlib import Path
 
 from .config import default_config_path, load_config
 from .errors import ValetError
-from .repl import interact
+from .repl import Session, interact
 from .server_http import serve as serve_http
 from .server_uds import Connection, call_once, serve
 
@@ -67,14 +67,19 @@ def _connect(args: argparse.Namespace) -> Connection:
 
 
 def _cmd_repl(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
     try:
-        conn = _connect(args)
+        conn = Connection(cfg.socket_path)
     except (ConnectionRefusedError, FileNotFoundError):
         print("valet: no daemon at socket. Start it with `valet serve`.",
               file=sys.stderr)
         return 2
     try:
-        return interact(conn.request)
+        session = Session(
+            completion_workspace=(cfg.exec.workspace
+                                  if cfg.policy.enforce_workspace_reads else None),
+        )
+        return interact(conn.request, session=session)
     finally:
         conn.close()
 

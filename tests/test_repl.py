@@ -193,6 +193,18 @@ def test_path_completion_includes_files_and_directories(tmp_path):
     assert path_candidates(".", str(tmp_path)) == [".hidden"]
 
 
+def test_workspace_limited_completion_hides_parent_paths_and_escape_symlinks(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "message.txt"
+    outside.write_text("outside\n")
+    (workspace / "linked.txt").symlink_to(outside)
+
+    assert path_candidates("../", str(workspace), str(workspace)) == []
+    assert path_candidates("linked", str(workspace), str(workspace)) == []
+    assert completion_candidates("ls ../", str(workspace), workspace=str(workspace)) == []
+
+
 def test_completion_uses_commands_at_command_positions_and_files_elsewhere(tmp_path):
     executable = tmp_path / "deploy"
     executable.write_text("#!/bin/sh\n")

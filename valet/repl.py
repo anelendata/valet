@@ -52,6 +52,8 @@ BANNER = (
 class Session:
     cwd: Optional[str] = None      # None => daemon's configured workspace
     shell: bool = True
+    # Set by the CLI when policy.enforce_workspace_reads is enabled.
+    completion_workspace: Optional[str] = None
 
 
 def _pure_cd_target(line: str) -> Optional[str]:
@@ -289,7 +291,16 @@ def _completion_path(candidate: str, cwd: Optional[str]) -> str:
     return value if os.path.isabs(value) else os.path.join(cwd or os.getcwd(), value)
 
 
-def path_candidates(prefix: str, cwd: Optional[str]) -> list[str]:
+def _inside_workspace(path: str, workspace: Optional[str]) -> bool:
+    """Whether ``path`` remains in the configured completion workspace."""
+    if not workspace:
+        return True
+    root = os.path.realpath(os.path.expanduser(os.path.expandvars(workspace)))
+    target = os.path.realpath(path)
+    return target == root or target.startswith(root + os.sep)
+
+
+def path_candidates(prefix: str, cwd: Optional[str], workspace: Optional[str] = None) -> list[str]:
     """Complete a filename relative to ``cwd`` (or an absolute/tilde path)."""
     typed, quote = _unescape_word(prefix)
     if "/" in typed:
@@ -304,6 +315,8 @@ def path_candidates(prefix: str, cwd: Optional[str]) -> list[str]:
     search_dir = os.path.expanduser(search_dir)
     if not os.path.isabs(search_dir):
         search_dir = os.path.join(cwd or os.getcwd(), search_dir)
+    if not _inside_workspace(search_dir, workspace):
+        return []
 
     try:
         entries = list(os.scandir(search_dir))
@@ -318,15 +331,18 @@ def path_candidates(prefix: str, cwd: Optional[str]) -> list[str]:
             suffix = "/" if entry.is_dir() else ""
         except OSError:
             continue
+        if not _inside_workspace(entry.path, workspace):
+            continue
         matches.append(_render_completion(display_dir + entry.name + suffix, quote))
     return sorted(matches, key=str.casefold)
 
 
-def command_candidates(prefix: str, cwd: Optional[str], path: Optional[str] = None) -> list[str]:
+def command_candidates(prefix: str, cwd: Optional[str], path: Optional[str] = None,
+                       workspace: Optional[str] = None) -> list[str]:
     """Complete shell builtins and executable files found on ``PATH``."""
     typed, quote = _unescape_word(prefix)
     if "/" in typed or typed.startswith("~"):
-        return [candidate for candidate in path_candidates(prefix, cwd)
+        return [candidate for candidate in path_candidates(prefix, cwd, workspace)
                 if candidate.endswith("/") or os.access(_completion_path(candidate, cwd), os.X_OK)]
 
     candidates = {name for name in _SHELL_BUILTINS if name.startswith(typed)}
@@ -350,13 +366,14 @@ def command_candidates(prefix: str, cwd: Optional[str], path: Optional[str] = No
     return sorted((_render_completion(name, quote) for name in candidates), key=str.casefold)
 
 
-def completion_candidates(line: str, cwd: Optional[str], path: Optional[str] = None) -> list[str]:
+def completion_candidates(line: str, cwd: Optional[str], path: Optional[str] = None,
+                          workspace: Optional[str] = None) -> list[str]:
     """Return candidates for the word at the end of a partially typed line."""
     start = _word_start(line)
     prefix = line[start:]
     if _is_command_position(line[:start]):
-        return command_candidates(prefix, cwd, path)
-    return path_candidates(prefix, cwd)
+        return command_candidates(prefix, cwd, path, workspace)
+    return path_candidates(prefix, cwd, workspace)
 
 
 def format_candidate_columns(candidates: list[str]) -> str:
@@ -419,7 +436,8 @@ def _configure_completion(readline, session: Session) -> None:
         nonlocal matches
         if state == 0:
             line = readline.get_line_buffer()[:readline.get_endidx()]
-            matches = completion_candidates(line, session.cwd)
+            matches = completion_candidates(line, session.cwd,
+                                            workspace=session.completion_workspace)
         return matches[state] if state < len(matches) else None
 
     def display(_substitution: str, display_matches: list[str], _longest: int) -> None:
@@ -512,7 +530,8 @@ def _libedit_input(prompt: str, session: Session, readline) -> str:
                 continue
             if char == "\t":
                 before = "".join(buffer[:cursor])
-                candidates = completion_candidates(before, session.cwd)
+                candidates = completion_candidates(before, session.cwd,
+                                                   workspace=session.completion_workspace)
                 if len(candidates) == 1:
                     buffer, cursor = _replace_current_word(buffer, cursor, candidates[0])
                 elif candidates:
