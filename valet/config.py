@@ -60,6 +60,15 @@ class PolicyConfig:
 
 
 @dataclass(frozen=True)
+class HttpConfig:
+    # Loopback by default; set deliberately if you want another interface.
+    host: str = "127.0.0.1"
+    port: int = 8765
+    # Required to serve HTTP. Keep it in config.toml, which is git-ignored.
+    bearer_token: str = ""
+
+
+@dataclass(frozen=True)
 class BrokerConfig:
     socket_path: str
     timeout_seconds: int
@@ -67,6 +76,7 @@ class BrokerConfig:
     exec: ExecConfig = field(default_factory=ExecConfig)
     redaction: RedactionConfig = field(default_factory=RedactionConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
+    http: HttpConfig = field(default_factory=HttpConfig)
 
 
 def default_config_path() -> Path:
@@ -93,6 +103,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     exec_ = raw.get("exec", {})
     red = raw.get("redaction", {})
     pol = raw.get("policy", {})
+    http = raw.get("http", {})
 
     # A stable salt keeps redaction tags comparable across runs; if unset we
     # generate an ephemeral one so the tool works with zero setup.
@@ -121,5 +132,10 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             deny=tuple(pol.get("deny", ())),
             deny_read_paths=tuple(pol.get("deny_read_paths", ())),
             enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", False)),
+        ),
+        http=HttpConfig(
+            host=str(http.get("host", "127.0.0.1")),
+            port=int(http.get("port", 8765)),
+            bearer_token=str(http.get("bearer_token", "")),
         ),
     )

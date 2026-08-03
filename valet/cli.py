@@ -4,6 +4,7 @@ Subcommands:
   valet                 interactive redacting shell (default; like `python` bare)
   valet repl            same as above, explicitly
   valet serve           run the UDS broker daemon (outside the agent sandbox)
+  valet serve-http      run the HTTP broker adapter with bearer auth
   valet run CMD...      run an argv (no shell) and print redacted output
   valet sh 'CMDLINE'    run a shell command line and print redacted output
   valet call --json ..  send a raw request object to the daemon
@@ -23,6 +24,7 @@ from pathlib import Path
 from .config import default_config_path, load_config
 from .errors import ValetError
 from .repl import interact
+from .server_http import serve as serve_http
 from .server_uds import Connection, call_once, serve
 
 
@@ -51,6 +53,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     serve(load_config(args.config))
+    return 0
+
+
+def _cmd_serve_http(args: argparse.Namespace) -> int:
+    serve_http(load_config(args.config))
     return 0
 
 
@@ -139,6 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="generate a fingerprint_salt").set_defaults(func=_cmd_init)
     sub.add_parser("serve", help="run the UDS broker daemon").set_defaults(func=_cmd_serve)
+    sub.add_parser("serve-http", help="run the HTTP broker adapter with bearer auth"
+                   ).set_defaults(func=_cmd_serve_http)
     sub.add_parser("repl", help="interactive redacting shell (default)"
                    ).set_defaults(func=_cmd_repl)
 

@@ -1,4 +1,7 @@
-# valet
+# valet: Let Agents execute authorized action without reading secrets
+
+The valet holds and uses the keys, performs only authorized actions,
+and returns a safe result—while the agent never touches the credentials.
 
 A local **secret-redacting command runner**. valet runs a command on your
 behalf and returns the output with every known secret **value** scrubbed out —
@@ -105,8 +108,13 @@ error dumps) — not against a command deliberately obfuscating one.
 who started the daemon, so the OS is the access-control layer — no port, no
 token, no network surface, no DNS-rebinding risk. Protocol is newline-delimited
 JSON: one request object per line, one response per line. The core
-([`valet/broker.py`](valet/broker.py)) is transport-agnostic; a token-protected
-loopback-HTTP adapter is a possible future addition.
+([`valet/broker.py`](valet/broker.py)) is transport-agnostic.
+
+**HTTP adapter** (optional). For clients that cannot speak UDS, run
+`valet serve-http`. It exposes the same JSON request/response contract over
+HTTP `POST /` or `POST /call`, protected by `Authorization: Bearer <token>`.
+The default bind host is `127.0.0.1`; change `[http].host` only when you
+deliberately want another interface exposed. The bearer token is required.
 
 ---
 
@@ -133,6 +141,16 @@ valet call --json '{"op":"exec","cmd":"env"}'
 
 `run`/`sh` print redacted stdout/stderr and exit with the command's code, so
 they drop into scripts like the real command would.
+
+For HTTP, set `[http].bearer_token` in `config.toml` and start:
+
+```bash
+valet serve-http
+curl -sS http://127.0.0.1:8765/call \
+  -H "Authorization: Bearer $VALET_HTTP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"op":"ping"}'
+```
 
 ### Interactive mode — a redacting shell
 

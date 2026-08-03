@@ -30,6 +30,20 @@ timeout_seconds = 60
 # CHANGE_ME (or removed), valet generates an ephemeral salt at startup.
 fingerprint_salt = "CHANGE_ME_or_run_valet_init"
 
+[http]
+# Optional HTTP adapter for clients that cannot speak Unix-domain sockets.
+# It is disabled unless you run `valet serve-http`, and every request must send:
+#   Authorization: Bearer <bearer_token>
+#
+# Bind to loopback by default. Change this only when you deliberately want
+# another interface exposed.
+host = "127.0.0.1"
+port = 8765
+
+# Required for `valet serve-http`. Generate a long random value, keep it in your
+# git-ignored config.toml, and do not put it in prompts or logs.
+bearer_token = "CHANGE_ME_to_a_long_random_token"
+
 [exec]
 # Default working directory for commands, and the root of the REPL's cd jail:
 # in the interactive shell `cd` sticks for the session but cannot climb above
