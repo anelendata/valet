@@ -188,9 +188,11 @@ def test_path_completion_includes_files_and_directories(tmp_path):
     (tmp_path / "report.txt").write_text("ok\n")
     (tmp_path / "reports").mkdir()
     (tmp_path / ".hidden").write_text("hidden\n")
+    (tmp_path / "config.toml").write_text("token = 'do-not-show'\n")
 
     assert path_candidates("rep", str(tmp_path)) == ["report.txt", "reports/"]
     assert path_candidates(".", str(tmp_path)) == [".hidden"]
+    assert path_candidates("conf", str(tmp_path)) == []
 
 
 def test_workspace_limited_completion_hides_parent_paths_and_escape_symlinks(tmp_path):

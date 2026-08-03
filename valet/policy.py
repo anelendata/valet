@@ -24,17 +24,22 @@ a banned glob. This catches the realistic reveals — ``cat``/``less``/``grep`` 
 
 Redaction is separate and always on; policy is about *whether a command may run
 at all*.
+
+``config.toml`` is an exception: it is always protected. The broker refuses a
+command that names a file with that basename, whether it exists (read) or not
+(write target). This is deliberately not configurable.
 """
 from __future__ import annotations
 
 import os
 import re
 import shlex
+from glob import glob, has_magic
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional, Union
 
-from .config import PolicyConfig
+from .config import DEFAULT_CONFIG_NAME, PolicyConfig
 from .errors import PolicyError
 
 Command = Union[str, list[str]]
@@ -42,6 +47,11 @@ Command = Union[str, list[str]]
 # Tokens made up entirely of these characters are shell control operators and
 # act as sub-command separators (";", "&&", "||", "|", "&", "(", ")", "<", ">").
 _OPERATOR_CHARS = set(";&|()<>")
+
+
+def _is_config_name(path: str) -> bool:
+    """Match config.toml consistently on case-insensitive filesystems."""
+    return os.path.basename(path).casefold() == DEFAULT_CONFIG_NAME.casefold()
 
 
 @dataclass(frozen=True)
@@ -76,6 +86,12 @@ class Policy:
         for sub in _split_subcommands(cmd):
             if not sub:
                 continue
+
+            # This guard is deliberately independent of PolicyConfig. Shell
+            # redirects can become a token list of their own, so examine every
+            # token rather than only command arguments.
+            if any(self._is_protected_config_path(tok, effective_cwd) for tok in sub):
+                raise PolicyError("config.toml is protected")
 
             if self.deny and os.path.basename(sub[0]) in self.deny:
                 raise PolicyError("command is on the deny list")
@@ -112,6 +128,19 @@ class Policy:
             _compile(pattern).match(abspath) is not None
             for pattern in self.deny_read_paths
         )
+
+    def _is_protected_config_path(self, token: str, cwd: Optional[str]) -> bool:
+        """Whether a token names valet's always-protected config filename.
+
+        The file need not exist: shell redirections and ``touch`` can create a
+        target, so a write attempt must be refused too.
+        """
+        path = self._resolve(token, cwd)
+        if _is_config_name(path):
+            return True
+        # Shell globs are expanded after policy evaluation. Inspect existing
+        # matches so `cat config.*` cannot expand to the protected file.
+        return has_magic(path) and any(_is_config_name(match) for match in glob(path))
 
     def _is_outside_workspace(self, token: Optional[str], cwd: Optional[str]) -> bool:
         """Whether an existing path escapes the configured workspace."""

@@ -39,6 +39,33 @@ def test_policy_check_is_noop_without_constraints():
     Policy().check("anything at all", cwd=None)  # must not raise
 
 
+# --- built-in config.toml protection ----------------------------------------
+
+def test_config_toml_is_always_protected_from_reads_and_writes(cfg):
+    protected = Path(cfg.exec.workspace) / "config.toml"
+    protected.write_text("token = 'do-not-read'\n")
+    broker = Broker(cfg)
+
+    for command in (
+        "cat config.toml",
+        "cat config.*",
+        "echo changed > config.toml",
+        "touch config.toml",
+    ):
+        resp = broker.handle({"op": "exec", "cmd": command})
+        assert resp["error_class"] == "PolicyDenied"
+        assert resp["detail"] == "config.toml is protected"
+
+
+def test_config_toml_protection_cannot_be_disabled_in_policy(cfg):
+    protected = Path(cfg.exec.workspace) / "config.toml"
+    protected.write_text("token = 'do-not-read'\n")
+    permissive = dataclasses.replace(cfg, policy=PolicyConfig())
+
+    resp = Broker(permissive).handle({"op": "exec", "cmd": "cat config.toml"})
+    assert resp["error_class"] == "PolicyDenied"
+
+
 # --- deny_read_paths (wildcard file bans) ------------------------------------
 
 def _deny_paths_cfg(cfg, patterns):

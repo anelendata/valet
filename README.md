@@ -239,6 +239,10 @@ The [`[policy]`](config.example.toml) section and [`valet/policy.py`](valet/poli
 carry the constraints. Available now:
 
 - **command deny list** (`deny`) — refuse commands by program name.
+- **built-in config protection** — `config.toml` is always refused as a
+  command input or output target, including shell redirects. This guard is
+  hard-coded and cannot be relaxed in `config.toml`; completion also hides the
+  filename.
 - **wildcard file bans** (`deny_read_paths`) — glob patterns (`**`, `*`, `?`) of
   files a command may not reference; valet refuses to run a command that names
   an existing matching file, so its content is never revealed. `**/.env` bans

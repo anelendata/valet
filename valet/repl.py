@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from . import __version__
+from .config import DEFAULT_CONFIG_NAME
 
 Send = Callable[[dict], dict]
 
@@ -326,6 +327,10 @@ def path_candidates(prefix: str, cwd: Optional[str], workspace: Optional[str] = 
     matches = []
     for entry in entries:
         if not entry.name.startswith(leaf) or (not leaf.startswith(".") and entry.name.startswith(".")):
+            continue
+        # Match the broker's fixed guard: do not disclose the config file or
+        # make it easy to reference from the interactive client.
+        if entry.name.casefold() == DEFAULT_CONFIG_NAME.casefold():
             continue
         try:
             suffix = "/" if entry.is_dir() else ""
