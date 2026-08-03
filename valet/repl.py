@@ -528,6 +528,22 @@ def _libedit_input(prompt: str, session: Session, readline) -> str:
                 cursor = 0
                 _redraw_line(prompt, buffer, cursor)
                 continue
+            if char == "\x10" and history_index:  # Ctrl-P
+                history_index -= 1
+                buffer = list(history[history_index])
+                cursor = len(buffer)
+                _redraw_line(prompt, buffer, cursor)
+                continue
+            if char == "\x0e":  # Ctrl-N
+                if history_index < len(history) - 1:
+                    history_index += 1
+                    buffer = list(history[history_index])
+                else:
+                    history_index = len(history)
+                    buffer = []
+                cursor = len(buffer)
+                _redraw_line(prompt, buffer, cursor)
+                continue
             if char == "\t":
                 before = "".join(buffer[:cursor])
                 candidates = completion_candidates(before, session.cwd,
