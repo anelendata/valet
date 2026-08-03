@@ -149,6 +149,12 @@ def test_format_exec_error_response():
     assert "Timeout" in out
 
 
+def test_format_exec_shows_policy_denial_for_exec_requests():
+    out = format_exec({"op": "exec", "ok": False, "error_class": "PolicyDenied",
+                       "detail": "command is on the deny list"})
+    assert out == "denied: command is on the deny list"
+
+
 def test_interact_loop_with_scripted_input():
     send, sent = _recorder()
     lines = iter(["echo hi", ":quit"])

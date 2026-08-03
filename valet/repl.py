@@ -159,6 +159,9 @@ def format_exec(resp: dict) -> Optional[str]:
     """Render an exec response the way a shell would: stdout, stderr, exit note."""
     if not isinstance(resp, dict):
         return str(resp)
+    if resp.get("ok") is False and resp.get("error_class") == "PolicyDenied":
+        detail = resp.get("detail") or "command is blocked by policy"
+        return f"denied: {detail}"
     if resp.get("op") != "exec" and "stdout" not in resp:
         # An error response or a non-exec op: show it as JSON.
         if resp.get("ok") is False:
