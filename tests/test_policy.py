@@ -1,5 +1,6 @@
 """Policy is permissive in v0.2, but an explicit deny list is honored."""
 import dataclasses
+from pathlib import Path
 
 from valet.broker import Broker
 from valet.config import PolicyConfig
@@ -42,6 +43,10 @@ def test_policy_check_is_noop_without_constraints():
 
 def _deny_paths_cfg(cfg, patterns):
     return dataclasses.replace(cfg, policy=PolicyConfig(deny_read_paths=patterns))
+
+
+def _workspace_read_cfg(cfg):
+    return dataclasses.replace(cfg, policy=PolicyConfig(enforce_workspace_reads=True))
 
 
 def test_wildcard_bans_env_anywhere(cfg, tmp_path):
@@ -142,4 +147,38 @@ def test_home_prefix_pattern(cfg, tmp_path, monkeypatch):
     resp = Broker(c).handle(
         {"op": "exec", "cmd": "cat ~/.aws/credentials", "cwd": str(tmp_path)}
     )
+    assert resp["error_class"] == "PolicyDenied"
+
+
+# --- workspace read jail -----------------------------------------------------
+
+def test_workspace_read_jail_blocks_parent_file(cfg):
+    parent_file = Path(cfg.exec.workspace).parent / "message.txt"
+    parent_file.write_text("outside\n")
+    c = _workspace_read_cfg(cfg)
+    resp = Broker(c).handle({"op": "exec", "cmd": "cat ../message.txt"})
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_workspace_read_jail_allows_workspace_file(cfg):
+    workspace_file = Path(cfg.exec.workspace) / "message.txt"
+    workspace_file.write_text("inside\n")
+    c = _workspace_read_cfg(cfg)
+    resp = Broker(c).handle({"op": "exec", "cmd": "cat message.txt"})
+    assert resp["ok"] is True
+
+
+def test_workspace_read_jail_blocks_outside_cwd(cfg, tmp_path):
+    c = _workspace_read_cfg(cfg)
+    resp = Broker(c).handle({"op": "exec", "cmd": "pwd", "cwd": str(tmp_path)})
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_workspace_read_jail_resolves_symlinks(cfg, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n")
+    link = Path(cfg.exec.workspace) / "linked.txt"
+    link.symlink_to(outside)
+    c = _workspace_read_cfg(cfg)
+    resp = Broker(c).handle({"op": "exec", "cmd": "cat linked.txt"})
     assert resp["error_class"] == "PolicyDenied"

@@ -14,11 +14,13 @@ on shell operators (``;`` ``&&`` ``||`` ``|`` ``&`` ``(`` ``)`` and newlines),
 tracks ``cd``/``pushd`` so a token is resolved against the directory in effect
 where it appears, and refuses if any token resolves to an existing file matching
 a banned glob. This catches the realistic reveals — ``cat``/``less``/``grep`` a
-path, including after a ``cd``. It cannot catch a program that opens the file
-via a computed path (variable expansion, ``eval``, ``$(...)``, base64) or that
-reads it internally without naming it. For a hard guarantee, content redaction
-(valet/sanitize.py) is the backstop, and OS-level sandboxing would be required
-to stop a determined reader.
+    path, including after a ``cd``. It cannot catch a program that opens the file
+    via a computed path (variable expansion, ``eval``, ``$(...)``, base64) or that
+    reads it internally without naming it. For a hard guarantee, content redaction
+    (valet/sanitize.py) is the backstop, and OS-level sandboxing would be required
+    to stop a determined reader.
+  - ``enforce_workspace_reads`` — refuse existing command-line paths and an
+    explicit working directory when they resolve outside the workspace.
 
 Redaction is separate and always on; policy is about *whether a command may run
 at all*.
@@ -48,6 +50,7 @@ class Policy:
     allow: tuple[str, ...] = ()
     deny: tuple[str, ...] = ()
     deny_read_paths: tuple[str, ...] = ()
+    enforce_workspace_reads: bool = False
     enforce_workspace_writes: bool = False
 
     @classmethod
@@ -61,12 +64,15 @@ class Policy:
             deny_read_paths=tuple(
                 os.path.expanduser(os.path.expandvars(p)) for p in cfg.deny_read_paths
             ),
+            enforce_workspace_reads=cfg.enforce_workspace_reads,
             enforce_workspace_writes=cfg.enforce_workspace_writes,
         )
 
     def check(self, cmd: Command, cwd: Optional[str]) -> None:
         """Raise :class:`PolicyError` if ``cmd`` may not run."""
         effective_cwd = cwd
+        if self.enforce_workspace_reads and self._is_outside_workspace(effective_cwd, None):
+            raise PolicyError("working directory is outside the workspace")
         for sub in _split_subcommands(cmd):
             if not sub:
                 continue
@@ -74,8 +80,10 @@ class Policy:
             if self.deny and os.path.basename(sub[0]) in self.deny:
                 raise PolicyError("command is on the deny list")
 
-            if self.deny_read_paths:
-                for tok in sub:
+            for tok in sub[1:]:
+                if self.enforce_workspace_reads and self._is_outside_workspace(tok, effective_cwd):
+                    raise PolicyError("command references a path outside the workspace")
+                if self.deny_read_paths:
                     if self._is_denied_path(tok, effective_cwd):
                         raise PolicyError("command references a denied path")
 
@@ -83,7 +91,7 @@ class Policy:
             if sub[0] in ("cd", "pushd") and len(sub) >= 2:
                 effective_cwd = self._resolve(sub[1], effective_cwd)
 
-        # allow-list and workspace write-jail intentionally not enforced yet.
+        # Allow-list and workspace write-jail intentionally not enforced yet.
         return
 
     def _resolve(self, token: str, cwd: Optional[str]) -> str:
@@ -104,6 +112,17 @@ class Policy:
             _compile(pattern).match(abspath) is not None
             for pattern in self.deny_read_paths
         )
+
+    def _is_outside_workspace(self, token: Optional[str], cwd: Optional[str]) -> bool:
+        """Whether an existing path escapes the configured workspace."""
+        if not self.workspace or not token:
+            return False
+        path = self._resolve(token, cwd)
+        if not os.path.exists(path):
+            return False
+        workspace = os.path.realpath(os.path.expanduser(os.path.expandvars(self.workspace)))
+        target = os.path.realpath(path)
+        return target != workspace and not target.startswith(workspace + os.sep)
 
 
 def _split_subcommands(cmd: Command) -> list[list[str]]:

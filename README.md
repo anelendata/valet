@@ -204,6 +204,7 @@ The knobs split into two families that do fundamentally different things:
 | `redaction.cwd_secret_files` | Same, but **by filename**, auto-loaded from **whatever dir the command runs in** | Per-**project** secrets that live in each project dir | `.env`, `.secrets` |
 | `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
 | `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
+| `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
 
 **`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
 difference is only *how the file is located*. `secret_sources` is one fixed
@@ -251,6 +252,11 @@ carry the constraints. Available now:
   base64) or a program that reads the file internally without naming it. Content
   redaction is the backstop for those; only OS-level sandboxing would stop a
   determined reader.
+- **workspace read-jail** (`enforce_workspace_reads`) — when enabled, an
+  existing file/directory argument, symlink target, or explicit `cwd` outside
+  `[exec].workspace` is refused. This catches `cat ../message.txt` and
+  `cd .. && cat message.txt`; it uses the same best-effort command-line analysis
+  as `deny_read_paths` and is not an OS sandbox.
 
 Still to come:
 

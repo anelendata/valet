@@ -55,6 +55,8 @@ class PolicyConfig:
     deny: tuple[str, ...] = ()
     # Glob patterns of files a command may not reference (supports ** / * / ?).
     deny_read_paths: tuple[str, ...] = ()
+    # When true, existing command-line paths must remain inside the workspace.
+    enforce_workspace_reads: bool = False
     # When true (future), commands may not write outside the workspace.
     enforce_workspace_writes: bool = False
 
@@ -131,6 +133,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             allow=tuple(pol.get("allow", ())),
             deny=tuple(pol.get("deny", ())),
             deny_read_paths=tuple(pol.get("deny_read_paths", ())),
+            enforce_workspace_reads=bool(pol.get("enforce_workspace_reads", False)),
             enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", False)),
         ),
         http=HttpConfig(
