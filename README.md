@@ -3,6 +3,9 @@
 valet is a broker between an AI agent and the tools the agent should not run
 directly.
 
+The name *valet*: it holds your keys, brings the car around, and hands you back
+only what you asked for, never the keys.
+
 The agent stays in a sandbox where it cannot read `~/.aws`, `.env`,
 `.secrets`, or other credential files. valet runs outside that sandbox, where it
 can use those credentials on the agent's behalf. Before valet returns anything,
@@ -18,16 +21,6 @@ In simple terms:
 5. the agent sees the useful result, not the keys.
 
 ![Valet-mediated agent interaction](images/valet-interaction.svg)
-
-The name *valet*: it holds your keys, brings the car around, and hands you back
-only what you asked for — never the keys.
-
-> **v0.2 is intentionally permissive.** valet is useful today as a
-> secret-redacting command runner, but raw command execution is dangerously
-> powerful when the host has credentials with write, delete, deploy, or payment
-> privileges. Redaction protects what comes back to the model; policy,
-> least-privilege credentials, sandboxing, and audit/approval are what make the
-> whole setup safe.
 
 ## Valet is not...
 
@@ -65,13 +58,12 @@ vision is to become the broker for **policy**, **redaction**, and
 **audit/approval**, while relying on agent sandboxes and least-privilege
 credential design as complementary layers.
 
-Today the primary transport is a local Unix domain socket, with an optional
-loopback HTTP adapter for clients that cannot speak UDS. The broker core is
-transport-agnostic: the same request/response shape can be carried over HTTP
-today and, with careful authentication and authorization design, WebSocket or
-networked transports in the future. The long-term idea is not limited to one
-machine; it is to let sandboxed agents request approved capabilities from a
-trusted valet service wherever that service is safely deployed.
+WARNING: valet is intentionally permissive.** valet is useful today as a
+secret-redacting command runner, but raw command execution is dangerously
+powerful when the host has credentials with write, delete, deploy, or payment
+privileges. Redaction protects what comes back to the model; policy,
+least-privilege credentials, sandboxing, and audit/approval are what make the
+whole setup safe.
 
 ---
 
@@ -93,14 +85,14 @@ secret values straight into the model's context.
 **What valet does.**
 
 ```
-┌────────────────────────────┐        ┌───────────────────────────────────┐
-│  Agent sandbox (the model) │        │  valet daemon (normal shell)      │
+┌────────────────────────────┐         ┌────────────────────────────────────┐
+│  Agent sandbox (the model) │         │  valet daemon (normal shell)       │
 │  • CANNOT read ~/.aws       │  UDS   │  • CAN read ~/.aws, .secrets, .env │
 │  • CANNOT read .secrets     │ ─────▶ │  • runs the command                │
 │  • sees output with secret  │ ◀───── │  • loads the real secret VALUES    │
 │    values already scrubbed  │        │    and scrubs them from the output │
-└────────────────────────────┘        └───────────────────────────────────┘
-      request {op:"exec", cmd, cwd}      response {exit_code, stdout, stderr}
+└────────────────────────────┘         └────────────────────────────────────┘
+ request {op:"exec", cmd, cwd}          response {exit_code, stdout, stderr}
 ```
 
 ### Why this is stronger than a regex scrubber
@@ -160,6 +152,14 @@ error dumps) — not against a command deliberately obfuscating one.
 ---
 
 ## Transport
+
+Today the primary transport is a local Unix domain socket, with an optional
+loopback HTTP adapter for clients that cannot speak UDS. The broker core is
+transport-agnostic: the same request/response shape can be carried over HTTP
+today and, with careful authentication and authorization design, WebSocket or
+networked transports in the future. The long-term idea is not limited to one
+machine; it is to let sandboxed agents request approved capabilities from a
+trusted valet service wherever that service is safely deployed.
 
 **Unix domain socket** (primary). The socket file is `0600`, owned by the user
 who started the daemon, so the OS is the access-control layer — no port, no
