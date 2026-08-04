@@ -27,6 +27,23 @@ only what you asked for — never the keys.
 > least-privilege credentials, sandboxing, and audit/approval are what make the
 > whole setup safe.
 
+## Valet is not...
+
+valet sits near several popular security and agent-infrastructure products, but
+it is a different layer:
+
+| Valet is not... | What that product or layer does | How valet is different |
+|---|---|---|
+| **a password manager or vault like 1Password** | Stores, shares, rotates, and governs secrets for humans, services, and teams. | valet does not want to become the source of truth for secrets. It uses credentials that already exist at runtime and focuses on approved actions plus redacted results. |
+| **a compute platform or sandbox runtime like Modal** | Runs code in managed infrastructure with scaling, isolation, images, jobs, and service deployment. | valet does not provide general compute. It is the broker a sandboxed agent calls when it needs a trusted tool or host-side capability. |
+| **a network gateway** | Controls which networks, hosts, ports, services, or private resources a workload can reach. | valet does not primarily route packets. It decides whether a requested action may run, executes approved actions, and redacts the response before the agent sees it. |
+| **an MCP proxy or tool gateway** | Mediates model access to MCP tools and can centralize tool discovery, auth, logging, and request filtering. | valet can expose or sit behind MCP-shaped tools later, but its core primitive is broader: policy-controlled host actions with secret-aware output redaction. |
+
+Those layers are complementary. A mature deployment may use a vault for storing
+credentials, a sandbox or compute runtime for the agent, a network gateway for
+egress control, an MCP proxy for tool routing, and valet for the policy,
+redaction, and approval boundary around privileged actions.
+
 ## Recommended architecture
 
 valet is meant to be one layer in a larger agent safety design:
