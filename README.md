@@ -1,8 +1,5 @@
 # valet: Let Agents execute authorized action without reading secrets
 
-The valet holds and uses the keys, performs only authorized actions,
-and returns a safe result—while the agent never touches the credentials.
-
 A local **secret-redacting command runner**. valet runs a command on your
 behalf and returns the output with every known secret **value** scrubbed out —
 so an AI agent can see what a command actually did without the secrets entering
