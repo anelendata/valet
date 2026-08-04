@@ -17,6 +17,8 @@ In simple terms:
 4. valet redacts sensitive values from the result;
 5. the agent sees the useful result, not the keys.
 
+![Valet-mediated agent interaction](images/valet-interaction.svg)
+
 The name *valet*: it holds your keys, brings the car around, and hands you back
 only what you asked for — never the keys.
 

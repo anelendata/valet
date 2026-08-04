@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 1200 900">
+  <title id="title">Valet mediated agent interaction</title>
+  <desc id="desc">A sandboxed agent works with an LLM, requests actions from Valet on the host, and receives redacted results after policy, approval, local tools, and cloud services are involved.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#315ea8"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#111827" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .bg { fill: #fbfbfd; }
+      .host { fill: #f7f8fb; stroke: #c2c8d0; stroke-width: 2; }
+      .agent { fill: #eef4ff; stroke: #4f73bd; stroke-width: 2; }
+      .valet { fill: #fff6df; stroke: #b7791f; stroke-width: 2; }
+      .guard { fill: #fffaf0; stroke: #d09b2d; stroke-width: 1.8; }
+      .tool { fill: #f3f5f7; stroke: #6b7280; stroke-width: 1.8; }
+      .cloud { fill: #edf9f1; stroke: #3d8b5b; stroke-width: 2; }
+      .title { font: 600 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .label { font: 500 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .small { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #4b5563; }
+      .edge { fill: none; stroke: #4b5563; stroke-width: 2.6; marker-end: url(#arrow); }
+      .edge-blue { fill: none; stroke: #315ea8; stroke-width: 3; marker-end: url(#arrow-blue); }
+      .edge-dash { fill: none; stroke: #6b7280; stroke-width: 2.3; stroke-dasharray: 8 8; marker-end: url(#arrow); }
+      .edge-soft { fill: none; stroke: #6b7280; stroke-width: 2.2; marker-end: url(#arrow); }
+      .caption { font: 400 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6b7280; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="900" rx="28"/>
+
+  <text class="caption" x="68" y="66">Sandbox boundary</text>
+  <rect class="agent" x="52" y="92" width="250" height="174" rx="26" filter="url(#shadow)"/>
+  <text class="label" x="177" y="158" text-anchor="middle">Agent</text>
+  <text class="small" x="177" y="191" text-anchor="middle">sandboxed</text>
+  <text class="small" x="177" y="219" text-anchor="middle">no secret reads</text>
+
+  <rect class="agent" x="52" y="340" width="250" height="154" rx="26" filter="url(#shadow)"/>
+  <text class="label" x="177" y="400" text-anchor="middle">LLM</text>
+  <text class="small" x="177" y="433" text-anchor="middle">local or cloud</text>
+
+  <rect class="host" x="390" y="86" width="520" height="646" rx="32"/>
+  <text class="title" x="430" y="131">Host</text>
+
+  <rect class="valet" x="548" y="168" width="206" height="108" rx="24" filter="url(#shadow)"/>
+  <text class="label" x="651" y="233" text-anchor="middle">Valet</text>
+
+  <rect class="guard" x="436" y="350" width="168" height="92" rx="22"/>
+  <text class="label" x="520" y="395" text-anchor="middle">Policy</text>
+  <text class="small" x="520" y="421" text-anchor="middle">allow / reject</text>
+
+  <rect class="guard" x="692" y="350" width="168" height="92" rx="22"/>
+  <text class="label" x="776" y="395" text-anchor="middle">Approval</text>
+  <text class="small" x="776" y="421" text-anchor="middle">audit trail</text>
+
+  <rect class="tool" x="442" y="544" width="196" height="106" rx="24"/>
+  <text class="label" x="540" y="590" text-anchor="middle">Local apps</text>
+  <text class="small" x="540" y="620" text-anchor="middle">and tools</text>
+
+  <rect class="guard" x="688" y="544" width="176" height="106" rx="24"/>
+  <text class="label" x="776" y="590" text-anchor="middle">Redaction</text>
+  <text class="small" x="776" y="620" text-anchor="middle">safe result</text>
+
+  <rect class="cloud" x="978" y="390" width="170" height="132" rx="28" filter="url(#shadow)"/>
+  <text class="label" x="1063" y="444" text-anchor="middle">Cloud</text>
+  <text class="small" x="1063" y="475" text-anchor="middle">services</text>
+
+  <path class="edge-dash" d="M177 266 C177 294 177 312 177 340"/>
+  <text class="caption" x="200" y="309">prompt / result</text>
+
+  <path class="edge-blue" d="M302 180 C390 180 455 198 548 214"/>
+  <text class="caption" x="332" y="165">request action</text>
+
+  <path class="edge" d="M612 276 C585 305 556 326 532 350"/>
+  <text class="caption" x="540" y="318">check</text>
+
+  <path class="edge-soft" d="M604 396 C636 396 660 396 692 396"/>
+
+  <path class="edge" d="M520 442 C520 478 528 508 538 544"/>
+  <text class="caption" x="456" y="500">allow</text>
+
+  <path class="edge" d="M638 596 C655 596 670 596 688 596"/>
+  <text class="caption" x="640" y="579">raw output</text>
+
+  <path class="edge" d="M776 544 C746 460 720 354 680 276"/>
+  <text class="caption" x="720" y="312">scrub</text>
+
+  <path class="edge-blue" d="M548 238 C414 282 320 336 232 378"/>
+  <text class="caption" x="324" y="322">safe result</text>
+
+  <path class="edge" d="M638 566 C750 514 852 466 978 452"/>
+  <text class="caption" x="792" y="472">use credentials</text>
+
+  <path class="edge-soft" d="M978 486 C860 546 752 598 638 622"/>
+  <text class="caption" x="792" y="596">response</text>
+
+  <path class="edge-dash" d="M436 396 C372 396 334 396 302 396"/>
+  <text class="caption" x="330" y="424">reject</text>
+</svg>
