@@ -1,17 +1,58 @@
-# valet: Let Agents execute authorized action without reading secrets
+# valet: Let agents use privileged tools without seeing secrets
 
-A local **secret-redacting command runner**. valet runs a command on your
-behalf and returns the output with every known secret **value** scrubbed out —
-so an AI agent can see what a command actually did without the secrets entering
-model context.
+valet is a broker between an AI agent and the tools the agent should not run
+directly.
+
+The agent stays in a sandbox where it cannot read `~/.aws`, `.env`,
+`.secrets`, or other credential files. valet runs outside that sandbox, where it
+can use those credentials on the agent's behalf. Before valet returns anything,
+it scrubs known and suspected secret values from stdout, stderr, and the echoed
+command.
+
+In simple terms:
+
+1. the agent asks valet to do something;
+2. valet decides whether the request is allowed;
+3. valet runs the approved action with the credentials available to it;
+4. valet redacts sensitive values from the result;
+5. the agent sees the useful result, not the keys.
 
 The name *valet*: it holds your keys, brings the car around, and hands you back
 only what you asked for — never the keys.
 
-> **v0.2 is intentionally permissive.** valet will run (almost) any command; the
-> guarantee it makes today is about *output* (secrets are redacted), not about
-> *which commands may run*. Command allow/deny lists and a workspace write-jail
-> are the next step and already have their hook in [`valet/policy.py`](valet/policy.py).
+> **v0.2 is intentionally permissive.** valet is useful today as a
+> secret-redacting command runner, but raw command execution is dangerously
+> powerful when the host has credentials with write, delete, deploy, or payment
+> privileges. Redaction protects what comes back to the model; policy,
+> least-privilege credentials, sandboxing, and audit/approval are what make the
+> whole setup safe.
+
+## Recommended architecture
+
+valet is meant to be one layer in a larger agent safety design:
+
+1. **Sandboxed agents** — the model runs where it cannot directly read secret
+   files or freely reach privileged host resources.
+2. **Policy** — a broker decides which actions are allowed before anything
+   runs.
+3. **Least-privilege credentials** — the credentials available to the broker can
+   do only the work the agent is meant to request.
+4. **Redaction** — every response is scrubbed before it reaches model context.
+5. **Audit/approval** — sensitive or mutating actions are logged and, when
+   appropriate, require a human or higher-trust approval path.
+
+valet's current implementation focuses on **policy** and **redaction**. Its
+vision is to become the broker for **policy**, **redaction**, and
+**audit/approval**, while relying on agent sandboxes and least-privilege
+credential design as complementary layers.
+
+Today the primary transport is a local Unix domain socket, with an optional
+loopback HTTP adapter for clients that cannot speak UDS. The broker core is
+transport-agnostic: the same request/response shape can be carried over HTTP
+today and, with careful authentication and authorization design, WebSocket or
+networked transports in the future. The long-term idea is not limited to one
+machine; it is to let sandboxed agents request approved capabilities from a
+trusted valet service wherever that service is safely deployed.
 
 ---
 
@@ -266,6 +307,11 @@ Still to come:
   allowlist when populated.
 - **workspace write-jail** (`enforce_workspace_writes`) will forbid writes
   outside the configured `workspace`.
+- **audit/approval** for sensitive operations, especially actions that mutate
+  infrastructure, deploy, spend money, delete data, or call out to less-trusted
+  networks.
+- **typed capabilities** for common workflows, so an agent can request
+  `terraform_plan` or `gh_pr_checks` instead of a raw shell command string.
 
 `Policy.check` is the single choke point; new constraints go there and stay
 fail-closed.
