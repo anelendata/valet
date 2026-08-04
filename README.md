@@ -87,10 +87,10 @@ secret values straight into the model's context.
 ```
 ┌────────────────────────────┐         ┌────────────────────────────────────┐
 │  Agent sandbox (the model) │         │  valet daemon (normal shell)       │
-│  • CANNOT read ~/.aws       │  UDS   │  • CAN read ~/.aws, .secrets, .env │
-│  • CANNOT read .secrets     │ ─────▶ │  • runs the command                │
-│  • sees output with secret  │ ◀───── │  • loads the real secret VALUES    │
-│    values already scrubbed  │        │    and scrubs them from the output │
+│  • CANNOT read ~/.aws      │  UDS    │  • CAN read ~/.aws, .secrets, .env │
+│  • CANNOT read .secrets    │ ─────▶  │  • runs the command                │
+│  • sees output with secret │ ◀─────  │  • loads the real secret VALUES    │
+│    values already scrubbed │         │    and scrubs them from the output │
 └────────────────────────────┘         └────────────────────────────────────┘
  request {op:"exec", cmd, cwd}          response {exit_code, stdout, stderr}
 ```
