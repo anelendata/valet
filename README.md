@@ -45,10 +45,10 @@ valet is meant to be one layer in a larger agent safety design:
 
 1. **Sandboxed agents** — the model runs where it cannot directly read secret
    files or freely reach privileged host resources.
-2. **Policy** — a broker decides which actions are allowed before anything
+2. **Least-privilege credentials on the host** — the credentials available to
+   the broker can do only the work the agent is meant to request.
+3. **Policy** — a broker decides which actions are allowed before anything
    runs.
-3. **Least-privilege credentials** — the credentials available to the broker can
-   do only the work the agent is meant to request.
 4. **Redaction** — every response is scrubbed before it reaches model context.
 5. **Audit/approval** — sensitive or mutating actions are logged and, when
    appropriate, require a human or higher-trust approval path.
