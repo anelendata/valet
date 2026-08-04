@@ -41,7 +41,7 @@ redaction, and approval boundary around privileged actions.
 
 ## Recommended architecture
 
-valet is meant to be one layer in a larger agent safety design (3~4):
+valet is meant to be one layer in a larger agent safety design (3~5):
 
 1. **Sandboxed agents** — the model runs where it cannot directly read secret
    files or freely reach privileged host resources.
@@ -57,7 +57,7 @@ valet's current implementation focuses on **3. policy** and **4. redaction**.
 Its vision is to add **5. audit/approval**.
 
 Valet relies on **1. agent sandboxes** and **2. least-privilege credential**
-design as complementary layers. That's on you.
+design as complementary layers. **That's on you.**
 
 **WARNING:** valet is intentionally permissive. valet is useful today as a
 secret-redacting command runner, but raw command execution is dangerously
