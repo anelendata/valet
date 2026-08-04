@@ -122,16 +122,30 @@ def _sub_colon(m: re.Match) -> str:
 def _redact_kv_pairs(text: str) -> str:
     """Mask the `value:` of a `key:`/`value:` object pair (e.g. secrets dumps)."""
     lines = text.split("\n")
+    out = []
     in_pair = False
-    for i, line in enumerate(lines):
+    skipping_continuation_indent = None
+    for line in lines:
+        if skipping_continuation_indent is not None:
+            indent = len(line) - len(line.lstrip(" "))
+            if line.strip() and indent > skipping_continuation_indent:
+                continue
+            skipping_continuation_indent = None
+
         if _KV_KEY_RE.match(line):
             in_pair = True
+            out.append(line)
             continue
+
         vm = _KV_VALUE_RE.match(line)
         if vm and in_pair and not _already_redacted(vm.group("val")):
-            lines[i] = f"{vm.group('pre')}value: {SUSPECTED}"
+            out.append(f"{vm.group('pre')}value: {SUSPECTED}")
             in_pair = False
-    return "\n".join(lines)
+            skipping_continuation_indent = len(vm.group("pre"))
+            continue
+
+        out.append(line)
+    return "\n".join(out)
 
 
 def redact_suspected(text: str) -> str:
@@ -150,6 +164,7 @@ def redact_suspected(text: str) -> str:
 # Token alphabet excludes '/' and '.' so filesystem paths, domains, and version
 # strings are not swept up as candidates.
 _ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9_\-+=]{%d,}" % _ENTROPY_MIN_LEN)
+_LOWER_SLUG_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+")
 
 
 def _shannon_bits(s: str) -> float:
@@ -175,6 +190,11 @@ def _looks_non_secret(token: str) -> bool:
         return True
     if bare.isdigit():                        # decimal id / timestamp
         return True
+    if _LOWER_SLUG_RE.fullmatch(token):
+        words = token.split("-")
+        bigrams = {f"{a}_{b}" for a, b in zip(words, words[1:])}
+        if not (set(words) & _SENSITIVE_WORDS) and not (bigrams & _SENSITIVE_BIGRAMS):
+            return True
     return False
 
 

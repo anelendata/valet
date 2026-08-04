@@ -38,6 +38,22 @@ def test_key_value_dump_masks_values():
     assert "key: DB_PASSWORD" in out          # the name stays visible
 
 
+def test_key_value_dump_masks_wrapped_value_continuations():
+    text = (
+        "- key: google_client_secret\n"
+        "  level: resource group\n"
+        "  value: \"{\\n  \\\"private_key_id\\\": "
+        "\\\"1afbedbd65fedc34591eac1a79a9de2aff1aefe64\\\"\\\n"
+        "    ,\\n  \\\"private_key\\\": \\\"-----BEGIN PRIVATE KEY-----abc\\\"\"\n"
+        "  updated_at: 2026-08-03\n"
+    )
+    out = redact_suspected(text)
+    assert "1afbedbd65fedc34591eac1a79a9de2aff1aefe64" not in out
+    assert "PRIVATE KEY" not in out
+    assert "value: [REDACTED:suspected]" in out
+    assert "updated_at: 2026-08-03" in out
+
+
 def test_colon_and_json_forms():
     assert "myplainpw" not in redact_suspected("password: myplainpw")
     assert "s3cr3ttoken" not in redact_suspected('  "api_key": "s3cr3ttoken",')
@@ -101,6 +117,16 @@ def test_high_entropy_keeps_hashes_uuids_and_numbers():
               "12345678901234567890",                       # decimal id
               "abc123"):                                    # too short
         assert redact_high_entropy(s) == s
+
+
+def test_high_entropy_keeps_non_sensitive_lowercase_slugs():
+    text = "handoff-etl-saasoptics-tiny-rest-so-tiny-1"
+    assert redact_high_entropy(text) == text
+
+
+def test_high_entropy_masks_sensitive_lowercase_slugs():
+    text = "hunter2-super-secret-password"
+    assert redact_high_entropy(text) == "[REDACTED:high-entropy]"
 
 
 def test_high_entropy_masks_mid_line():
