@@ -281,9 +281,11 @@ telemetry.
 
 #### Claude Code setting example
 
-For Claude Code, put local filesystem denials in `~/.claude/settings.json`.
-These rules keep the agent from reading, editing, or using shell commands
-against common local secret locations:
+For Claude Code on macOS, put the local hardening baseline in
+`~/.claude/settings.json`. Keep the secret denials in place, enable the Bash
+sandbox, make sandbox startup fail closed, and allow only the exact valet Unix
+socket so sandboxed commands can reach the broker without gaining access to
+secret files:
 
 ```json
 {
@@ -308,21 +310,11 @@ against common local secret locations:
       "Bash(~/.aws)",
       "Bash(~/.aws/**)"
     ]
-  }
-}
-```
-
-For a stricter Claude Code deployment, also enable the Bash sandbox and make it
-fail closed if the sandbox cannot start. The sandbox is the OS-enforced layer
-for Bash commands and subprocesses; the permission rules above are still needed
-for Claude's built-in `Read` and `Edit` tools. Adapt the exact sandbox path
-patterns to the syntax supported by your current Claude Code version.
-
-```json
-{
+  },
   "disableBypassPermissionsMode": "disable",
   "sandbox": {
     "enabled": true,
+    "autoAllowBashIfSandboxed": false,
     "failIfUnavailable": true,
     "allowUnsandboxedCommands": false,
     "filesystem": {
@@ -337,14 +329,28 @@ patterns to the syntax supported by your current Claude Code version.
         "~/.aws/**"
       ]
     },
+    "network": {
+      "allowUnixSockets": [
+        "~/.valet/broker.sock"
+      ]
+    },
     "credentials": {
       "files": [
         { "path": "~/.aws", "mode": "deny" }
       ]
     }
-  }
+  },
+  "agentPushNotifEnabled": true
 }
 ```
+
+Do not remove the `sandbox.filesystem.denyRead` rules when you add
+`sandbox.network.allowUnixSockets`: they protect different boundaries.
+`denyRead` keeps `.env`, `.secrets`, and `~/.aws` unreadable to Bash and child
+processes; `allowUnixSockets` only lets the sandbox connect to valet's broker
+socket. Avoid `allowAllUnixSockets` unless your platform requires it and you
+understand the blast radius. On Linux/WSL2, Claude Code's current docs say
+path-specific Unix socket filtering is not available, so use extra caution.
 
 Keep Claude Code's permission modes conservative, require approval for
 mutating or cross-boundary commands, and avoid broad allow rules for shells,
