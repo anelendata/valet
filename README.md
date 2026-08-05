@@ -24,6 +24,8 @@ In simple terms:
 
 ## Motivating examples
 
+### Example 1: Running AWS CLI commends in a hardened sandbox
+
 With a hardened Codex or Claude Code sandbox (see
 [Sandbox hardening](#sandbox-hardening)), commands that need host-side
 credentials should fail non-negotiably when the agent runs them directly. For
@@ -34,31 +36,45 @@ those paths should be denied to the agent:
 aws s3 ls s3://my-prod-bucket/releases/ --profile prod-readonly
 ```
 
-Run through valet, the same credentialed command can succeed without putting
-credential files or secret values into model context:
+Run through valet, the same credentialed command can succeed **without putting
+credential files or secret values into model context**:
 
 ```bash
 valet run -- aws s3 ls s3://my-prod-bucket/releases/ --profile prod-readonly
-```
 
-The returned output is still useful after redaction: the agent can see release
-artifact names, timestamps, sizes, and missing checksum files, while account
-IDs, ARNs, access keys, emails, tokens, and configured secret values are
-scrubbed before the response reaches the agent.
+2026-08-04 10:12:31   18422913 app-2026-08-04T1012Z.tar.gz
+2026-08-04 10:18:44        512 app-2026-08-04T1012Z.sha256
+2026-08-04 11:03:09   18425102 app-2026-08-04T1103Z.tar.gz
+2026-08-04 11:09:02        512 app-2026-08-04T1103Z.sha256
+...
+```
 
 Other good valet-shaped commands are credentialed, read-only operational
 lookups whose useful signal is not the secret itself:
 
 ```bash
-valet run -- aws ecs describe-services \
-  --cluster prod --services web --profile prod-readonly
+valet run -- aws cloudformation list-stacks --profile prod-readonly
 
-valet run -- aws cloudformation describe-stacks \
-  --stack-name my-app-prod --profile prod-readonly
-
-valet run -- aws logs tail /aws/ecs/prod-web \
-  --since 10m --profile prod-readonly
+{
+    "StackSummaries": [
+        {
+            "StackId": "[REDACTED:arn]",
+            "StackName": "my-stack",
+            "CreationTime": "2026-07-18T05:36:45.760000+00:00",
+            "StackStatus": "CREATE_COMPLETE",
+            "DriftInformation": {
+                "StackDriftStatus": "NOT_CHECKED"
+            }
+        },
+        ...
 ```
+
+The returned output is still useful after redaction: the agent can see release
+artifact names, timestamps, sizes, and missing checksum files, while account
+IDs, ARNs, access keys, emails, tokens, and configured **secret values are
+scrubbed before the response reaches the agent**.
+
+### Example 2: Database query
 
 The same pattern applies to database diagnostics. A hardened agent sandbox
 should not be able to read the `.env` or `.secrets` file that contains
@@ -66,7 +82,7 @@ should not be able to read the `.env` or `.secrets` file that contains
 non-secret result:
 
 ```bash
-valet sh 'psql "$DATABASE_URL" --csv -c \
+sandbox$ valet sh 'psql "$DATABASE_URL" --csv -c \
   "select status, count(*) from jobs group by status order by status"'
 ```
 
@@ -76,6 +92,30 @@ state without gaining direct access to the credentials used to make the request.
 Avoid using valet as a generic secret printer or unrestricted database tunnel;
 secret-value reads and broad data queries should become narrow, typed
 capabilities with explicit policy and approval, not raw shell habits.
+
+## Features
+
+### Valet serve
+
+### REPL mode
+
+REPL (Read-Eval-Print Loop) is available to examine valet's behavior
+interactively. This is particularly useful validating a policy.
+
+```
+$ valet
+valet 0.2.0 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
+
+valet> aws logs tail mystack/some-task --since 60m --profile prod-readonly
+
+2026-08-05T04:00:17.166000+00:00 states/mystack-some-task-1/2026-08-05-04/00000000 {"details":{"roleArn":"[REDACTED:arn]"},"redrive_count":"0","id":"1","type":"ExecutionStarted","previous_event_id":"0","event_timestamp":"1785902417166","execution_arn":"[REDACTED:arn]"}
+2026-08-05T04:00:17.192000+00:00 states/mystack-some-task-1/2026-08-05-04/00000000 {"details":{"name":"RunTask"},"redrive_count":"0","id":"2","type":"TaskStateEntered","previous_event_id":"0","event_timestamp":"1785902417192","execution_arn":"[REDACTED:arn]"}
+2026-08-05T04:00:17.192000+00:00 states/mystack-some-task-1/2026-08-05-04/00000000 {"details":{"region":"[REDACTED:secret:h:52a3d849]","resource":"runTask.sync","resourceType":"ecs"},"redrive_count":"0","id":"3","type":"TaskScheduled","previous_event_id":"2","event_timestamp":"1785902417192","execution_arn":"[REDACTED:arn]"}
+...
+```
+
+## Audit logging (Coming soon)
+
 
 ## Valet is not...
 
