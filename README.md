@@ -25,16 +25,30 @@ In simple terms:
 ## Table of contents
 
 - [Motivating examples](#motivating-examples)
+  - [Example 1: Running AWS CLI commends in a hardened sandbox](#example-1-running-aws-cli-commends-in-a-hardened-sandbox)
+  - [Example 2: Database query](#example-2-database-query)
 - [Features](#features)
+  - [Valet serve](#valet-serve)
+  - [REPL mode](#repl-mode)
+  - [Audit logging (Coming soon)](#audit-logging-coming-soon)
 - [Valet is not...](#valet-is-not)
 - [Before getting started](#before-getting-started)
   - [Recommended architecture](#recommended-architecture)
   - [Sandbox hardening](#sandbox-hardening)
+    - [Claude Code setting example](#claude-code-setting-example)
+    - [Codex setting example](#codex-setting-example)
 - [Install & run](#install--run)
+  - [Interactive mode — a redacting shell](#interactive-mode--a-redacting-shell)
 - [Config](#config)
+  - [Choosing what to configure](#choosing-what-to-configure)
 - [Roadmap](#roadmap-the-constraints-coming-next)
 - [Technical deep dive](#technical-deep-dive)
+  - [Threat model](#threat-model)
+  - [Why this is stronger than a regex scrubber](#why-this-is-stronger-than-a-regex-scrubber)
+  - [Heuristic redaction (for secrets valet doesn't know)](#heuristic-redaction-for-secrets-valet-doesnt-know)
+  - [Transport](#transport)
 - [Development](#development)
+  - [Tests](#tests)
 
 ## Motivating examples
 
