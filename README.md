@@ -22,6 +22,20 @@ In simple terms:
 
 ![Valet-mediated agent interaction](images/valet-interaction.svg)
 
+## Table of contents
+
+- [Motivating examples](#motivating-examples)
+- [Features](#features)
+- [Valet is not...](#valet-is-not)
+- [Before getting started](#before-getting-started)
+- [Recommended architecture](#recommended-architecture)
+- [Sandbox hardening](#sandbox-hardening)
+- [Install & run](#install--run)
+- [Config](#config)
+- [Roadmap](#roadmap-the-constraints-coming-next)
+- [Technical deep dive](#technical-deep-dive)
+- [Development](#development)
+
 ## Motivating examples
 
 ### Example 1: Running AWS CLI commends in a hardened sandbox
