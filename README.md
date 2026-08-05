@@ -112,8 +112,10 @@ individual structured values ([`valet/secrets.py`](valet/secrets.py) →
 
 A guessing scrubber can miss a weird-looking token; valet cannot miss content it
 already holds. A generic pattern backstop (account IDs, ARNs, `AKIA…` keys, PEM
-blocks, home-dir credential paths, emails) is layered on top as defense in
-depth. Redaction is **fail-closed**: if a known secret value somehow survives a
+blocks, home-dir credential paths, and email addresses) is layered on top as
+defense in depth; email addresses are always replaced with `[REDACTED:email]`,
+including when they are not in a configured secret source. Redaction is
+**fail-closed**: if a known secret value somehow survives a
 pass, the whole field is withheld rather than returned.
 
 ### Heuristic redaction (for secrets valet doesn't know)

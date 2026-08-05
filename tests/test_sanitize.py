@@ -36,6 +36,16 @@ def test_backstop_masks_access_key_id():
     assert "[REDACTED" in out  # caught by the token/heuristic or backstop layer
 
 
+def test_backstop_masks_email_addresses():
+    red = Redactor.build([], salt="s")
+    text = "Contact alice.smith+alerts@example.co.uk or bob@example.com."
+    out = red.redact(text)
+
+    assert "alice.smith+alerts@example.co.uk" not in out
+    assert "bob@example.com" not in out
+    assert out == "Contact [REDACTED:email] or [REDACTED:email]."
+
+
 def test_suspected_can_be_disabled():
     red = Redactor.build([], salt="s", suspected=False)
     out = red.redact("DB_PASSWORD=plaintextsecret")
