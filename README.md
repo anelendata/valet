@@ -97,10 +97,38 @@ capabilities with explicit policy and approval, not raw shell habits.
 
 ### Valet serve
 
+`valet serve` is the normal way to make privileged tools available to a
+sandboxed agent. Start it yourself in a regular terminal that has the profiles,
+tokens, and environment the trusted tools already use:
+
+```bash
+valet serve
+```
+
+Leave that terminal running while the agent works. The agent still runs inside
+its hardened Codex or Claude Code sandbox, where it cannot read `.env`,
+`.secrets`, `~/.aws`, or other denied credential locations. When it needs the
+result of an approved privileged command, it calls valet instead:
+
+```bash
+sandbox$ valet run -- aws s3 ls s3://my-prod-bucket/releases/ --profile prod-readonly
+sandbox$ valet sh 'psql "$DATABASE_URL" --csv -c "select status, count(*) from jobs group by status"'
+```
+
+From the user's point of view, this gives the agent useful operational output
+while keeping the credential material on the trusted side of the boundary.
+Valet loads the configured secret sources, runs the command, redacts the echoed
+command plus stdout/stderr, and only then returns the result to the agent.
+
+Use `valet serve` for day-to-day local agent sessions. Stop it with Ctrl-C when
+the session is over. If a client reports that no daemon is running, start
+`valet serve` again from the trusted terminal.
+
 ### REPL mode
 
 REPL (Read-Eval-Print Loop) is available to examine valet's behavior
-interactively. This is particularly useful validating a policy.
+interactively while `valet serve` is running. This is particularly useful
+validating a policy.
 
 ```
 $ valet
@@ -114,7 +142,7 @@ valet> aws logs tail mystack/some-task --since 60m --profile prod-readonly
 ...
 ```
 
-## Audit logging (Coming soon)
+### Audit logging (Coming soon)
 
 
 ## Valet is not...
@@ -134,7 +162,9 @@ credentials, a sandbox or compute runtime for the agent, a network gateway for
 egress control, an MCP proxy for tool routing, and valet for the policy,
 redaction, and approval boundary around privileged actions.
 
-## Recommended architecture
+## Before getting started
+
+### Recommended architecture
 
 valet is meant to be one layer in a larger agent safety design:
 
@@ -317,9 +347,166 @@ References:
 - [How Anthropic built Claude Code auto mode](https://www.anthropic.com/engineering/claude-code-auto-mode)
 - [Running Codex safely at OpenAI](https://openai.com/index/running-codex-safely/)
 
----
+## Install & run
 
-## Threat model
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .
+
+cp config.example.toml config.toml     # config.toml is git-ignored
+$EDITOR config.toml                     # set workspace + secret_sources
+valet init                              # optional: stable redaction tags
+
+valet serve                             # start the daemon (keep this shell open)
+```
+
+Then, from anywhere (including the agent):
+
+```bash
+valet run -- aws s3 ls                   # argv, no shell (exact)
+valet sh 'aws s3 ls | grep prod'         # shell: pipes, globs, redirection
+valet call --json '{"op":"exec","cmd":"env"}'
+```
+
+`run`/`sh` print redacted stdout/stderr and exit with the command's code, so
+they drop into scripts like the real command would.
+
+For HTTP, set `[http].bearer_token` in `config.toml` and start:
+
+```bash
+valet serve-http
+curl -sS http://127.0.0.1:8765/call \
+  -H "Authorization: Bearer $VALET_HTTP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"op":"ping"}'
+```
+
+### Interactive mode — a redacting shell
+
+Run `valet` with no subcommand (like `python` bare) to open a prompt. **Any line
+you type is run as a command**, and the output comes back redacted:
+
+```
+$ valet
+valet 0.2.0 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
+ws valet> cat .secrets
+DB_PASSWORD=[REDACTED:secret:h:38673aad]
+API_TOKEN=[REDACTED:secret:h:3bc13a30]
+ws valet> cd projects/x-com       # cd sticks for the session
+x-com valet> aws s3 ls | head     # runs in projects/x-com
+x-com valet> cd ../../..          # cd: cannot cd above the workspace
+x-com valet> :shell off           # run following lines as argv, not shell
+x-com valet> :quit
+```
+
+The prompt shows the current directory's name. **`cd` sticks** for the session,
+and is **jailed to the workspace** — `..` and symlinks can't climb above
+`[exec].workspace` (a bare `cd` returns to the workspace root). A compound line
+(`cd x && y`) is not intercepted: the `cd` there applies only to that
+subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
+`:shell`, `:secrets`, `:call`, `:quit`); everything else runs. Ctrl-D also exits.
+Up/Down and Ctrl-P/Ctrl-N recall previously submitted commands.
+Press Tab to complete commands from `PATH` (and shell builtins) or files from the
+current directory. File candidates include a trailing `/` for directories. When
+there is more than one match, valet displays them in two columns; lists taller
+than the terminal are shown through `more`, where `q` returns to the prompt.
+
+## Config
+
+`config.toml` (never committed) sets the socket, the default workspace, and the
+secret sources valet loads so it can redact their values. See
+[`config.example.toml`](config.example.toml). Per command, valet also
+auto-loads `.env`/`.secrets` from the command's working directory, so a
+project's own secrets are redacted when you run there.
+
+### Choosing what to configure
+
+The knobs split into two families that do fundamentally different things:
+
+- **`[redaction]`** — *let the command run, scrub its **output**.* (masks content)
+- **`[policy]`** — *decide whether the command **runs at all**.* (blocks execution)
+
+| Knob | What it does | Use it when | Example |
+|---|---|---|---|
+| `redaction.secret_sources` | Loads specific files **by absolute path** and masks their content + values in *any* command's output | You have **fixed, known** secret files that trusted tools legitimately **use** | `~/.aws/credentials` |
+| `redaction.cwd_secret_files` | Same, but **by filename**, auto-loaded from **whatever dir the command runs in** | Per-**project** secrets that live in each project dir | `.env`, `.secrets` |
+| `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
+| `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
+| `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
+
+**`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
+difference is only *how the file is located*. `secret_sources` is one fixed
+path, masked in **every** command's output. `cwd_secret_files` is a **name**
+resolved **relative to each command's cwd**, so one line covers all projects.
+
+**`secret_sources` vs `deny_read_paths`** — the important pairing. Your
+`handoff` case needs both:
+
+| | `handoff … schedule list` (reads creds **internally**, output safe) | `cat ~/.aws/credentials` (a reveal) |
+|---|---|---|
+| `secret_sources = ["~/.aws/credentials"]` | ✅ runs; any leak masked | ✅ runs, content masked |
+| `deny_read_paths = ["~/.aws/**"]` | ✅ runs (doesn't *name* the file) | ⛔ refused before running |
+
+Use **`secret_sources`** for files trusted commands must **use** (keeps them
+working, scrubs incidental leaks, and catches a program that opens the file
+without naming it). Use **`deny_read_paths`** to flatly forbid **displaying** a
+file (`cat`/`less`/`grep`) — all-or-nothing, but only for files named on the
+command line. They're complementary: the ban stops the obvious `cat`, redaction
+scrubs whatever slips through another way.
+
+> **Rule of thumb:** "a command should be able to *use* this file" →
+> `secret_sources` / `cwd_secret_files`. "no one should *see* this file" →
+> `deny_read_paths`. "this program shouldn't run" → `policy.deny`.
+
+## Roadmap (the constraints coming next)
+
+The [`[policy]`](config.example.toml) section and [`valet/policy.py`](valet/policy.py)
+carry the constraints. Available now:
+
+- **command deny list** (`deny`) — refuse commands by program name.
+- **built-in config protection** — `config.toml` is always refused as a
+  command input or output target, including shell redirects. This guard is
+  hard-coded and cannot be relaxed in `config.toml`; completion also hides the
+  filename.
+- **wildcard file bans** (`deny_read_paths`) — glob patterns (`**`, `*`, `?`) of
+  files a command may not reference; valet refuses to run a command that names
+  an existing matching file, so its content is never revealed. `**/.env` bans
+  reading any `.env` anywhere; `~/.aws/**` bans anything under `~/.aws`. The
+  analyzer is shell-aware: it splits on operators (`;` `&&` `||` `|` `&`,
+  newlines) and tracks `cd`/`pushd`, so `cd some/dir; cat .env` is caught the
+  same as `cat some/dir/.env`.
+
+  It is still **best-effort static analysis of the command line**: it catches
+  the realistic reveals (`cat`/`less`/`grep` a path, including after a `cd`), but
+  cannot see through a computed path (`eval`, `$(...)`, variable expansion,
+  base64) or a program that reads the file internally without naming it. Content
+  redaction is the backstop for those; only OS-level sandboxing would stop a
+  determined reader.
+- **workspace read-jail** (`enforce_workspace_reads`) — when enabled, an
+  existing file/directory argument, symlink target, or explicit `cwd` outside
+  `[exec].workspace` is refused. This catches `cat ../message.txt` and
+  `cd .. && cat message.txt`; it uses the same best-effort command-line analysis
+  as `deny_read_paths` and is not an OS sandbox.
+
+Still to come:
+
+- **command allow list** (`allow`, empty = allow all today) becomes a strict
+  allowlist when populated.
+- **workspace write-jail** (`enforce_workspace_writes`) will forbid writes
+  outside the configured `workspace`.
+- **audit/approval** for sensitive operations, especially actions that mutate
+  infrastructure, deploy, spend money, delete data, or call out to less-trusted
+  networks.
+- **typed capabilities** for common workflows, so an agent can request
+  `terraform_plan` or `gh_pr_checks` instead of a raw shell command string.
+
+`Policy.check` is the single choke point; new constraints go there and stay
+fail-closed.
+
+
+## Technical deep dive
+
+### Threat model
 
 **Actors**
 
@@ -403,9 +590,7 @@ splits it), the transformed form won't match and won't be redacted. valet
 defends against secrets appearing verbatim (an accidental `cat .env`, `env`,
 error dumps) — not against a command deliberately obfuscating one.
 
----
-
-## Transport
+### Transport
 
 Today the primary transport is a local Unix domain socket, with an optional
 loopback HTTP adapter for clients that cannot speak UDS. The broker core is
@@ -427,171 +612,9 @@ HTTP `POST /` or `POST /call`, protected by `Authorization: Bearer <token>`.
 The default bind host is `127.0.0.1`; change `[http].host` only when you
 deliberately want another interface exposed. The bearer token is required.
 
----
+## Development
 
-## Install & run
-
-```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e .
-
-cp config.example.toml config.toml     # config.toml is git-ignored
-$EDITOR config.toml                     # set workspace + secret_sources
-valet init                              # optional: stable redaction tags
-
-valet serve                             # start the daemon (keep this shell open)
-```
-
-Then, from anywhere (including the agent):
-
-```bash
-valet run -- aws s3 ls                   # argv, no shell (exact)
-valet sh 'aws s3 ls | grep prod'         # shell: pipes, globs, redirection
-valet call --json '{"op":"exec","cmd":"env"}'
-```
-
-`run`/`sh` print redacted stdout/stderr and exit with the command's code, so
-they drop into scripts like the real command would.
-
-For HTTP, set `[http].bearer_token` in `config.toml` and start:
-
-```bash
-valet serve-http
-curl -sS http://127.0.0.1:8765/call \
-  -H "Authorization: Bearer $VALET_HTTP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"op":"ping"}'
-```
-
-### Interactive mode — a redacting shell
-
-Run `valet` with no subcommand (like `python` bare) to open a prompt. **Any line
-you type is run as a command**, and the output comes back redacted:
-
-```
-$ valet
-valet 0.2.0 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
-ws valet> cat .secrets
-DB_PASSWORD=[REDACTED:secret:h:38673aad]
-API_TOKEN=[REDACTED:secret:h:3bc13a30]
-ws valet> cd projects/x-com       # cd sticks for the session
-x-com valet> aws s3 ls | head     # runs in projects/x-com
-x-com valet> cd ../../..          # cd: cannot cd above the workspace
-x-com valet> :shell off           # run following lines as argv, not shell
-x-com valet> :quit
-```
-
-The prompt shows the current directory's name. **`cd` sticks** for the session,
-and is **jailed to the workspace** — `..` and symlinks can't climb above
-`[exec].workspace` (a bare `cd` returns to the workspace root). A compound line
-(`cd x && y`) is not intercepted: the `cd` there applies only to that
-subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
-`:shell`, `:secrets`, `:call`, `:quit`); everything else runs. Ctrl-D also exits.
-Up/Down and Ctrl-P/Ctrl-N recall previously submitted commands.
-Press Tab to complete commands from `PATH` (and shell builtins) or files from the
-current directory. File candidates include a trailing `/` for directories. When
-there is more than one match, valet displays them in two columns; lists taller
-than the terminal are shown through `more`, where `q` returns to the prompt.
-
----
-
-## Config
-
-`config.toml` (never committed) sets the socket, the default workspace, and the
-secret sources valet loads so it can redact their values. See
-[`config.example.toml`](config.example.toml). Per command, valet also
-auto-loads `.env`/`.secrets` from the command's working directory, so a
-project's own secrets are redacted when you run there.
-
-### Choosing what to configure
-
-The knobs split into two families that do fundamentally different things:
-
-- **`[redaction]`** — *let the command run, scrub its **output**.* (masks content)
-- **`[policy]`** — *decide whether the command **runs at all**.* (blocks execution)
-
-| Knob | What it does | Use it when | Example |
-|---|---|---|---|
-| `redaction.secret_sources` | Loads specific files **by absolute path** and masks their content + values in *any* command's output | You have **fixed, known** secret files that trusted tools legitimately **use** | `~/.aws/credentials` |
-| `redaction.cwd_secret_files` | Same, but **by filename**, auto-loaded from **whatever dir the command runs in** | Per-**project** secrets that live in each project dir | `.env`, `.secrets` |
-| `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
-| `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
-| `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
-
-**`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
-difference is only *how the file is located*. `secret_sources` is one fixed
-path, masked in **every** command's output. `cwd_secret_files` is a **name**
-resolved **relative to each command's cwd**, so one line covers all projects.
-
-**`secret_sources` vs `deny_read_paths`** — the important pairing. Your
-`handoff` case needs both:
-
-| | `handoff … schedule list` (reads creds **internally**, output safe) | `cat ~/.aws/credentials` (a reveal) |
-|---|---|---|
-| `secret_sources = ["~/.aws/credentials"]` | ✅ runs; any leak masked | ✅ runs, content masked |
-| `deny_read_paths = ["~/.aws/**"]` | ✅ runs (doesn't *name* the file) | ⛔ refused before running |
-
-Use **`secret_sources`** for files trusted commands must **use** (keeps them
-working, scrubs incidental leaks, and catches a program that opens the file
-without naming it). Use **`deny_read_paths`** to flatly forbid **displaying** a
-file (`cat`/`less`/`grep`) — all-or-nothing, but only for files named on the
-command line. They're complementary: the ban stops the obvious `cat`, redaction
-scrubs whatever slips through another way.
-
-> **Rule of thumb:** "a command should be able to *use* this file" →
-> `secret_sources` / `cwd_secret_files`. "no one should *see* this file" →
-> `deny_read_paths`. "this program shouldn't run" → `policy.deny`.
-
----
-
-## Roadmap (the constraints coming next)
-
-The [`[policy]`](config.example.toml) section and [`valet/policy.py`](valet/policy.py)
-carry the constraints. Available now:
-
-- **command deny list** (`deny`) — refuse commands by program name.
-- **built-in config protection** — `config.toml` is always refused as a
-  command input or output target, including shell redirects. This guard is
-  hard-coded and cannot be relaxed in `config.toml`; completion also hides the
-  filename.
-- **wildcard file bans** (`deny_read_paths`) — glob patterns (`**`, `*`, `?`) of
-  files a command may not reference; valet refuses to run a command that names
-  an existing matching file, so its content is never revealed. `**/.env` bans
-  reading any `.env` anywhere; `~/.aws/**` bans anything under `~/.aws`. The
-  analyzer is shell-aware: it splits on operators (`;` `&&` `||` `|` `&`,
-  newlines) and tracks `cd`/`pushd`, so `cd some/dir; cat .env` is caught the
-  same as `cat some/dir/.env`.
-
-  It is still **best-effort static analysis of the command line**: it catches
-  the realistic reveals (`cat`/`less`/`grep` a path, including after a `cd`), but
-  cannot see through a computed path (`eval`, `$(...)`, variable expansion,
-  base64) or a program that reads the file internally without naming it. Content
-  redaction is the backstop for those; only OS-level sandboxing would stop a
-  determined reader.
-- **workspace read-jail** (`enforce_workspace_reads`) — when enabled, an
-  existing file/directory argument, symlink target, or explicit `cwd` outside
-  `[exec].workspace` is refused. This catches `cat ../message.txt` and
-  `cd .. && cat message.txt`; it uses the same best-effort command-line analysis
-  as `deny_read_paths` and is not an OS sandbox.
-
-Still to come:
-
-- **command allow list** (`allow`, empty = allow all today) becomes a strict
-  allowlist when populated.
-- **workspace write-jail** (`enforce_workspace_writes`) will forbid writes
-  outside the configured `workspace`.
-- **audit/approval** for sensitive operations, especially actions that mutate
-  infrastructure, deploy, spend money, delete data, or call out to less-trusted
-  networks.
-- **typed capabilities** for common workflows, so an agent can request
-  `terraform_plan` or `gh_pr_checks` instead of a raw shell command string.
-
-`Policy.check` is the single choke point; new constraints go there and stay
-fail-closed.
-
----
-
-## Tests
+### Tests
 
 ```bash
 pip install -e ".[test]"
