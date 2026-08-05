@@ -7,6 +7,7 @@ line.
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import socket
@@ -44,7 +45,10 @@ class _Handler(socketserver.StreamRequestHandler):
                 response = {"ok": False, "error_class": "ValidationError",
                             "detail": "request was not valid JSON"}
             else:
-                response = broker.handle(request)
+                response = broker.handle(
+                    request,
+                    audit_context={"transport": "uds", "caller": getpass.getuser()},
+                )
             self.wfile.write((json.dumps(response) + "\n").encode("utf-8"))
             self.wfile.flush()
 
@@ -68,7 +72,7 @@ def serve(cfg: BrokerConfig) -> None:
         pass
 
     server = _Server(str(sock_path), _Handler)
-    server.broker = Broker(cfg)  # type: ignore[attr-defined]
+    server.broker = Broker(cfg, audit_to_console=cfg.audit.console)  # type: ignore[attr-defined]
     os.chmod(sock_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
 
     print(f"valet: listening on {sock_path} (0600). Ctrl-C to stop.")

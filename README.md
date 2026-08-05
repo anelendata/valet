@@ -30,7 +30,7 @@ In simple terms:
 - [Features](#features)
   - [Valet serve](#valet-serve)
   - [REPL mode](#repl-mode)
-  - [Audit logging (Coming soon)](#audit-logging-coming-soon)
+  - [Audit logging](#audit-logging)
 - [Valet is not...](#valet-is-not)
 - [Before getting started](#before-getting-started)
   - [Recommended architecture](#recommended-architecture)
@@ -170,22 +170,45 @@ valet> aws logs tail mystack/some-task --since 60m --profile prod-readonly
 ...
 ```
 
-### Audit logging (Coming soon)
+### Audit logging
 
-Audit logging is intended to make valet's privileged boundary inspectable after
-the fact. When an agent asks valet to run something, the log should help a human
+Audit logging makes valet's privileged boundary inspectable after the fact.
+When an agent asks valet to run something, the log helps a human
 answer: who asked, what command or capability was requested, which working
 directory was used, whether policy allowed or denied it, whether approval was
 required, how long it ran, whether it succeeded, and how much redaction happened
 before output returned to the agent.
 
-The audit log should be safe to keep. By default, it should record metadata
+Configure the JSON log path in `config.toml`:
+
+```toml
+[audit]
+log_path = "~/.valet/audit.jsonl"
+console = true
+```
+
+The file is newline-delimited JSON: each request appends one JSON object. When
+`console = true`, `valet serve` and `valet serve-http` also print a readable
+server-console entry:
+
+```text
+2026-08-05T12:31:04Z INFO: codex uds allowed aws ecs describe-services ...
+   {
+     "caller": "codex",
+     "transport": "uds",
+     "decision": "allowed",
+     "command": "aws ecs describe-services ...",
+     ...
+   }
+```
+
+The audit log is meant to be safe to keep. It records metadata
 such as request IDs, caller identity, command shape, policy decision, exit code,
 duration, byte counts, redaction counts, and fail-closed events. It should not
 store raw stdout, raw stderr, credential values, or unredacted command material;
 otherwise the log becomes another secret sink.
 
-For example, a future audit event might say that `codex` requested an
+For example, an audit event might say that `codex` requested an
 `aws ecs describe-services ... --profile prod-readonly` command, valet allowed
 it under policy, loaded several configured secret sources, redacted six values,
 and returned a zero exit code after 1.8 seconds. A denied event might say that a
@@ -227,8 +250,9 @@ valet is meant to be one layer in a larger agent safety design:
 5. **Audit/approval** — sensitive or mutating actions are logged and, when
    appropriate, require a human or higher-trust approval path.
 
-valet's current implementation focuses on **3. policy** and **4. redaction**.
-Its vision is to add **5. audit/approval**.
+valet's current implementation focuses on **3. policy**, **4. redaction**, and
+the audit part of **5. audit/approval**. Human approval flows are still future
+work.
 
 Valet relies on **1. agent sandboxes** and **2. least-privilege credentials** as
 complementary layers. Those layers are the operator's responsibility. Valet can
@@ -482,6 +506,7 @@ The knobs split into two families that do fundamentally different things:
 | `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
 | `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
 | `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
+| `audit.log_path` | Appends one metadata-only JSON object per request | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
 
 **`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
 difference is only *how the file is located*. `secret_sources` is one fixed
@@ -543,7 +568,7 @@ Still to come:
   allowlist when populated.
 - **workspace write-jail** (`enforce_workspace_writes`) will forbid writes
   outside the configured `workspace`.
-- **audit/approval** for sensitive operations, especially actions that mutate
+- **approval** for sensitive operations, especially actions that mutate
   infrastructure, deploy, spend money, delete data, or call out to less-trusted
   networks.
 - **typed capabilities** for common workflows, so an agent can request

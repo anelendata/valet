@@ -46,6 +46,8 @@ def handle_post(
     path: str,
     authorization: str,
     body: bytes,
+    *,
+    caller: str = "http-client",
 ) -> tuple[HTTPStatus, dict, dict[str, str]]:
     """Handle one HTTP POST body. Split out so tests need no listening socket."""
     if path not in ("/", "/call"):
@@ -70,7 +72,10 @@ def handle_post(
             "detail": str(exc),
         }
     else:
-        response = broker.handle(request)
+        response = broker.handle(
+            request,
+            audit_context={"transport": "http", "caller": caller},
+        )
     return HTTPStatus.OK, response, {}
 
 
@@ -96,6 +101,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.path,
                 self.headers.get("Authorization", ""),
                 body,
+                caller=str(self.client_address[0]),
             )
 
         self._send_json(status, response, extra_headers)
@@ -149,7 +155,7 @@ def make_server(cfg: BrokerConfig) -> _Server:
     """Build an HTTP server without starting it. Used by tests."""
     _validate_token(cfg.http.bearer_token)
     server = _Server((cfg.http.host, cfg.http.port), _Handler)
-    server.broker = Broker(cfg)  # type: ignore[attr-defined]
+    server.broker = Broker(cfg, audit_to_console=cfg.audit.console)  # type: ignore[attr-defined]
     server.bearer_token = cfg.http.bearer_token  # type: ignore[attr-defined]
     return server
 

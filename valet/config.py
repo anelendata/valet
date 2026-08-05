@@ -71,6 +71,14 @@ class HttpConfig:
 
 
 @dataclass(frozen=True)
+class AuditConfig:
+    # Optional newline-delimited JSON audit log path. Empty means no file log.
+    log_path: str = ""
+    # Server adapters print human-readable audit events to stdout by default.
+    console: bool = True
+
+
+@dataclass(frozen=True)
 class BrokerConfig:
     socket_path: str
     timeout_seconds: int
@@ -79,6 +87,7 @@ class BrokerConfig:
     redaction: RedactionConfig = field(default_factory=RedactionConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     http: HttpConfig = field(default_factory=HttpConfig)
+    audit: AuditConfig = field(default_factory=AuditConfig)
 
 
 def default_config_path() -> Path:
@@ -106,6 +115,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     red = raw.get("redaction", {})
     pol = raw.get("policy", {})
     http = raw.get("http", {})
+    audit = raw.get("audit", {})
 
     # A stable salt keeps redaction tags comparable across runs; if unset we
     # generate an ephemeral one so the tool works with zero setup.
@@ -140,5 +150,9 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             host=str(http.get("host", "127.0.0.1")),
             port=int(http.get("port", 8765)),
             bearer_token=str(http.get("bearer_token", "")),
+        ),
+        audit=AuditConfig(
+            log_path=_expand(str(audit.get("log_path", ""))),
+            console=bool(audit.get("console", True)),
         ),
     )
