@@ -144,6 +144,27 @@ valet> aws logs tail mystack/some-task --since 60m --profile prod-readonly
 
 ### Audit logging (Coming soon)
 
+Audit logging is intended to make valet's privileged boundary inspectable after
+the fact. When an agent asks valet to run something, the log should help a human
+answer: who asked, what command or capability was requested, which working
+directory was used, whether policy allowed or denied it, whether approval was
+required, how long it ran, whether it succeeded, and how much redaction happened
+before output returned to the agent.
+
+The audit log should be safe to keep. By default, it should record metadata
+such as request IDs, caller identity, command shape, policy decision, exit code,
+duration, byte counts, redaction counts, and fail-closed events. It should not
+store raw stdout, raw stderr, credential values, or unredacted command material;
+otherwise the log becomes another secret sink.
+
+For example, a future audit event might say that `codex` requested an
+`aws ecs describe-services ... --profile prod-readonly` command, valet allowed
+it under policy, loaded several configured secret sources, redacted six values,
+and returned a zero exit code after 1.8 seconds. A denied event might say that a
+command referenced `**/.env` and was refused before execution. The point is
+accountability: redaction protects model context, policy controls execution,
+and audit logging lets an operator reconstruct what happened without exposing
+the secrets valet was built to protect.
 
 ## Valet is not...
 
