@@ -41,7 +41,7 @@ redaction, and approval boundary around privileged actions.
 
 ## Recommended architecture
 
-valet is meant to be one layer in a larger agent safety design (3~5):
+valet is meant to be one layer in a larger agent safety design:
 
 1. **Sandboxed agents** — the model runs where it cannot directly read secret
    files or freely reach privileged host resources.
@@ -56,15 +56,36 @@ valet is meant to be one layer in a larger agent safety design (3~5):
 valet's current implementation focuses on **3. policy** and **4. redaction**.
 Its vision is to add **5. audit/approval**.
 
-Valet relies on **1. agent sandboxes** and **2. least-privilege credential**
-design as complementary layers. **That's on you.**
+Valet relies on **1. agent sandboxes** and **2. least-privilege credentials** as
+complementary layers. Those layers are the operator's responsibility. Valet can
+help enforce an authorization and redaction boundary, but it cannot protect
+against negligent setup, over-broad host credentials, disabled sandboxes, or
+approving a dangerous action without understanding its blast radius.
 
-**WARNING:** valet is intentionally permissive. valet is useful today as a
-secret-redacting command runner, but raw command execution is dangerously
-powerful when the host has credentials with write, delete, deploy, or payment
-privileges. Redaction protects what comes back to the model; policy,
-least-privilege credentials, sandboxing, and audit/approval are what make the
-whole setup safe.
+**WARNING:** valet is intentionally permissive today. Raw command execution is
+dangerously powerful when the host has credentials with write, delete, deploy,
+or payment privileges.
+
+### Sandbox hardening
+
+The agent runtime should be hardened before Valet is added. Treat Valet as the
+privileged broker, not as the only safety control: run agents in a sandbox,
+prefer read-only or scoped default permissions, require explicit approval for
+mutating or cross-boundary actions, constrain network egress, keep credentials
+least-privileged, and preserve logs that explain both what ran and why. This
+matches the direction of current agent safety guidance: Claude Code documents
+permission evaluation with hooks, deny rules, ask rules, permission modes, allow
+rules, and runtime callbacks; Anthropic's auto-mode writeup emphasizes
+real-world impact, trust boundaries, exfiltration risk, and conservative
+authorization; OpenAI's Codex safety guidance combines sandboxing, command
+rules, managed configuration, approvals, network policy, and agent-aware
+telemetry.
+
+References:
+
+- [Claude Code Agent SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions)
+- [How Anthropic built Claude Code auto mode](https://www.anthropic.com/engineering/claude-code-auto-mode)
+- [Running Codex safely at OpenAI](https://openai.com/index/running-codex-safely/)
 
 ---
 
