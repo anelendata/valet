@@ -22,6 +22,61 @@ In simple terms:
 
 ![Valet-mediated agent interaction](images/valet-interaction.svg)
 
+## Motivating examples
+
+With a hardened Codex or Claude Code sandbox (see
+[Sandbox hardening](#sandbox-hardening)), commands that need host-side
+credentials should fail non-negotiably when the agent runs them directly. For
+example, the AWS CLI usually needs `~/.aws/config` or `~/.aws/credentials`, but
+those paths should be denied to the agent:
+
+```bash
+aws s3 ls s3://my-prod-bucket/releases/ --profile prod-readonly
+```
+
+Run through valet, the same credentialed command can succeed without putting
+credential files or secret values into model context:
+
+```bash
+valet run -- aws s3 ls s3://my-prod-bucket/releases/ --profile prod-readonly
+```
+
+The returned output is still useful after redaction: the agent can see release
+artifact names, timestamps, sizes, and missing checksum files, while account
+IDs, ARNs, access keys, emails, tokens, and configured secret values are
+scrubbed before the response reaches the agent.
+
+Other good valet-shaped commands are credentialed, read-only operational
+lookups whose useful signal is not the secret itself:
+
+```bash
+valet run -- aws ecs describe-services \
+  --cluster prod --services web --profile prod-readonly
+
+valet run -- aws cloudformation describe-stacks \
+  --stack-name my-app-prod --profile prod-readonly
+
+valet run -- aws logs tail /aws/ecs/prod-web \
+  --since 10m --profile prod-readonly
+```
+
+The same pattern applies to database diagnostics. A hardened agent sandbox
+should not be able to read the `.env` or `.secrets` file that contains
+`DATABASE_URL`, but a trusted host-side command can use it and return a narrow,
+non-secret result:
+
+```bash
+valet sh 'psql "$DATABASE_URL" --csv -c \
+  "select status, count(*) from jobs group by status order by status"'
+```
+
+These examples let an agent inspect deployment state, failed stack updates,
+service rollout progress, recent application errors, and aggregate database
+state without gaining direct access to the credentials used to make the request.
+Avoid using valet as a generic secret printer or unrestricted database tunnel;
+secret-value reads and broad data queries should become narrow, typed
+capabilities with explicit policy and approval, not raw shell habits.
+
 ## Valet is not...
 
 valet sits near several popular security and agent-infrastructure products, but
@@ -80,6 +135,141 @@ real-world impact, trust boundaries, exfiltration risk, and conservative
 authorization; OpenAI's Codex safety guidance combines sandboxing, command
 rules, managed configuration, approvals, network policy, and agent-aware
 telemetry.
+
+#### Claude Code setting example
+
+For Claude Code, put local filesystem denials in `~/.claude/settings.json`.
+These rules keep the agent from reading, editing, or using shell commands
+against common local secret locations:
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Read(//**/.env)",
+      "Read(//**/.env/**)",
+      "Edit(//**/.env)",
+      "Edit(//**/.env/**)",
+      "Bash(//**/.env)",
+      "Bash(//**/.env/**)",
+      "Read(//**/.secrets)",
+      "Read(//**/.secrets/**)",
+      "Edit(//**/.secrets)",
+      "Edit(//**/.secrets/**)",
+      "Bash(//**/.secrets)",
+      "Bash(//**/.secrets/**)",
+      "Read(~/.aws)",
+      "Read(~/.aws/**)",
+      "Edit(~/.aws)",
+      "Edit(~/.aws/**)",
+      "Bash(~/.aws)",
+      "Bash(~/.aws/**)"
+    ]
+  }
+}
+```
+
+For a stricter Claude Code deployment, also enable the Bash sandbox and make it
+fail closed if the sandbox cannot start. The sandbox is the OS-enforced layer
+for Bash commands and subprocesses; the permission rules above are still needed
+for Claude's built-in `Read` and `Edit` tools. Adapt the exact sandbox path
+patterns to the syntax supported by your current Claude Code version.
+
+```json
+{
+  "disableBypassPermissionsMode": "disable",
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": [
+        "/**/.env",
+        "/**/.env/**",
+        "/**/.secrets",
+        "/**/.secrets/**",
+        "/**/.*secrets*",
+        "/**/.*secrets*/**",
+        "~/.aws",
+        "~/.aws/**"
+      ]
+    },
+    "credentials": {
+      "files": [
+        { "path": "~/.aws", "mode": "deny" }
+      ]
+    }
+  }
+}
+```
+
+Keep Claude Code's permission modes conservative, require approval for
+mutating or cross-boundary commands, and avoid broad allow rules for shells,
+interpreters, package managers, network tools, or `valet` itself. Claude Code
+configuration changes over time, so read Anthropic's official settings,
+permissions, and sandboxing documentation for the complete and current settings
+before using this in a production or high-risk environment. For a team or
+company baseline, prefer Claude Code managed settings over user settings so the
+agent cannot weaken the policy locally.
+
+#### Codex setting example
+
+For Codex, put non-negotiable local requirements in
+`/etc/codex/requirements.toml` on macOS/Linux (or the equivalent managed
+configuration channel for your environment). Use your normal Codex
+`config.toml`, usually `~/.codex/config.toml`, for user defaults such as the
+preferred sandbox, approval policy, and telemetry settings; requirements are the
+part users should not be able to weaken.
+
+Example `/etc/codex/requirements.toml` baseline:
+
+```toml
+allowed_approval_policies = ["untrusted", "on-request"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]
+allowed_web_search_modes = ["cached"]
+
+[permissions.filesystem]
+deny_read = [
+  "/**/.env",
+  "/**/.env/**",
+  "/**/.secrets",
+  "/**/.secrets/**",
+  "/**/.*secrets*",
+  "/**/.*secrets*/**",
+  "/**/.aws",
+  "/**/.aws/**",
+]
+```
+
+For commands that deserve a second look even when they otherwise fit the
+sandbox, add restrictive managed command rules. For example:
+
+```toml
+[rules]
+prefix_rules = [
+  { pattern = [{ any_of = ["bash", "sh", "zsh"] }], decision = "prompt", justification = "Require explicit approval for shell entry points." },
+  { pattern = [{ token = "valet" }], decision = "prompt", justification = "valet can run privileged host-side commands." },
+]
+```
+
+If you enable command network access for Codex, keep it constrained with a
+managed allowlist rather than broad outbound access. If you use Codex permission
+profiles instead of legacy sandbox modes, enforce an allowlist that omits
+`:danger-full-access`. Also prefer narrow command rules and prompts around
+`valet`, shell entry points, interpreters, package-manager scripts, and commands
+that can mutate infrastructure or publish data.
+
+In `~/.codex/config.toml`, prefer OS keyring storage for local Codex and MCP
+OAuth credentials:
+
+```toml
+cli_auth_credentials_store = "keyring"
+mcp_oauth_credentials_store = "keyring"
+```
+
+Codex configuration changes over time. Read OpenAI's official Codex
+documentation for the complete and current settings before using this in a
+production or high-risk environment.
 
 References:
 
