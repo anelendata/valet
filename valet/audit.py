@@ -56,8 +56,11 @@ class AuditLogger:
         caller = _safe_label(event.get("caller", "unknown"))
         transport = _safe_label(event.get("transport", "direct"))
         decision = _safe_label(event.get("decision", "unknown"))
+        phase_value = event.get("phase")
+        phase = _single_line(str(phase_value)) if phase_value else ""
         command = _single_line(str(event.get("command") or event.get("op") or "-"))
-        print(f"{timestamp} INFO: {caller} {transport} {decision} {command}")
+        phase_part = f" {phase}" if phase else ""
+        print(f"{timestamp} INFO: {caller} {transport} {decision}{phase_part} {command}")
         body = json.dumps(event, indent=2, sort_keys=True)
         for line in body.splitlines():
             print(f"   {line}")

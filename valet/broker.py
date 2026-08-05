@@ -208,6 +208,7 @@ class Broker:
                 return
 
             plan = self._exec_plan(request)
+            self._audit_exec_started(request, plan, context)
             buffers = {
                 "stdout": _StreamRedactor(plan.redactor),
                 "stderr": _StreamRedactor(plan.redactor),
@@ -383,6 +384,24 @@ class Broker:
         except Exception as exc:
             print(f"valet: audit logging failed: {exc}", file=sys.stderr)
 
+    def _audit_exec_started(
+        self,
+        request: Any,
+        plan: _ExecPlan,
+        context: AuditContext,
+    ) -> None:
+        response = {
+            "broker_version": __version__,
+            "op": "exec",
+            "ok": True,
+            "cwd": plan.cwd,
+            "shell": plan.shell,
+            "cmd": self._safe(plan.redactor, plan.echoed),
+            "redacted_value_count": len(plan.redactor.secret_values),
+            "phase": "started",
+        }
+        self._audit(request, response, context, 0)
+
     def _audit_event(
         self,
         request: Any,
@@ -407,6 +426,7 @@ class Broker:
             "transport": context.transport,
             "broker_version": response.get("broker_version", __version__),
             "op": request_dict.get("op", "exec") if request_dict else response.get("op"),
+            "phase": response.get("phase"),
             "decision": self._audit_decision(response),
             "approval": "not_required",
             "command": command,
@@ -438,6 +458,7 @@ class Broker:
             "exit_code": event["exit_code"],
             "error_class": event["error_class"],
             "detail": event["detail"],
+            "phase": event["phase"],
             "redacted_value_count": event["redacted_value_count"],
             "returned_stdout_bytes": event["returned_stdout_bytes"],
             "returned_stderr_bytes": event["returned_stderr_bytes"],

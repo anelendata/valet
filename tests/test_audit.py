@@ -83,3 +83,21 @@ def test_audit_console_prints_summary_and_pretty_json(cfg, capsys):
     assert " INFO: codex uds allowed ping" in out
     assert '\n   {\n' in out
     assert '     "caller": "codex"' in out
+
+
+def test_stream_audit_console_prints_started_before_completion(cfg, capsys):
+    c = dataclasses.replace(cfg, audit=AuditConfig())
+    events = Broker(c, audit_to_console=True).handle_stream(
+        {"op": "exec", "cmd": "printf 'first\\nsecond\\n'"},
+        audit_context={"transport": "uds", "caller": "codex"},
+    )
+
+    first = next(events)
+    assert first["op"] == "exec_chunk"
+    out = capsys.readouterr().out
+    assert " INFO: codex uds allowed started printf 'first\\nsecond\\n'" in out
+
+    list(events)
+    out = capsys.readouterr().out
+    assert " INFO: codex uds allowed printf 'first\\nsecond\\n'" in out
+    assert "allowed None" not in out
