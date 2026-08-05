@@ -45,6 +45,14 @@ class _Handler(socketserver.StreamRequestHandler):
                 response = {"ok": False, "error_class": "ValidationError",
                             "detail": "request was not valid JSON"}
             else:
+                if request.get("stream") and request.get("op", "exec") == "exec":
+                    for event in broker.handle_stream(
+                        request,
+                        audit_context={"transport": "uds", "caller": getpass.getuser()},
+                    ):
+                        self.wfile.write((json.dumps(event) + "\n").encode("utf-8"))
+                        self.wfile.flush()
+                    continue
                 response = broker.handle(
                     request,
                     audit_context={"transport": "uds", "caller": getpass.getuser()},
@@ -104,6 +112,34 @@ class Connection:
 
     def request(self, req: dict) -> dict:
         self._sock.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        response = self._read_response()
+        if response.get("op") != "exec_chunk":
+            return response
+
+        stdout = []
+        stderr = []
+        while response.get("op") == "exec_chunk":
+            if response.get("stream") == "stderr":
+                stderr.append(response.get("data") or "")
+            else:
+                stdout.append(response.get("data") or "")
+            response = self._read_response()
+        if response.get("op") == "exec":
+            response = dict(response)
+            response["stdout"] = "".join(stdout)
+            response["stderr"] = "".join(stderr)
+        return response
+
+    def request_stream(self, req: dict, on_event) -> dict:
+        self._sock.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        while True:
+            response = self._read_response()
+            if response.get("op") == "exec_chunk":
+                on_event(response)
+                continue
+            return response
+
+    def _read_response(self) -> dict:
         while b"\n" not in self._buf:
             chunk = self._sock.recv(4096)
             if not chunk:

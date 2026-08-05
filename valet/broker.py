@@ -7,11 +7,14 @@ Redactor and asserted clean before it leaves. UDS and REPL are thin shells over
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -25,12 +28,83 @@ from .errors import (
     ValetError,
     ValidationError,
 )
-from .executor import run
+from .executor import OutputChunk, RunResult, iter_run, run
 from .policy import Policy
 from .sanitize import Redactor
 from .secrets import load_secret_values
 
 _WITHHELD = "[REDACTED: output withheld — residual secret detected]"
+_STRUCTURED_LINE_RE = re.compile(
+    r"^\s*(?:---\s*)?$|"
+    r"^\s*[\{\[]|"
+    r"^\s*(?:-\s*)?[A-Za-z_][A-Za-z0-9_.\- ]*\s*:\s*|"
+    r"^\s*\"(?:[^\"\\]|\\.)*\"\s*:\s*"
+)
+_PEM_LINE_RE = re.compile(r"-----BEGIN [^-]+-----")
+
+
+@dataclass
+class _ExecPlan:
+    cmd: Any
+    shell: bool
+    cwd: Optional[str]
+    timeout: int
+    redactor: Redactor
+    echoed: str
+
+
+class _StreamRedactor:
+    """Line-stream output unless the shape needs whole-context redaction."""
+
+    def __init__(self, redactor: Redactor):
+        self.redactor = redactor
+        self.pending = ""
+        self.buffering = False
+
+    def feed(self, text: str) -> list[str]:
+        if not text:
+            return []
+        self.pending += text
+        if self.buffering:
+            return []
+
+        out = []
+        while "\n" in self.pending:
+            line, sep, rest = self.pending.partition("\n")
+            candidate = line + sep
+            if self._needs_whole_context(candidate):
+                self.buffering = True
+                self.pending = candidate + rest
+                return out
+            out.append(self._safe(candidate))
+            self.pending = rest
+        return out
+
+    def finish(self) -> list[str]:
+        if not self.pending:
+            return []
+        text = self._safe(self.pending)
+        self.pending = ""
+        return [text] if text else []
+
+    def _needs_whole_context(self, text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return False
+        if stripped[:1] in ("{", "[") and self._is_complete_json_record(stripped):
+            return False
+        return bool(_PEM_LINE_RE.search(text) or _STRUCTURED_LINE_RE.match(text))
+
+    @staticmethod
+    def _is_complete_json_record(text: str) -> bool:
+        try:
+            json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        return True
+
+    def _safe(self, text: str) -> str:
+        return Broker._safe(self.redactor, text)
 
 
 class Broker:
@@ -92,45 +166,112 @@ class Broker:
     # -- operations ------------------------------------------------------------
 
     def _exec(self, request: dict) -> dict:
-        raw_cmd = request.get("cmd")
-        if not raw_cmd:
-            raise ValidationError("missing 'cmd'")
-
-        shell = bool(request.get("shell", self.cfg.exec.shell))
-        cmd = self._normalize_cmd(raw_cmd, shell)
-
-        cwd = request.get("cwd") or self.cfg.exec.workspace
-        cwd = os.path.expanduser(cwd) if cwd else None
-        if cwd is not None and not os.path.isdir(cwd):
-            raise ValidationError("cwd does not exist")
-
-        timeout = int(request.get("timeout", self.cfg.timeout_seconds))
-
-        # Policy gate (permissive in v0.2; see valet/policy.py).
-        self.policy.check(cmd, cwd)
-
-        redactor = self._redactor_for(cwd)
+        plan = self._exec_plan(request)
 
         try:
-            result = run(cmd, shell=shell, cwd=cwd, timeout=timeout)
+            result = run(plan.cmd, shell=plan.shell, cwd=plan.cwd, timeout=plan.timeout)
         except (TimeoutError_, CommandError) as exc:
             return {
                 "op": "exec", "ok": False, "error_class": exc.error_class,
-                "detail": str(exc), "cwd": cwd, "shell": shell,
+                "detail": str(exc), "cwd": plan.cwd, "shell": plan.shell,
             }
 
-        echoed = cmd if isinstance(cmd, str) else shlex.join(cmd)
         return {
             "op": "exec",
             "ok": result.exit_code == 0,
             "exit_code": result.exit_code,
-            "cwd": cwd,
-            "shell": shell,
-            "cmd": self._safe(redactor, echoed),
-            "stdout": self._safe(redactor, result.stdout),
-            "stderr": self._safe(redactor, result.stderr),
-            "redacted_value_count": len(redactor.secret_values),
+            "cwd": plan.cwd,
+            "shell": plan.shell,
+            "cmd": self._safe(plan.redactor, plan.echoed),
+            "stdout": self._safe(plan.redactor, result.stdout),
+            "stderr": self._safe(plan.redactor, result.stderr),
+            "redacted_value_count": len(plan.redactor.secret_values),
         }
+
+    def handle_stream(
+        self,
+        request: Any,
+        *,
+        audit_context: Optional[dict[str, Any]] = None,
+    ):
+        """Yield redacted stream events followed by the final exec response."""
+        started = time.monotonic()
+        context = AuditContext.from_mapping(audit_context)
+        base = {"broker_version": __version__}
+        response: Optional[dict] = None
+        try:
+            if not isinstance(request, dict):
+                raise ValidationError("request must be a JSON object")
+            if request.get("op", "exec") != "exec":
+                response = self.handle(request, audit_context=audit_context)
+                yield response
+                return
+
+            plan = self._exec_plan(request)
+            buffers = {
+                "stdout": _StreamRedactor(plan.redactor),
+                "stderr": _StreamRedactor(plan.redactor),
+            }
+
+            result: Optional[RunResult] = None
+            for item in iter_run(
+                plan.cmd,
+                shell=plan.shell,
+                cwd=plan.cwd,
+                timeout=plan.timeout,
+            ):
+                if isinstance(item, OutputChunk):
+                    for text in buffers[item.stream].feed(item.text):
+                        yield {**base, "op": "exec_chunk", "stream": item.stream,
+                               "data": text}
+                else:
+                    result = item
+
+            if result is None:
+                result = RunResult(exit_code=1, stdout="", stderr="")
+
+            for stream, buffer in buffers.items():
+                for text in buffer.finish():
+                    yield {**base, "op": "exec_chunk", "stream": stream, "data": text}
+
+            response = {
+                **base,
+                "op": "exec",
+                "ok": result.exit_code == 0,
+                "exit_code": result.exit_code,
+                "cwd": plan.cwd,
+                "shell": plan.shell,
+                "cmd": self._safe(plan.redactor, plan.echoed),
+                "stdout": "",
+                "stderr": "",
+                "streamed": True,
+                "redacted_value_count": len(plan.redactor.secret_values),
+            }
+            yield response
+        except (TimeoutError_, CommandError) as exc:
+            response = {
+                **base, "op": "exec", "ok": False, "error_class": exc.error_class,
+                "detail": str(exc),
+            }
+            yield response
+        except ValetError as exc:
+            response = {
+                **base,
+                "op": request.get("op") if isinstance(request, dict) else None,
+                "ok": False,
+                "error_class": exc.error_class,
+                "detail": str(exc),
+            }
+            yield response
+        except Exception:
+            response = {**base, "ok": False, "error_class": "InternalError",
+                        "detail": "internal error"}
+            yield response
+        finally:
+            if response is not None and not (
+                isinstance(request, dict) and request.get("op", "exec") != "exec"
+            ):
+                self._audit(request, response, context, time.monotonic() - started)
 
     def _chdir(self, request: dict) -> dict:
         """Resolve a `cd` for a stateful client, jailed to the workspace.
@@ -169,6 +310,29 @@ class Broker:
                 "redacted_value_count": len(redactor.secret_values)}
 
     # -- helpers ---------------------------------------------------------------
+
+    def _exec_plan(self, request: dict) -> _ExecPlan:
+        raw_cmd = request.get("cmd")
+        if not raw_cmd:
+            raise ValidationError("missing 'cmd'")
+
+        shell = bool(request.get("shell", self.cfg.exec.shell))
+        cmd = self._normalize_cmd(raw_cmd, shell)
+
+        cwd = request.get("cwd") or self.cfg.exec.workspace
+        cwd = os.path.expanduser(cwd) if cwd else None
+        if cwd is not None and not os.path.isdir(cwd):
+            raise ValidationError("cwd does not exist")
+
+        timeout = int(request.get("timeout", self.cfg.timeout_seconds))
+
+        # Policy gate (permissive in v0.2; see valet/policy.py).
+        self.policy.check(cmd, cwd)
+
+        redactor = self._redactor_for(cwd)
+        echoed = cmd if isinstance(cmd, str) else shlex.join(cmd)
+        return _ExecPlan(cmd=cmd, shell=shell, cwd=cwd, timeout=timeout,
+                         redactor=redactor, echoed=echoed)
 
     @staticmethod
     def _normalize_cmd(raw_cmd, shell: bool):

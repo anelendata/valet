@@ -79,7 +79,14 @@ def _cmd_repl(args: argparse.Namespace) -> int:
             completion_workspace=(cfg.exec.workspace
                                   if cfg.policy.enforce_workspace_reads else None),
         )
-        return interact(conn.request, session=session)
+        def send(req: dict) -> dict:
+            if req.get("op", "exec") == "exec" and req.get("stream", True):
+                req = dict(req)
+                req["stream"] = True
+                return conn.request_stream(req, _print_stream_event)
+            return conn.request(req)
+
+        return interact(send, session=session)
     finally:
         conn.close()
 
@@ -93,6 +100,31 @@ def _one_shot(args: argparse.Namespace, request: dict) -> int:
               file=sys.stderr)
         return 2
     return _print_response(resp)
+
+
+def _streaming_one_shot(args: argparse.Namespace, request: dict) -> int:
+    cfg = load_config(args.config)
+    request = dict(request)
+    request["stream"] = True
+    try:
+        conn = Connection(cfg.socket_path)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request_stream(request, _print_stream_event)
+    finally:
+        conn.close()
+    return _print_response(resp)
+
+
+def _print_stream_event(event: dict) -> None:
+    text = event.get("data") or ""
+    if event.get("stream") == "stderr":
+        print(text, end="", file=sys.stderr)
+    else:
+        print(text, end="")
 
 
 def _print_response(resp: dict) -> int:
@@ -121,7 +153,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
            "timeout": args.timeout}
     if args.cwd:
         req["cwd"] = args.cwd
-    return _one_shot(args, req)
+    return _streaming_one_shot(args, req)
 
 
 def _cmd_sh(args: argparse.Namespace) -> int:
@@ -129,7 +161,7 @@ def _cmd_sh(args: argparse.Namespace) -> int:
            "timeout": args.timeout}
     if args.cwd:
         req["cwd"] = args.cwd
-    return _one_shot(args, req)
+    return _streaming_one_shot(args, req)
 
 
 def _cmd_call(args: argparse.Namespace) -> int:

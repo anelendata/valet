@@ -1,4 +1,6 @@
 """The exec op runs commands and redacts secret values from their output."""
+import sys
+
 from valet.broker import Broker
 
 
@@ -83,6 +85,60 @@ def test_redaction_info_op(cfg):
     resp = Broker(cfg).handle({"op": "redaction_info"})
     assert resp["ok"] is True
     assert resp["redacted_value_count"] >= 1
+
+
+def test_stream_exec_yields_chunks_and_final(cfg):
+    events = list(Broker(cfg).handle_stream({"op": "exec", "cmd": "printf 'one\\ntwo\\n'"}))
+    chunks = [event for event in events if event.get("op") == "exec_chunk"]
+    final = events[-1]
+
+    assert [chunk["data"] for chunk in chunks] == ["one\n", "two\n"]
+    assert final["op"] == "exec"
+    assert final["ok"] is True
+    assert final["exit_code"] == 0
+    assert final["stdout"] == ""
+    assert final["streamed"] is True
+
+
+def test_stream_exec_buffers_structured_secret_dump(cfg):
+    secret = "1afbedbd65fedc34591eac1a79a9de2aff1aefe64"
+    text = (
+        "- key: google_client_secret\n"
+        "  level: resource group\n"
+        f"  value: \"{{\\n  \\\"private_key_id\\\": \\\"{secret}\\\"\\\n"
+        "    ,\\n  \\\"private_key\\\": \\\"-----BEGIN PRIVATE KEY-----abc\\\"\"\n"
+        "  updated_at: 2026-08-03\n"
+    )
+    script = "import sys; sys.stdout.write(%r)" % text
+    events = list(Broker(cfg).handle_stream(
+        {"op": "exec", "cmd": [sys.executable, "-c", script], "shell": False}
+    ))
+    streamed = "".join(event["data"] for event in events if event.get("op") == "exec_chunk")
+
+    assert secret not in streamed
+    assert "PRIVATE KEY" not in streamed
+    assert "value: [REDACTED:suspected]" in streamed
+    assert "updated_at: 2026-08-03" in streamed
+
+
+def test_stream_exec_streams_complete_jsonl_records(cfg):
+    script = (
+        "import sys, time\n"
+        "print('{\"private_key\":\"alpha-secret-one\",\"name\":\"first\"}', flush=True)\n"
+        "time.sleep(0.01)\n"
+        "print('{\"private_key\":\"beta-secret-two\",\"name\":\"second\"}', flush=True)\n"
+    )
+    events = list(Broker(cfg).handle_stream(
+        {"op": "exec", "cmd": [sys.executable, "-c", script], "shell": False}
+    ))
+    chunks = [event["data"] for event in events if event.get("op") == "exec_chunk"]
+
+    assert len(chunks) == 2
+    assert "alpha-secret-one" not in "".join(chunks)
+    assert "beta-secret-two" not in "".join(chunks)
+    assert '"private_key": "[REDACTED:suspected]"' in chunks[0]
+    assert '"name":"first"' in chunks[0]
+    assert '"name":"second"' in chunks[1]
 
 
 def test_bare_single_string_secret_file_is_redacted(cfg, workspace, tmp_path):
