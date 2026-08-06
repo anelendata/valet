@@ -1110,3 +1110,50 @@ under internet exposure.
 The correct foundation is a small, explicit, authenticated RPC protocol whose
 first two transports are the existing local Unix socket and a LAN WebSocket.
 The cloud relay should later route that protocol, not invent a second one.
+
+
+# Policy roadmap
+
+The [`[policy]`](config.example.toml) section and [`valet/policy.py`](valet/policy.py)
+carry the constraints. Available now:
+
+- **command deny list** (`deny`) — refuse commands by program name.
+- **built-in config protection** — `config.toml` is always refused as a
+  command input or output target, including shell redirects. This guard is
+  hard-coded and cannot be relaxed in `config.toml`; completion also hides the
+  filename.
+- **wildcard file bans** (`deny_read_paths`) — glob patterns (`**`, `*`, `?`) of
+  files a command may not reference; valet refuses to run a command that names
+  an existing matching file, so its content is never revealed. `**/.env` bans
+  reading any `.env` anywhere; `~/.aws/**` bans anything under `~/.aws`. The
+  analyzer is shell-aware: it splits on operators (`;` `&&` `||` `|` `&`,
+  newlines) and tracks `cd`/`pushd`, so `cd some/dir; cat .env` is caught the
+  same as `cat some/dir/.env`.
+
+  It is still **best-effort static analysis of the command line**: it catches
+  the realistic reveals (`cat`/`less`/`grep` a path, including after a `cd`), but
+  cannot see through a computed path (`eval`, `$(...)`, variable expansion,
+  base64) or a program that reads the file internally without naming it. Content
+  redaction is the backstop for those; only OS-level sandboxing would stop a
+  determined reader.
+- **workspace read-jail** (`enforce_workspace_reads`) — when enabled, an
+  existing file/directory argument, symlink target, or explicit `cwd` outside
+  `[exec].workspace` is refused. This catches `cat ../message.txt` and
+  `cd .. && cat message.txt`; it uses the same best-effort command-line analysis
+
+Still to come:
+
+  as `deny_read_paths` and is not an OS sandbox.
+- **command allow list** (`allow`, empty = allow all today) becomes a strict
+  allowlist when populated.
+- **workspace write-jail** (`enforce_workspace_writes`) will forbid writes
+  outside the configured `workspace`.
+- **approval** for sensitive operations, especially actions that mutate
+  infrastructure, deploy, spend money, delete data, or call out to less-trusted
+  networks.
+- **typed capabilities** for common workflows, so an agent can request
+  `terraform_plan` or `gh_pr_checks` instead of a raw shell command string.
+
+`Policy.check` is the single choke point; new constraints go there and stay
+fail-closed.
+
