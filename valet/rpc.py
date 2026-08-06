@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import ssl
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -102,15 +103,20 @@ class _WebSocketRpcTransport:
         if not host.client_id or not host.key:
             raise RpcError(f"host {host.name!r} is missing client_id/key")
         self.host = host
-        self.sock = _connect_websocket(host.url)
-        self._authenticate()
+        self.sock: Optional[socket.socket] = None
+        self._connect_with_backoff()
 
     def request(self, req: dict) -> dict:
         request_id = _request_id()
-        write_text(self.sock, json.dumps(_request_envelope(request_id, self.host.client_id, req)),
-                   mask=True)
+        try:
+            self._write_request(request_id, req)
+        except RpcError as exc:
+            return _transport_error_response(req, str(exc))
         while True:
-            message = self._read_message()
+            try:
+                message = self._read_message()
+            except RpcError:
+                return self._lost_during_request_response(req)
             if message.get("request_id") != request_id:
                 continue
             msg_type = message.get("type")
@@ -125,8 +131,10 @@ class _WebSocketRpcTransport:
         req = dict(req)
         req["stream"] = True
         request_id = _request_id()
-        write_text(self.sock, json.dumps(_request_envelope(request_id, self.host.client_id, req)),
-                   mask=True)
+        try:
+            self._write_request(request_id, req)
+        except RpcError as exc:
+            return _transport_error_response(req, str(exc))
         cancelled = False
         while True:
             try:
@@ -134,9 +142,14 @@ class _WebSocketRpcTransport:
             except KeyboardInterrupt:
                 if cancelled:
                     raise
-                self._send_cancel(request_id)
+                try:
+                    self._send_cancel(request_id)
+                except RpcError:
+                    return self._lost_during_request_response(req)
                 cancelled = True
                 continue
+            except RpcError:
+                return self._lost_during_request_response(req)
             if message.get("request_id") != request_id:
                 continue
             if message.get("type") == "event":
@@ -155,11 +168,79 @@ class _WebSocketRpcTransport:
                 return _safe_error_response(message)
 
     def close(self) -> None:
-        write_close(self.sock, mask=True)
+        sock = self.sock
+        self.sock = None
+        if sock is None:
+            return
         try:
-            self.sock.close()
+            write_close(sock, mask=True)
         except OSError:
             pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _connect_with_backoff(self) -> None:
+        self._close_socket()
+        attempts = max(0, int(self.host.reconnect_max_retries)) + 1
+        delay = max(0.0, float(self.host.reconnect_backoff_seconds))
+        max_delay = max(delay, float(self.host.reconnect_backoff_max_seconds))
+        last_error: Optional[BaseException] = None
+        for attempt in range(attempts):
+            try:
+                self.sock = _connect_websocket(self.host.url)
+                self._authenticate()
+                return
+            except (OSError, RpcError) as exc:
+                last_error = exc
+                self._close_socket()
+                if attempt == attempts - 1:
+                    break
+                if delay > 0:
+                    time.sleep(min(delay, max_delay))
+                    delay = min(delay * 2, max_delay)
+        raise RpcError("could not reconnect to websocket host") from last_error
+
+    def _close_socket(self) -> None:
+        sock = self.sock
+        self.sock = None
+        if sock is None:
+            return
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _write_request(self, request_id: str, req: dict) -> None:
+        payload = json.dumps(_request_envelope(request_id, self.host.client_id, req))
+        if self.sock is None:
+            self._connect_with_backoff()
+        try:
+            self._send_text(payload)
+        except RpcError:
+            self._connect_with_backoff()
+            self._send_text(payload)
+
+    def _send_text(self, payload: str) -> None:
+        if self.sock is None:
+            raise RpcError("websocket is not connected")
+        assert self.sock is not None
+        try:
+            write_text(self.sock, payload, mask=True)
+        except (OSError, WebSocketError) as exc:
+            self._close_socket()
+            raise RpcError("websocket connection failed") from exc
+
+    def _lost_during_request_response(self, req: dict) -> dict:
+        try:
+            self._connect_with_backoff()
+        except RpcError as exc:
+            return _transport_error_response(req, str(exc))
+        return _transport_error_response(
+            req,
+            "websocket connection lost during request; reconnected, please retry",
+        )
 
     def _authenticate(self) -> None:
         challenge = self._read_message()
@@ -182,17 +263,20 @@ class _WebSocketRpcTransport:
             raise RpcError(str(accepted.get("detail") or "authentication failed"))
 
     def _send_cancel(self, request_id: str) -> None:
-        write_text(self.sock, json.dumps({
+        self._send_text(json.dumps({
             "protocol": PROTOCOL,
             "type": "cancel",
             "request_id": request_id,
-        }), mask=True)
+        }))
 
     def _read_message(self) -> dict:
+        if self.sock is None:
+            raise RpcError("websocket is not connected")
         try:
             text = read_text(self.sock, expect_masked=False)
             message = json.loads(text)
         except (OSError, WebSocketError, json.JSONDecodeError) as exc:
+            self._close_socket()
             raise RpcError("websocket connection failed") from exc
         if message.get("protocol") != PROTOCOL:
             raise RpcError("unsupported RPC protocol")
@@ -433,4 +517,13 @@ def _safe_error_response(message: dict) -> dict:
         "ok": False,
         "error_class": str(message.get("error_class") or "RpcError"),
         "detail": str(message.get("detail") or "RPC request failed"),
+    }
+
+
+def _transport_error_response(req: dict, detail: str) -> dict:
+    return {
+        "ok": False,
+        "error_class": "ConnectionError",
+        "detail": detail,
+        "request_op": str(req.get("op", "exec")),
     }

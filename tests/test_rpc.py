@@ -8,7 +8,16 @@ import pytest
 from valet.client_config import ClientHost, load_client_config
 from valet.config import AuditConfig, ClientIdentity, HostConfig, IdentityConfig
 from valet.errors import ConfigError
-from valet.rpc import PROTOCOL, RpcError, Target, ValetClient, _connect_websocket, _signature, legacy_request_from_rpc
+from valet.rpc import (
+    PROTOCOL,
+    RpcError,
+    Target,
+    ValetClient,
+    _WebSocketRpcTransport,
+    _connect_websocket,
+    _signature,
+    legacy_request_from_rpc,
+)
 from valet.server_ws import make_server
 from valet.wsproto import accept_key, read_text, write_text
 
@@ -54,6 +63,18 @@ class FakeSocket:
         pass
 
 
+class FakeRpcSocket:
+    def __init__(self, messages, *, fail_request_write=False, read_error=False):
+        self.messages = list(messages)
+        self.fail_request_write = fail_request_write
+        self.read_error = read_error
+        self.sent = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 def _ws_upgrade_response(key="test-key"):
     return (
         "HTTP/1.1 101 Switching Protocols\r\n"
@@ -82,6 +103,37 @@ def test_client_config_is_remote_subset(tmp_path):
     assert cfg.hosts["main"].client_id == "client_a"
     assert cfg.hosts["main"].key == "secret-client-key"
     assert cfg.hosts["main"].host_id == "main-host-id"
+
+
+def test_client_config_loads_reconnect_defaults_and_host_overrides(tmp_path):
+    path = tmp_path / "client.toml"
+    path.write_text(
+        "[client]\n"
+        'id = "client_a"\n'
+        'key = "secret-client-key"\n'
+        'default_host = "main"\n'
+        "reconnect_max_retries = 7\n"
+        "reconnect_backoff_seconds = 0.5\n"
+        "reconnect_backoff_max_seconds = 4.0\n"
+        "\n"
+        "[hosts.main]\n"
+        'url = "ws://127.0.0.1:8766/rpc"\n'
+        "\n"
+        "[hosts.fast]\n"
+        'url = "ws://127.0.0.1:8767/rpc"\n'
+        "reconnect_max_retries = 2\n"
+        "reconnect_backoff_seconds = 0.1\n"
+        "reconnect_backoff_max_seconds = 0.2\n"
+    )
+
+    cfg = load_client_config(path)
+
+    assert cfg.hosts["main"].reconnect_max_retries == 7
+    assert cfg.hosts["main"].reconnect_backoff_seconds == 0.5
+    assert cfg.hosts["main"].reconnect_backoff_max_seconds == 4.0
+    assert cfg.hosts["fast"].reconnect_max_retries == 2
+    assert cfg.hosts["fast"].reconnect_backoff_seconds == 0.1
+    assert cfg.hosts["fast"].reconnect_backoff_max_seconds == 0.2
 
 
 def test_explicit_missing_client_config_is_an_error(tmp_path):
@@ -238,6 +290,135 @@ def test_connect_websocket_wss_wraps_tls_after_proxy_tunnel(monkeypatch):
     assert wrapped == [(sock, "secure.test", [sock.sent[0]])]
     assert sock.sent[0].startswith(b"CONNECT secure.test:9443 HTTP/1.1\r\n")
     assert sock.sent[1].startswith(b"GET /rpc HTTP/1.1\r\n")
+
+
+def _auth_challenge():
+    return {
+        "protocol": PROTOCOL,
+        "type": "auth.challenge",
+        "host_id": "test-host",
+        "nonce": "nonce",
+    }
+
+
+def _auth_ok():
+    return {"protocol": PROTOCOL, "type": "auth.ok"}
+
+
+def _rpc_host(**overrides):
+    values = {
+        "name": "test-host",
+        "url": "ws://127.0.0.1:8766/rpc",
+        "client_id": "client_a",
+        "key": "client-secret",
+        "host_id": "test-host",
+        "reconnect_max_retries": 2,
+        "reconnect_backoff_seconds": 0.1,
+        "reconnect_backoff_max_seconds": 0.2,
+    }
+    values.update(overrides)
+    return ClientHost(**values)
+
+
+def _install_fake_rpc_io(monkeypatch):
+    def fake_read_text(sock, expect_masked):
+        if sock.messages:
+            return json.dumps(sock.messages.pop(0))
+        if sock.read_error:
+            raise OSError("connection lost")
+        raise AssertionError("unexpected websocket read")
+
+    def fake_write_text(sock, text, mask):
+        message = json.loads(text)
+        if message.get("type") == "request" and sock.fail_request_write:
+            sock.fail_request_write = False
+            raise OSError("broken pipe")
+        sock.sent.append(message)
+
+    monkeypatch.setattr("valet.rpc.read_text", fake_read_text)
+    monkeypatch.setattr("valet.rpc.write_text", fake_write_text)
+    monkeypatch.setattr("valet.rpc.write_close", lambda sock, mask: None)
+    monkeypatch.setattr("valet.rpc.time.sleep", lambda seconds: None)
+
+
+def test_websocket_transport_retries_initial_connect_with_backoff(monkeypatch):
+    _install_fake_rpc_io(monkeypatch)
+    sleeps = []
+    attempts = []
+    sock = FakeRpcSocket([_auth_challenge(), _auth_ok()])
+
+    def connect(url):
+        attempts.append(url)
+        if len(attempts) < 3:
+            raise RpcError("host unavailable")
+        return sock
+
+    monkeypatch.setattr("valet.rpc._connect_websocket", connect)
+    monkeypatch.setattr("valet.rpc.time.sleep", sleeps.append)
+
+    transport = _WebSocketRpcTransport(_rpc_host())
+    try:
+        assert attempts == [
+            "ws://127.0.0.1:8766/rpc",
+            "ws://127.0.0.1:8766/rpc",
+            "ws://127.0.0.1:8766/rpc",
+        ]
+        assert sleeps == [0.1, 0.2]
+    finally:
+        transport.close()
+
+
+def test_websocket_transport_reconnects_when_idle_socket_write_fails(monkeypatch):
+    _install_fake_rpc_io(monkeypatch)
+    monkeypatch.setattr("valet.rpc._request_id", lambda: "req-1")
+    first = FakeRpcSocket([_auth_challenge(), _auth_ok()], fail_request_write=True)
+    second = FakeRpcSocket([
+        _auth_challenge(),
+        _auth_ok(),
+        {
+            "protocol": PROTOCOL,
+            "type": "response",
+            "request_id": "req-1",
+            "result": {"ok": True, "pong": True},
+        },
+    ])
+    sockets = [first, second]
+    monkeypatch.setattr("valet.rpc._connect_websocket", lambda _url: sockets.pop(0))
+
+    transport = _WebSocketRpcTransport(_rpc_host())
+    try:
+        resp = transport.request({"op": "ping"})
+    finally:
+        transport.close()
+
+    assert resp == {"ok": True, "pong": True}
+    assert first.closed is True
+    second_requests = [message for message in second.sent if message.get("type") == "request"]
+    assert len(second_requests) == 1
+    assert second_requests[0]["method"] == "host.ping"
+
+
+def test_websocket_transport_does_not_replay_after_read_failure(monkeypatch):
+    _install_fake_rpc_io(monkeypatch)
+    monkeypatch.setattr("valet.rpc._request_id", lambda: "req-1")
+    first = FakeRpcSocket([_auth_challenge(), _auth_ok()], read_error=True)
+    second = FakeRpcSocket([_auth_challenge(), _auth_ok()])
+    sockets = [first, second]
+    monkeypatch.setattr("valet.rpc._connect_websocket", lambda _url: sockets.pop(0))
+
+    transport = _WebSocketRpcTransport(_rpc_host())
+    try:
+        resp = transport.request_stream({"op": "exec", "cmd": "touch marker"}, lambda _event: None)
+    finally:
+        transport.close()
+
+    first_requests = [message for message in first.sent if message.get("type") == "request"]
+    second_requests = [message for message in second.sent if message.get("type") == "request"]
+    assert len(first_requests) == 1
+    assert second_requests == []
+    assert resp["ok"] is False
+    assert resp["error_class"] == "ConnectionError"
+    assert "reconnected" in resp["detail"]
 
 
 @pytest.fixture

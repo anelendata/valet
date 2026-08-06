@@ -53,6 +53,9 @@ def client_config_snippet(
         f'id = "{_toml_escape(update.client_id)}"\n'
         f'key = "{_toml_escape(update.key)}"\n'
         f'default_host = "{_toml_escape(host_name)}"\n'
+        "reconnect_max_retries = 5\n"
+        "reconnect_backoff_seconds = 0.25\n"
+        "reconnect_backoff_max_seconds = 3.0\n"
         "\n"
         f"[hosts.{_toml_key(host_name)}]\n"
         f'url = "{_toml_escape(url)}"\n'

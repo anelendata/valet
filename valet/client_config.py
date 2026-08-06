@@ -25,6 +25,9 @@ class ClientHost:
     client_id: str
     key: str
     host_id: str = ""
+    reconnect_max_retries: int = 5
+    reconnect_backoff_seconds: float = 0.25
+    reconnect_backoff_max_seconds: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,9 @@ def load_client_config(
     client_id = str(client.get("id", ""))
     client_key = str(client.get("key", ""))
     default_host = str(client.get("default_host", ""))
+    reconnect_max_retries = int(client.get("reconnect_max_retries", 5))
+    reconnect_backoff_seconds = float(client.get("reconnect_backoff_seconds", 0.25))
+    reconnect_backoff_max_seconds = float(client.get("reconnect_backoff_max_seconds", 3.0))
     hosts: dict[str, ClientHost] = {}
     for name, value in raw.get("hosts", {}).items():
         if not isinstance(value, dict):
@@ -78,6 +84,15 @@ def load_client_config(
             client_id=host_client_id,
             key=host_key,
             host_id=str(value.get("host_id", "")),
+            reconnect_max_retries=int(
+                value.get("reconnect_max_retries", reconnect_max_retries)
+            ),
+            reconnect_backoff_seconds=float(
+                value.get("reconnect_backoff_seconds", reconnect_backoff_seconds)
+            ),
+            reconnect_backoff_max_seconds=float(
+                value.get("reconnect_backoff_max_seconds", reconnect_backoff_max_seconds)
+            ),
         )
     return ClientConfig(
         path=cfg_path,
@@ -97,6 +112,9 @@ def write_new_client_config(path: Path, *, host_name: str, url: str) -> ClientCo
         f'id = "{client_id}"\n'
         f'key = "{key}"\n'
         f'default_host = "{host_name}"\n'
+        "reconnect_max_retries = 5\n"
+        "reconnect_backoff_seconds = 0.25\n"
+        "reconnect_backoff_max_seconds = 3.0\n"
         "\n"
         f"[hosts.{host_name}]\n"
         f'url = "{url}"\n'
