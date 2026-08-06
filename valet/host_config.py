@@ -15,6 +15,13 @@ class ClientKeyUpdate:
     existed: bool
 
 
+@dataclass(frozen=True)
+class ClientIdentityEntry:
+    client_id: str
+    name: str
+    has_key: bool
+
+
 def generate_client_key() -> str:
     return secrets.token_urlsafe(32)
 
@@ -23,6 +30,19 @@ def find_client_identity(path: Path, name: str) -> str | None:
     text = path.read_text()
     client_id, existed = _find_client_identity(text, name)
     return client_id if existed else None
+
+
+def list_client_identities(path: Path) -> list[ClientIdentityEntry]:
+    text = path.read_text()
+    entries = []
+    for client_id, start, end in _identity_sections(text):
+        body = text[start:end]
+        entries.append(ClientIdentityEntry(
+            client_id=client_id,
+            name=_read_string_value(body, "name") or client_id,
+            has_key=bool(_read_string_value(body, "key")),
+        ))
+    return entries
 
 
 def upsert_client_identity(
@@ -39,6 +59,27 @@ def upsert_client_identity(
     updated = _replace_or_append_identity(text, client_id=client_id, name=name, key=key)
     path.write_text(updated)
     return ClientKeyUpdate(client_id=client_id, name=name, key=key, existed=existed)
+
+
+def remove_client_identity(path: Path, name: str) -> ClientIdentityEntry | None:
+    text = path.read_text()
+    client_id, existed = _find_client_identity(text, name)
+    if not existed or client_id is None:
+        return None
+    for existing_id, start, end in _identity_sections(text):
+        if existing_id != client_id:
+            continue
+        body = text[start:end]
+        entry = ClientIdentityEntry(
+            client_id=client_id,
+            name=_read_string_value(body, "name") or client_id,
+            has_key=bool(_read_string_value(body, "key")),
+        )
+        updated = text[:start] + text[end:]
+        updated = re.sub(r"\n{3,}", "\n\n", updated).rstrip() + "\n"
+        path.write_text(updated)
+        return entry
+    return None
 
 
 def client_config_snippet(

@@ -13,6 +13,8 @@ Subcommands:
   valet hosts           list configured client hosts
   valet client init     create a client-only config.toml
   valet clients add     generate and approve a host-side client key
+  valet clients list    list host-approved client identities
+  valet clients remove  remove a host-approved client identity
   valet init            generate a fingerprint_salt in config.toml
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
@@ -29,7 +31,13 @@ from pathlib import Path
 from .client_config import default_client_config_path, load_client_config, write_new_client_config
 from .config import default_config_path, load_config
 from .errors import ValetError
-from .host_config import client_config_snippet, find_client_identity, upsert_client_identity
+from .host_config import (
+    client_config_snippet,
+    find_client_identity,
+    list_client_identities,
+    remove_client_identity,
+    upsert_client_identity,
+)
 from .rpc import RpcError, ValetClient, resolve_target
 from .repl import Session, interact
 from .server_host import serve as serve_host
@@ -61,7 +69,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    serve_host(load_config(args.config))
+    path = Path(args.config) if args.config else default_config_path()
+    serve_host(load_config(path), config_path=path)
     return 0
 
 
@@ -268,6 +277,43 @@ def _cmd_clients_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_clients_list(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Copy config.example.toml first:",
+              file=sys.stderr)
+        return 2
+
+    entries = list_client_identities(path)
+    if not entries:
+        print(f"valet: no approved clients in {path}")
+        return 0
+    for entry in sorted(entries, key=lambda item: item.client_id):
+        key_state = "key=set" if entry.has_key else "key=missing"
+        print(f"{entry.client_id}\tname={entry.name}\t{key_state}")
+    return 0
+
+
+def _cmd_clients_remove(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Copy config.example.toml first:",
+              file=sys.stderr)
+        return 2
+
+    name = args.name.strip()
+    if not name:
+        print("valet clients remove: client name cannot be empty", file=sys.stderr)
+        return 2
+
+    removed = remove_client_identity(path, name)
+    if removed is None:
+        print(f"valet: client {name!r} was not found in {path}", file=sys.stderr)
+        return 1
+    print(f"valet: removed client {removed.name!r} ({removed.client_id}) from {path}")
+    return 0
+
+
 def _default_lan_url(listen: str) -> str:
     host, port = listen.rsplit(":", 1) if ":" in listen else (listen, "8766")
     if host in ("", "0.0.0.0", "::"):
@@ -310,6 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     clients = sub.add_parser("clients", help="manage host-approved client identities")
     clients_sub = clients.add_subparsers(dest="clients_cmd", required=True)
+    clients_sub.add_parser("list", help="list approved client identities"
+                           ).set_defaults(func=_cmd_clients_list)
     clients_add = clients_sub.add_parser("add", help="generate and approve a client key")
     clients_add.add_argument("name", help="friendly client name")
     clients_add.add_argument("--yes", "-y", action="store_true",
@@ -319,6 +367,9 @@ def build_parser() -> argparse.ArgumentParser:
     clients_add.add_argument("--url", default=None,
                              help="WebSocket URL to print in the client snippet")
     clients_add.set_defaults(func=_cmd_clients_add)
+    clients_remove = clients_sub.add_parser("remove", help="remove an approved client key")
+    clients_remove.add_argument("name", help="client id or friendly client name")
+    clients_remove.set_defaults(func=_cmd_clients_remove)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
     run.add_argument("--cwd", default=None)

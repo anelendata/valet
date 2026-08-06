@@ -110,12 +110,24 @@ class _StreamRedactor:
 
 class Broker:
     def __init__(self, cfg: BrokerConfig, *, audit_to_console: bool = False):
+        self._lock = threading.RLock()
         self.cfg = cfg
+        self._audit_to_console = audit_to_console
         self.policy = Policy.from_config(cfg.policy, cfg.exec.workspace)
         self.audit = AuditLogger(
             log_path=cfg.audit.log_path,
             console=audit_to_console,
         )
+
+    def reload(self, cfg: BrokerConfig) -> None:
+        """Replace mutable config-backed state for future requests."""
+        with self._lock:
+            self.cfg = cfg
+            self.policy = Policy.from_config(cfg.policy, cfg.exec.workspace)
+            self.audit = AuditLogger(
+                log_path=cfg.audit.log_path,
+                console=self._audit_to_console and cfg.audit.console,
+            )
 
     # -- public entrypoint -----------------------------------------------------
 
