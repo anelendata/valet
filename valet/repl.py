@@ -53,6 +53,7 @@ BANNER = (
 class Session:
     cwd: Optional[str] = None      # None => daemon's configured workspace
     shell: bool = True
+    host_label: Optional[str] = None
     # Set by the CLI when policy.enforce_workspace_reads is enabled.
     completion_workspace: Optional[str] = None
 
@@ -185,10 +186,11 @@ def format_exec(resp: dict) -> Optional[str]:
 
 def prompt_for(session: Session) -> str:
     """`<lastdir> valet> `, or plain `valet> ` if the cwd is unknown."""
+    prefix = f"{session.host_label}:" if session.host_label else ""
     if session.cwd:
         name = os.path.basename(session.cwd.rstrip("/")) or session.cwd
-        return f"{name} valet> "
-    return "valet> "
+        return f"{prefix}{name} valet> "
+    return f"{prefix}valet> "
 
 
 def _word_start(line: str) -> int:

@@ -23,8 +23,8 @@ def test_secret_value_is_redacted_from_stdout(cfg):
 
 
 def test_cwd_dotenv_is_loaded_and_redacted(cfg, workspace):
-    # A .env in the working directory should be auto-loaded and its value hidden.
-    (workspace / ".env").write_text("API_TOKEN=tok_live_abcdef123456\n")
+    # A configured cwd secret file should be auto-loaded and its value hidden.
+    (workspace / "env_values_test").write_text("API_TOKEN=tok_live_abcdef123456\n")
     resp = Broker(cfg).handle(
         {"op": "exec", "cmd": "echo tok_live_abcdef123456", "cwd": str(workspace)}
     )

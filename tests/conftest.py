@@ -12,8 +12,8 @@ from valet.config import (
 
 @pytest.fixture
 def secret_file(tmp_path):
-    """A fake .secrets file with a long secret value and trivial ones."""
-    p = tmp_path / ".secrets"
+    """A fake secret-values file with a long secret value and trivial ones."""
+    p = tmp_path / "secret_values_test"
     p.write_text(textwrap.dedent(
         """\
         DB_PASSWORD=sup3r-s3cret-value-do-not-leak
@@ -42,7 +42,7 @@ def cfg(workspace, secret_file):
         exec=ExecConfig(workspace=str(workspace), shell=True),
         redaction=RedactionConfig(
             secret_sources=(str(secret_file),),
-            cwd_secret_files=(".env", ".secrets"),
+            cwd_secret_files=("env_values_test", "secret_values_test"),
             extra_values=(),
         ),
         policy=PolicyConfig(),

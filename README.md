@@ -466,6 +466,33 @@ curl -sS http://127.0.0.1:8765/call \
   -d '{"op":"ping"}'
 ```
 
+For Level 1 trusted-LAN RPC, create a client-only config on the second machine:
+
+```bash
+valet client init --host-name my-main-laptop --url ws://192.168.1.25:8766/rpc
+```
+
+Paste the printed `[identity.clients.client_...]` stanza into the trusted
+host's `config.toml`, set `[host].listen`, and start:
+
+```bash
+valet serve-lan
+```
+
+The client can then use the same commands through the selected host:
+
+```bash
+valet --host my-main-laptop ping
+valet --host my-main-laptop run -- handoff status
+valet --host my-main-laptop sh 'aws s3 ls | head'
+valet --host my-main-laptop repl
+```
+
+The client config only contains host URLs and that client's identity key. Host
+secret sources, redaction salts, policy, and audit settings stay in the trusted
+host config. `ws://` is for trusted development LANs; public internet relay
+support belongs to the future `wss://` Level 2 transport.
+
 ### Interactive mode — a redacting shell
 
 Run `valet` with no subcommand (like `python` bare) to open a prompt. **Any line

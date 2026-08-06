@@ -5,9 +5,13 @@ Subcommands:
   valet repl            same as above, explicitly
   valet serve           run the UDS broker daemon (outside the agent sandbox)
   valet serve-http      run the HTTP broker adapter with bearer auth
+  valet serve-lan       run the Level 1 WebSocket RPC host adapter
   valet run CMD...      run an argv (no shell) and print redacted output
   valet sh 'CMDLINE'    run a shell command line and print redacted output
   valet call --json ..  send a raw request object to the daemon
+  valet ping            check the selected host
+  valet hosts           list configured client hosts
+  valet client init     create a client-only config.toml
   valet init            generate a fingerprint_salt in config.toml
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
@@ -21,11 +25,14 @@ import secrets as _secrets
 import sys
 from pathlib import Path
 
+from .client_config import default_client_config_path, load_client_config, write_new_client_config
 from .config import default_config_path, load_config
 from .errors import ValetError
+from .rpc import RpcError, ValetClient, resolve_target
 from .repl import Session, interact
 from .server_http import serve as serve_http
-from .server_uds import Connection, call_once, serve
+from .server_uds import serve
+from .server_ws import serve as serve_lan
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -61,23 +68,36 @@ def _cmd_serve_http(args: argparse.Namespace) -> int:
     return 0
 
 
-def _connect(args: argparse.Namespace) -> Connection:
-    cfg = load_config(args.config)
-    return Connection(cfg.socket_path)
+def _cmd_serve_lan(args: argparse.Namespace) -> int:
+    serve_lan(load_config(args.config))
+    return 0
+
+
+def _connect(args: argparse.Namespace) -> tuple[ValetClient, object, object | None]:
+    target, _client_cfg = resolve_target(
+        host_name=args.host,
+        force_local=args.local,
+        client_config_path=args.client_config,
+    )
+    cfg = load_config(args.config) if not target.is_remote else None
+    return ValetClient(target, cfg), target, cfg
 
 
 def _cmd_repl(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
     try:
-        conn = Connection(cfg.socket_path)
+        conn, target, cfg = _connect(args)
     except (ConnectionRefusedError, FileNotFoundError):
         print("valet: no daemon at socket. Start it with `valet serve`.",
               file=sys.stderr)
         return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
     try:
         session = Session(
+            host_label=target.name if target.is_remote else None,
             completion_workspace=(cfg.exec.workspace
-                                  if cfg.policy.enforce_workspace_reads else None),
+                                  if cfg and cfg.policy.enforce_workspace_reads else None),
         )
         def send(req: dict) -> dict:
             if req.get("op", "exec") == "exec" and req.get("stream", True):
@@ -92,25 +112,33 @@ def _cmd_repl(args: argparse.Namespace) -> int:
 
 
 def _one_shot(args: argparse.Namespace, request: dict) -> int:
-    cfg = load_config(args.config)
     try:
-        resp = call_once(cfg.socket_path, request)
+        conn, _target, _cfg = _connect(args)
     except (ConnectionRefusedError, FileNotFoundError):
         print("valet: no daemon at socket. Start it with `valet serve`.",
               file=sys.stderr)
         return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request(request)
+    finally:
+        conn.close()
     return _print_response(resp)
 
 
 def _streaming_one_shot(args: argparse.Namespace, request: dict) -> int:
-    cfg = load_config(args.config)
     request = dict(request)
     request["stream"] = True
     try:
-        conn = Connection(cfg.socket_path)
+        conn, _target, _cfg = _connect(args)
     except (ConnectionRefusedError, FileNotFoundError):
         print("valet: no daemon at socket. Start it with `valet serve`.",
               file=sys.stderr)
+        return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
         return 2
     try:
         resp = conn.request_stream(request, _print_stream_event)
@@ -173,11 +201,47 @@ def _cmd_call(args: argparse.Namespace) -> int:
     return _one_shot(args, request)
 
 
+def _cmd_ping(args: argparse.Namespace) -> int:
+    return _one_shot(args, {"op": "ping"})
+
+
+def _cmd_hosts(args: argparse.Namespace) -> int:
+    cfg = load_client_config(args.client_config)
+    if not cfg.hosts:
+        print(f"valet: no remote hosts configured in {cfg.path}")
+        return 0
+    for name, host in sorted(cfg.hosts.items()):
+        marker = "*" if name == cfg.default_host else " "
+        print(f"{marker} {name}\t{host.url}\tclient_id={host.client_id or cfg.id}")
+    return 0
+
+
+def _cmd_client_init(args: argparse.Namespace) -> int:
+    path = Path(args.client_config) if args.client_config else default_client_config_path()
+    if path.exists() and not args.force:
+        print(f"valet: {path} already exists. Use --force to replace it.", file=sys.stderr)
+        return 2
+    cfg = write_new_client_config(path, host_name=args.host_name, url=args.url)
+    host = cfg.hosts[args.host_name]
+    print(f"valet: wrote client config to {path}")
+    print("\nAdd this to the trusted host's config.toml:")
+    print("[identity.clients.%s]" % host.client_id)
+    print('name = "%s"' % host.client_id)
+    print('key = "%s"' % host.key)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="valet", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-c", "--config", default=None,
                    help="path to config.toml (default: repo config.toml or $VALET_CONFIG)")
+    p.add_argument("--client-config", default=None,
+                   help="path to client-only config.toml (default: ~/.valet/client.toml)")
+    p.add_argument("--host", default=None,
+                   help="configured remote host to use for client commands")
+    p.add_argument("--local", action="store_true",
+                   help="force the local Unix-domain socket transport")
     p.set_defaults(func=_cmd_repl)  # no subcommand => REPL
     sub = p.add_subparsers(dest="cmd")
 
@@ -185,8 +249,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("serve", help="run the UDS broker daemon").set_defaults(func=_cmd_serve)
     sub.add_parser("serve-http", help="run the HTTP broker adapter with bearer auth"
                    ).set_defaults(func=_cmd_serve_http)
+    sub.add_parser("serve-lan", help="run the Level 1 trusted-LAN WebSocket RPC host"
+                   ).set_defaults(func=_cmd_serve_lan)
     sub.add_parser("repl", help="interactive redacting shell (default)"
                    ).set_defaults(func=_cmd_repl)
+    sub.add_parser("ping", help="check the selected host").set_defaults(func=_cmd_ping)
+    sub.add_parser("hosts", help="list configured remote hosts").set_defaults(func=_cmd_hosts)
+
+    client = sub.add_parser("client", help="manage client-only configuration")
+    client_sub = client.add_subparsers(dest="client_cmd", required=True)
+    client_init = client_sub.add_parser("init", help="create a client-only config")
+    client_init.add_argument("--host-name", default="lan-host")
+    client_init.add_argument("--url", required=True, help="ws://HOST:PORT/rpc")
+    client_init.add_argument("--force", action="store_true")
+    client_init.set_defaults(func=_cmd_client_init)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
     run.add_argument("--cwd", default=None)

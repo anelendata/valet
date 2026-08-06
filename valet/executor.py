@@ -93,6 +93,7 @@ def iter_run(
     cwd: Optional[str] = None,
     timeout: int = 60,
     extra_env: Optional[dict[str, str]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Iterator[StreamItem]:
     if shell:
         if not isinstance(cmd, str):
@@ -163,6 +164,23 @@ def iter_run(
                 except queue.Empty:
                     break
             raise TimeoutError_("command timed out")
+
+        if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
+            proc.kill()
+            proc.wait()
+            for thread in threads:
+                thread.join(timeout=1)
+            while True:
+                try:
+                    yield q.get_nowait()
+                except queue.Empty:
+                    break
+            yield RunResult(
+                exit_code=130,
+                stdout="".join(out["stdout"]),
+                stderr="".join(out["stderr"]),
+            )
+            return
 
         if proc.poll() is not None and all(not thread.is_alive() for thread in threads):
             break

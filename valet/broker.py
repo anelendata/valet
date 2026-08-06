@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -193,6 +194,7 @@ class Broker:
         request: Any,
         *,
         audit_context: Optional[dict[str, Any]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ):
         """Yield redacted stream events followed by the final exec response."""
         started = time.monotonic()
@@ -220,6 +222,7 @@ class Broker:
                 shell=plan.shell,
                 cwd=plan.cwd,
                 timeout=plan.timeout,
+                cancel_event=cancel_event,
             ):
                 if isinstance(item, OutputChunk):
                     for text in buffers[item.stream].feed(item.text):

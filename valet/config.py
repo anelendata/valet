@@ -79,6 +79,25 @@ class AuditConfig:
 
 
 @dataclass(frozen=True)
+class HostConfig:
+    # Level 1 LAN host identity and WebSocket bind address.
+    id: str = "local"
+    listen: str = "127.0.0.1:8766"
+
+
+@dataclass(frozen=True)
+class ClientIdentity:
+    name: str
+    key: str
+
+
+@dataclass(frozen=True)
+class IdentityConfig:
+    # Mapping of client_id -> shared client key for Level 1 challenge-response.
+    clients: dict[str, ClientIdentity] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class BrokerConfig:
     socket_path: str
     timeout_seconds: int
@@ -88,6 +107,8 @@ class BrokerConfig:
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     http: HttpConfig = field(default_factory=HttpConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
+    host: HostConfig = field(default_factory=HostConfig)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
 
 
 def default_config_path() -> Path:
@@ -116,6 +137,8 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     pol = raw.get("policy", {})
     http = raw.get("http", {})
     audit = raw.get("audit", {})
+    host = raw.get("host", {})
+    identity = raw.get("identity", {})
 
     # A stable salt keeps redaction tags comparable across runs; if unset we
     # generate an ephemeral one so the tool works with zero setup.
@@ -155,4 +178,28 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             log_path=_expand(str(audit.get("log_path", ""))),
             console=bool(audit.get("console", True)),
         ),
+        host=HostConfig(
+            id=str(host.get("id", "local")),
+            listen=str(host.get("listen", "127.0.0.1:8766")),
+        ),
+        identity=IdentityConfig(
+            clients=_load_client_identities(identity.get("clients", {})),
+        ),
     )
+
+
+def _load_client_identities(raw: object) -> dict[str, ClientIdentity]:
+    if not isinstance(raw, dict):
+        return {}
+    clients: dict[str, ClientIdentity] = {}
+    for client_id, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        key = str(value.get("key", ""))
+        if not key:
+            continue
+        clients[str(client_id)] = ClientIdentity(
+            name=str(value.get("name", client_id)),
+            key=key,
+        )
+    return clients

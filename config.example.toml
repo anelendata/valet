@@ -44,6 +44,19 @@ port = 8765
 # git-ignored config.toml, and do not put it in prompts or logs.
 bearer_token = "CHANGE_ME_to_a_long_random_token"
 
+[host]
+# Level 1 trusted-LAN WebSocket RPC host settings. This is disabled unless you
+# run `valet serve-lan`. Bind to 127.0.0.1 for local testing, or deliberately
+# choose a LAN interface such as 0.0.0.0 only on a trusted network.
+id = "my-main-laptop"
+listen = "127.0.0.1:8766"
+
+[identity.clients]
+# Approved Level 1 clients go here. Generate a client-only config on the client:
+#   valet client init --host-name my-main-laptop --url ws://192.168.1.25:8766/rpc
+# Then paste the printed [identity.clients.client_...] table into this host
+# config and run `valet serve-lan`.
+
 [audit]
 # Optional newline-delimited JSON audit log. Each line is one JSON object, so
 # the server can append safely without rewriting the whole file.
