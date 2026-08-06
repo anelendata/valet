@@ -82,6 +82,7 @@ class AuditConfig:
 class HostConfig:
     # Level 1 LAN host identity and WebSocket bind address.
     id: str = "local"
+    lan: bool = False
     listen: str = "127.0.0.1:8766"
 
 
@@ -180,6 +181,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
         ),
         host=HostConfig(
             id=str(host.get("id", "local")),
+            lan=bool(host.get("lan", False)),
             listen=str(host.get("listen", "127.0.0.1:8766")),
         ),
         identity=IdentityConfig(

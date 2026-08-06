@@ -13,6 +13,42 @@ def _config(path):
     )
 
 
+def test_host_lan_defaults_off(tmp_path):
+    path = tmp_path / "config.toml"
+    _config(path)
+
+    cfg = load_config(path)
+
+    assert cfg.host.lan is False
+
+
+def test_host_lan_can_be_enabled_in_config(tmp_path):
+    path = tmp_path / "config.toml"
+    _config(path)
+    text = path.read_text()
+    path.write_text(text.replace('[host]\n', '[host]\nlan = true\n'))
+
+    cfg = load_config(path)
+
+    assert cfg.host.lan is True
+
+
+def test_serve_uses_configured_host_daemon(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    _config(path)
+    text = path.read_text()
+    path.write_text(text.replace('[host]\n', '[host]\nlan = true\n'))
+    called = {}
+
+    def fake_serve_host(cfg):
+        called["cfg"] = cfg
+
+    monkeypatch.setattr("valet.cli.serve_host", fake_serve_host)
+
+    assert main(["-c", str(path), "serve"]) == 0
+    assert called["cfg"].host.lan is True
+
+
 def test_clients_add_updates_host_config(tmp_path, capsys):
     path = tmp_path / "config.toml"
     _config(path)

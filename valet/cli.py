@@ -3,7 +3,7 @@
 Subcommands:
   valet                 interactive redacting shell (default; like `python` bare)
   valet repl            same as above, explicitly
-  valet serve           run the UDS broker daemon (outside the agent sandbox)
+  valet serve           run the configured host daemon
   valet serve-http      run the HTTP broker adapter with bearer auth
   valet serve-lan       run the Level 1 WebSocket RPC host adapter
   valet run CMD...      run an argv (no shell) and print redacted output
@@ -32,8 +32,8 @@ from .errors import ValetError
 from .host_config import client_config_snippet, find_client_identity, upsert_client_identity
 from .rpc import RpcError, ValetClient, resolve_target
 from .repl import Session, interact
+from .server_host import serve as serve_host
 from .server_http import serve as serve_http
-from .server_uds import serve
 from .server_ws import serve as serve_lan
 
 
@@ -61,7 +61,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    serve(load_config(args.config))
+    serve_host(load_config(args.config))
     return 0
 
 
@@ -290,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("init", help="generate a fingerprint_salt").set_defaults(func=_cmd_init)
-    sub.add_parser("serve", help="run the UDS broker daemon").set_defaults(func=_cmd_serve)
+    sub.add_parser("serve", help="run the configured host daemon").set_defaults(func=_cmd_serve)
     sub.add_parser("serve-http", help="run the HTTP broker adapter with bearer auth"
                    ).set_defaults(func=_cmd_serve_http)
     sub.add_parser("serve-lan", help="run the Level 1 trusted-LAN WebSocket RPC host"

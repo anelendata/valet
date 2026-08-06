@@ -253,6 +253,7 @@ Example responsibilities:
 ```toml
 [host]
 id = "daigo-main"
+lan = true
 listen = "0.0.0.0:8766"
 transport = "websocket"
 

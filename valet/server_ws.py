@@ -202,15 +202,15 @@ class _Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
 
-def make_server(cfg: BrokerConfig) -> _Server:
+def make_server(cfg: BrokerConfig, *, broker: Broker | None = None) -> _Server:
     if not cfg.identity.clients:
         raise ConfigError(
             "identity.clients must contain at least one approved client before "
-            "running `valet serve-lan`"
+            "starting the LAN WebSocket listener"
         )
     server = _Server(_parse_listen(cfg.host.listen), _Handler)
     server.cfg = cfg  # type: ignore[attr-defined]
-    server.broker = Broker(cfg, audit_to_console=cfg.audit.console)  # type: ignore[attr-defined]
+    server.broker = broker or Broker(cfg, audit_to_console=cfg.audit.console)  # type: ignore[attr-defined]
     return server
 
 
