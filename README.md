@@ -25,7 +25,7 @@ In simple terms:
 ## Table of contents
 
 - [Motivating examples](#motivating-examples)
-  - [Example 1: Running AWS CLI commends in a hardened sandbox](#example-1-running-aws-cli-commends-in-a-hardened-sandbox)
+  - [Example 1: Running AWS CLI commands in a hardened sandbox](#example-1-running-aws-cli-commands-in-a-hardened-sandbox)
   - [Example 2: Database query](#example-2-database-query)
 - [Features](#features)
   - [Valet serve](#valet-serve)
@@ -52,7 +52,7 @@ In simple terms:
 
 ## Motivating examples
 
-### Example 1: Running AWS CLI commends in a hardened sandbox
+### Example 1: Running AWS CLI commands in a hardened sandbox
 
 With a hardened Codex or Claude Code sandbox (see
 [Sandbox hardening](#sandbox-hardening)), commands that need host-side
@@ -146,7 +146,10 @@ sandbox$ valet sh 'psql "$DATABASE_URL" --csv -c "select status, count(*) from j
 From the user's point of view, this gives the agent useful operational output
 while keeping the credential material on the trusted side of the boundary.
 Valet loads the configured secret sources, runs the command, redacts the echoed
-command plus stdout/stderr, and only then returns the result to the agent.
+command plus stdout/stderr, and only then returns output to the agent. For
+`valet run`, `valet sh`, and the REPL, safe line-oriented output streams as it
+arrives; structured JSON/YAML/PEM-shaped output is buffered until valet has
+enough context to redact it safely.
 
 Use `valet serve` for day-to-day local agent sessions. Stop it with Ctrl-C when
 the session is over. If a client reports that no daemon is running, start
@@ -187,16 +190,20 @@ log_path = "~/.valet/audit.jsonl"
 console = true
 ```
 
-The file is newline-delimited JSON: each request appends one JSON object. When
-`console = true`, `valet serve` and `valet serve-http` also print a readable
-server-console entry:
+The file is newline-delimited JSON. Non-streaming requests append one final
+JSON object. Streamed exec requests append a `phase = "started"` event as soon
+as policy allows the command and the process is about to run, then append a
+final event when the command finishes. When `console = true`, `valet serve` and
+`valet serve-http` also print readable server-console entries:
 
 ```text
+2026-08-05T12:31:03Z INFO: codex uds allowed started aws ecs describe-services ...
 2026-08-05T12:31:04Z INFO: codex uds allowed aws ecs describe-services ...
    {
      "caller": "codex",
      "transport": "uds",
      "decision": "allowed",
+     "phase": null,
      "command": "aws ecs describe-services ...",
      ...
    }
@@ -512,7 +519,7 @@ The knobs split into two families that do fundamentally different things:
 | `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
 | `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
 | `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
-| `audit.log_path` | Appends one metadata-only JSON object per request | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
+| `audit.log_path` | Appends metadata-only JSON objects for requests; streamed execs get an immediate `started` event plus a final event | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
 
 **`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
 difference is only *how the file is located*. `secret_sources` is one fixed
@@ -612,6 +619,7 @@ secret values straight into the model's context.
 │    values already scrubbed │         │    and scrubs them from the output │
 └────────────────────────────┘         └────────────────────────────────────┘
  request {op:"exec", cmd, cwd}          response {exit_code, stdout, stderr}
+ request {op:"exec", stream:true, ...}  exec_chunk* then final response
 ```
 
 ### Why this is stronger than a regex scrubber
@@ -683,8 +691,10 @@ trusted valet service wherever that service is safely deployed.
 **Unix domain socket** (primary). The socket file is `0600`, owned by the user
 who started the daemon, so the OS is the access-control layer — no port, no
 token, no network surface, no DNS-rebinding risk. Protocol is newline-delimited
-JSON: one request object per line, one response per line. The core
-([`valet/broker.py`](valet/broker.py)) is transport-agnostic.
+JSON: one request object per line, followed by one response line. If an exec
+request sets `"stream": true`, the daemon may send zero or more `exec_chunk`
+events before the final response. The core ([`valet/broker.py`](valet/broker.py))
+is transport-agnostic.
 
 **HTTP adapter** (optional). For clients that cannot speak UDS, run
 `valet serve-http`. It exposes the same JSON request/response contract over
@@ -705,7 +715,9 @@ The suite covers: commands run and their output is captured; known secret
 values (from `secret_sources`, cwd `.env`/`.secrets`, and `extra_values`) are
 redacted from stdout and stderr; the pattern backstop masks ARNs/account
 IDs/keys; nonzero exits and missing binaries are reported; unknown ops, missing
-`cmd`, and bad `cwd` are rejected; the deny list blocks a command; and the REPL
-runs lines and handles meta-commands.
+`cmd`, and bad `cwd` are rejected; the deny list blocks a command; streamed
+exec output arrives as redacted chunks with structured-output buffering; audit
+logging records streamed exec start and final events; and the REPL runs lines
+and handles meta-commands.
 
 See [`docs/codex_usage.md`](docs/codex_usage.md) for how an agent uses valet.
