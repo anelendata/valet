@@ -154,6 +154,11 @@ Use `valet serve` for day-to-day local agent sessions. Stop it with Ctrl-C when
 the session is over. If a client reports that no daemon is running, start
 `valet serve` again from the trusted terminal.
 
+While `valet serve` is running it watches `config.toml` and reloads changes to
+policy, redaction, audit settings, and approved LAN client identities. Listener
+bind settings such as `broker.socket_path`, `[host].lan`, and `[host].listen`
+are read when the server starts; restart `valet serve` after changing those.
+
 ### REPL mode
 
 REPL (Read-Eval-Print Loop) is available to examine valet's behavior
@@ -470,15 +475,16 @@ For Level 1 trusted-LAN RPC, approve a client on the trusted host:
 
 ```bash
 valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
+valet clients list
 ```
 
 This writes a new `[identity.clients...]` entry to the host's `config.toml` and
 prints a client-only TOML snippet. If the client name already exists, valet asks
 before rotating its key. Put the printed client config on the second machine,
-set `[host].listen` on the trusted host, and start:
+set `[host].lan = true` and `[host].listen` on the trusted host, and start:
 
 ```bash
-valet serve-lan
+valet serve
 ```
 
 The client can then use the same commands through the selected host:
@@ -490,10 +496,35 @@ valet --host my-main-laptop sh 'aws s3 ls | head'
 valet --host my-main-laptop repl
 ```
 
+To revoke a LAN client, remove it from the trusted host config:
+
+```bash
+valet clients remove local-ai-box
+```
+
+The running `valet serve` process reloads the updated client registry
+automatically.
+
 The client config only contains host URLs and that client's identity key. Host
 secret sources, redaction salts, policy, and audit settings stay in the trusted
 host config. `ws://` is for trusted development LANs; public internet relay
 support belongs to the future `wss://` Level 2 transport.
+
+WebSocket clients reconnect automatically with exponential backoff. The defaults
+are conservative and can be tuned in the client-only config:
+
+```toml
+[client]
+reconnect_max_retries = 5
+reconnect_backoff_seconds = 0.25
+reconnect_backoff_max_seconds = 3.0
+
+[hosts.my-main-laptop]
+# Optional per-host overrides use the same keys.
+```
+
+If the socket drops while a command is already in flight, valet reconnects for
+the next prompt but does not silently replay that command.
 
 ### Interactive mode — a redacting shell
 

@@ -1157,4 +1157,3 @@ Still to come:
 
 `Policy.check` is the single choke point; new constraints go there and stay
 fail-closed.
-
