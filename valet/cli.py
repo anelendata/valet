@@ -108,6 +108,7 @@ def _cmd_repl(args: argparse.Namespace) -> int:
                 return conn.request_stream(req, _print_stream_event)
             return conn.request(req)
 
+        session.completion_send = send
         return interact(send, session=session)
     finally:
         conn.close()

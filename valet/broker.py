@@ -145,6 +145,9 @@ class Broker:
             if op == "redaction_info":
                 response = {**base, **self._redaction_info(request)}
                 return response
+            if op == "complete":
+                response = {**base, **self._complete(request)}
+                return response
             raise ValidationError(f"unknown op: {op!r}")
         except ValetError as exc:
             response = {
@@ -312,6 +315,16 @@ class Broker:
         redactor = self._redactor_for(cwd)
         return {"ok": True, "cwd": cwd,
                 "redacted_value_count": len(redactor.secret_values)}
+
+    def _complete(self, request: dict) -> dict:
+        from .repl import completion_candidates
+
+        line = str(request.get("line", ""))
+        cwd = request.get("cwd") or self.cfg.exec.workspace
+        cwd = os.path.expanduser(str(cwd)) if cwd else None
+        workspace = self.cfg.exec.workspace if self.cfg.policy.enforce_workspace_reads else None
+        candidates = completion_candidates(line, cwd, workspace=workspace)
+        return {"op": "complete", "ok": True, "cwd": cwd, "candidates": candidates}
 
     # -- helpers ---------------------------------------------------------------
 

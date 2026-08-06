@@ -12,6 +12,7 @@ from valet.repl import (
     path_candidates,
     prompt_for,
     run_command,
+    session_completion_candidates,
     tab_completion_binding,
 )
 
@@ -216,6 +217,45 @@ def test_completion_uses_commands_at_command_positions_and_files_elsewhere(tmp_p
     assert completion_candidates("dep", str(tmp_path), str(tmp_path)) == ["deploy"]
     assert completion_candidates("echo dat", str(tmp_path), str(tmp_path)) == ["data.json"]
     assert completion_candidates("echo ok | dep", str(tmp_path), str(tmp_path)) == ["deploy"]
+
+
+def test_session_completion_uses_daemon_when_configured():
+    sent = []
+
+    def send(req):
+        sent.append(req)
+        return {"op": "complete", "ok": True, "candidates": ["remote.txt"]}
+
+    sess = Session(cwd="/remote/ws", host_label="host-a", completion_send=send)
+
+    assert session_completion_candidates("echo rem", sess) == ["remote.txt"]
+    assert sent == [{"op": "complete", "line": "echo rem", "cwd": "/remote/ws"}]
+
+
+def test_remote_session_completion_does_not_guess_locally_on_daemon_error(tmp_path):
+    (tmp_path / "remote.txt").write_text("this is only local test data\n")
+
+    def send(_req):
+        return {"op": "complete", "ok": False, "detail": "old daemon"}
+
+    sess = Session(
+        cwd=str(tmp_path),
+        host_label="host-a",
+        completion_send=send,
+    )
+
+    assert session_completion_candidates("echo rem", sess) == []
+
+
+def test_local_session_completion_falls_back_when_daemon_lacks_complete(tmp_path):
+    (tmp_path / "local.txt").write_text("ok\n")
+
+    def send(_req):
+        return {"op": "complete", "ok": False, "detail": "old daemon"}
+
+    sess = Session(cwd=str(tmp_path), completion_send=send)
+
+    assert session_completion_candidates("echo loc", sess) == ["local.txt"]
 
 
 def test_candidate_list_is_two_columns():

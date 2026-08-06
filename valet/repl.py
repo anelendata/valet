@@ -54,6 +54,7 @@ class Session:
     cwd: Optional[str] = None      # None => daemon's configured workspace
     shell: bool = True
     host_label: Optional[str] = None
+    completion_send: Optional[Send] = None
     # Set by the CLI when policy.enforce_workspace_reads is enabled.
     completion_workspace: Optional[str] = None
 
@@ -383,6 +384,27 @@ def completion_candidates(line: str, cwd: Optional[str], path: Optional[str] = N
     return path_candidates(prefix, cwd, workspace)
 
 
+def session_completion_candidates(line: str, session: Session) -> list[str]:
+    """Return completion candidates, using the daemon when configured."""
+    if session.completion_send is not None:
+        req = {"op": "complete", "line": line}
+        if session.cwd:
+            req["cwd"] = session.cwd
+        try:
+            resp = session.completion_send(req)
+        except (ConnectionError, OSError):
+            return []
+        if resp.get("ok") and isinstance(resp.get("candidates"), list):
+            return [str(candidate) for candidate in resp["candidates"]]
+        if session.host_label:
+            return []
+    return completion_candidates(
+        line,
+        session.cwd,
+        workspace=session.completion_workspace,
+    )
+
+
 def format_candidate_columns(candidates: list[str]) -> str:
     """Render candidates in two readable columns for readline's display hook."""
     if not candidates:
@@ -443,8 +465,7 @@ def _configure_completion(readline, session: Session) -> None:
         nonlocal matches
         if state == 0:
             line = readline.get_line_buffer()[:readline.get_endidx()]
-            matches = completion_candidates(line, session.cwd,
-                                            workspace=session.completion_workspace)
+            matches = session_completion_candidates(line, session)
         return matches[state] if state < len(matches) else None
 
     def display(_substitution: str, display_matches: list[str], _longest: int) -> None:
@@ -553,8 +574,7 @@ def _libedit_input(prompt: str, session: Session, readline) -> str:
                 continue
             if char == "\t":
                 before = "".join(buffer[:cursor])
-                candidates = completion_candidates(before, session.cwd,
-                                                   workspace=session.completion_workspace)
+                candidates = session_completion_candidates(before, session)
                 if len(candidates) == 1:
                     buffer, cursor = _replace_current_word(buffer, cursor, candidates[0])
                 elif candidates:

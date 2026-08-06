@@ -87,6 +87,20 @@ def test_redaction_info_op(cfg):
     assert resp["redacted_value_count"] >= 1
 
 
+def test_complete_op_returns_host_path_candidates(cfg, workspace):
+    (workspace / "data.json").write_text("{}\n")
+    (workspace / "dataset").mkdir()
+
+    resp = Broker(cfg).handle(
+        {"op": "complete", "line": "echo dat", "cwd": str(workspace)}
+    )
+
+    assert resp["op"] == "complete"
+    assert resp["ok"] is True
+    assert resp["cwd"] == str(workspace)
+    assert resp["candidates"] == ["data.json", "dataset/"]
+
+
 def test_stream_exec_yields_chunks_and_final(cfg):
     events = list(Broker(cfg).handle_stream({"op": "exec", "cmd": "printf 'one\\ntwo\\n'"}))
     chunks = [event for event in events if event.get("op") == "exec_chunk"]
