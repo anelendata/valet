@@ -52,10 +52,10 @@ id = "my-main-laptop"
 listen = "127.0.0.1:8766"
 
 [identity.clients]
-# Approved Level 1 clients go here. Generate a client-only config on the client:
-#   valet client init --host-name my-main-laptop --url ws://192.168.1.25:8766/rpc
-# Then paste the printed [identity.clients.client_...] table into this host
-# config and run `valet serve-lan`.
+# Approved Level 1 clients go here. Let valet generate and update this section:
+#   valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
+# Then put the printed client-only TOML snippet on the client machine and run
+# `valet serve-lan` on this host.
 
 [audit]
 # Optional newline-delimited JSON audit log. Each line is one JSON object, so

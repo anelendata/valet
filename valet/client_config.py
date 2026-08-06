@@ -43,9 +43,15 @@ def default_client_config_path() -> Path:
     return Path(_expand(f"~/.valet/{DEFAULT_CLIENT_CONFIG_NAME}"))
 
 
-def load_client_config(path: Optional[str | os.PathLike] = None) -> ClientConfig:
+def load_client_config(
+    path: Optional[str | os.PathLike] = None,
+    *,
+    required: bool = False,
+) -> ClientConfig:
     cfg_path = Path(path) if path is not None else default_client_config_path()
     if not cfg_path.exists():
+        if required:
+            raise ConfigError(f"client config not found at {cfg_path}")
         return ClientConfig(path=cfg_path, id="", key="", default_host="", hosts={})
     try:
         with open(cfg_path, "rb") as fh:

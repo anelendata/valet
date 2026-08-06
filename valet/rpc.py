@@ -7,10 +7,11 @@ import hmac
 import json
 import os
 import socket
+import ssl
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from .client_config import ClientConfig, ClientHost, load_client_config
 from .config import BrokerConfig
@@ -44,7 +45,10 @@ def resolve_target(
     force_local: bool = False,
     client_config_path: Optional[str] = None,
 ) -> tuple[Target, ClientConfig]:
-    client_cfg = load_client_config(client_config_path)
+    client_cfg = load_client_config(
+        client_config_path,
+        required=client_config_path is not None,
+    )
     if force_local:
         return Target(kind="uds", name="local"), client_cfg
     selected = host_name or client_cfg.default_host
@@ -197,16 +201,17 @@ class _WebSocketRpcTransport:
 
 def _connect_websocket(url: str) -> socket.socket:
     parsed = urlparse(url)
-    if parsed.scheme != "ws":
-        raise RpcError("Level 1 supports ws:// URLs; use wss:// through the future relay")
+    if parsed.scheme not in ("ws", "wss"):
+        raise RpcError("websocket URL must use ws:// or wss://")
     host = parsed.hostname
     if host is None:
         raise RpcError("websocket URL is missing a host")
-    port = parsed.port or 80
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
     path = parsed.path or "/rpc"
     if parsed.query:
         path += "?" + parsed.query
-    sock = socket.create_connection((host, port), timeout=10)
+
+    sock = _open_websocket_socket(parsed.scheme, host, port)
     key = client_key()
     request = (
         f"GET {path} HTTP/1.1\r\n"
@@ -226,6 +231,138 @@ def _connect_websocket(url: str) -> socket.socket:
         raise RpcError("websocket accept key mismatch")
     sock.settimeout(None)
     return sock
+
+
+def _open_websocket_socket(scheme: str, host: str, port: int) -> socket.socket:
+    proxy = _proxy_for(scheme, host, port)
+    if proxy is None:
+        sock = _create_connection(host, port, via_proxy=False)
+    else:
+        sock = _connect_proxy_tunnel(proxy, host, port)
+    if scheme == "wss":
+        try:
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+        except OSError as exc:
+            raise RpcError("TLS setup for websocket connection failed") from exc
+    return sock
+
+
+def _create_connection(host: str, port: int, *, via_proxy: bool) -> socket.socket:
+    try:
+        return socket.create_connection((host, port), timeout=10)
+    except (OSError, TimeoutError) as exc:
+        target = "proxy" if via_proxy else "websocket destination"
+        raise RpcError(f"could not connect to {target}") from exc
+
+
+def _connect_proxy_tunnel(proxy, host: str, port: int) -> socket.socket:
+    sock = _create_connection(proxy.hostname, proxy.port, via_proxy=True)
+    authority = f"{host}:{port}"
+    headers = [
+        f"CONNECT {authority} HTTP/1.1",
+        f"Host: {authority}",
+    ]
+    if proxy.authorization:
+        headers.append(f"Proxy-Authorization: Basic {proxy.authorization}")
+    request = "\r\n".join(headers) + "\r\n\r\n"
+    try:
+        sock.sendall(request.encode("ascii"))
+        start, _headers = read_http_headers(sock)
+    except (OSError, WebSocketError) as exc:
+        raise RpcError("proxy CONNECT failed before a complete response") from exc
+
+    parts = start.split(None, 2)
+    if len(parts) < 2 or not parts[0].startswith("HTTP/"):
+        raise RpcError("proxy CONNECT response was malformed")
+    try:
+        status = int(parts[1])
+    except ValueError as exc:
+        raise RpcError("proxy CONNECT response was malformed") from exc
+    if status < 200 or status >= 300:
+        raise RpcError(f"proxy CONNECT failed with HTTP {status}")
+    return sock
+
+
+@dataclass(frozen=True)
+class _ProxyConfig:
+    hostname: str
+    port: int
+    authorization: str = ""
+
+
+def _proxy_for(scheme: str, host: str, port: int) -> Optional[_ProxyConfig]:
+    no_proxy = _env_first(("NO_PROXY", "no_proxy"))
+    if no_proxy and _no_proxy_matches(no_proxy, host, port):
+        return None
+    names = (
+        ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+        if scheme == "wss"
+        else ("HTTP_PROXY", "http_proxy")
+    )
+    raw = _env_first(names)
+    if not raw:
+        return None
+    parsed = urlparse(raw if "://" in raw else "http://" + raw)
+    if parsed.scheme and parsed.scheme != "http":
+        raise RpcError("unsupported proxy URL scheme")
+    if parsed.hostname is None:
+        raise RpcError("proxy URL is missing a host")
+    auth = ""
+    if parsed.username is not None:
+        user = unquote(parsed.username)
+        password = unquote(parsed.password or "")
+        auth = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+    return _ProxyConfig(parsed.hostname, parsed.port or 80, auth)
+
+
+def _env_first(names: tuple[str, ...]) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return ""
+
+
+def _no_proxy_matches(no_proxy: str, host: str, port: int) -> bool:
+    host = host.strip("[]").lower()
+    for raw_item in no_proxy.split(","):
+        item = raw_item.strip().lower()
+        if not item:
+            continue
+        if item == "*":
+            return True
+        item_host, item_port = _split_no_proxy_item(item)
+        if item_port is not None and item_port != port:
+            continue
+        if _host_matches_no_proxy_item(host, item_host):
+            return True
+    return False
+
+
+def _split_no_proxy_item(item: str) -> tuple[str, Optional[int]]:
+    if item.startswith("["):
+        end = item.find("]")
+        if end != -1:
+            host = item[1:end]
+            rest = item[end + 1:]
+            if rest.startswith(":") and rest[1:].isdigit():
+                return host, int(rest[1:])
+            return host, None
+    if item.count(":") == 1:
+        maybe_host, maybe_port = item.rsplit(":", 1)
+        if maybe_port.isdigit():
+            return maybe_host, int(maybe_port)
+    return item, None
+
+
+def _host_matches_no_proxy_item(host: str, item: str) -> bool:
+    item = item.strip("[]")
+    if not item:
+        return False
+    if item.startswith("."):
+        suffix = item[1:]
+        return host == suffix or host.endswith("." + suffix)
+    return host == item or host.endswith("." + item)
 
 
 def _request_envelope(request_id: str, client_id: str, req: dict) -> dict:

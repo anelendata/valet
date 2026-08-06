@@ -12,6 +12,7 @@ Subcommands:
   valet ping            check the selected host
   valet hosts           list configured client hosts
   valet client init     create a client-only config.toml
+  valet clients add     generate and approve a host-side client key
   valet init            generate a fingerprint_salt in config.toml
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
@@ -28,6 +29,7 @@ from pathlib import Path
 from .client_config import default_client_config_path, load_client_config, write_new_client_config
 from .config import default_config_path, load_config
 from .errors import ValetError
+from .host_config import client_config_snippet, find_client_identity, upsert_client_identity
 from .rpc import RpcError, ValetClient, resolve_target
 from .repl import Session, interact
 from .server_http import serve as serve_http
@@ -231,6 +233,47 @@ def _cmd_client_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_clients_add(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Copy config.example.toml first:",
+              file=sys.stderr)
+        return 2
+
+    name = args.name.strip()
+    if not name:
+        print("valet clients add: client name cannot be empty", file=sys.stderr)
+        return 2
+
+    existing_id = find_client_identity(path, name)
+    if existing_id and not args.yes:
+        answer = input(
+            f"valet: client {name!r} already exists as {existing_id!r}. "
+            "Replace its key? [y/N] "
+        )
+        if answer.strip().lower() not in ("y", "yes"):
+            print("valet: client key unchanged.")
+            return 1
+
+    update = upsert_client_identity(path, name=name)
+    cfg = load_config(path)
+    host_name = args.host_name or cfg.host.id
+    url = args.url or _default_lan_url(cfg.host.listen)
+
+    action = "rotated" if update.existed else "added"
+    print(f"valet: {action} client {update.name!r} in {path}")
+    print("\nClient config:")
+    print(client_config_snippet(update, host_name=host_name, url=url, host_id=cfg.host.id))
+    return 0
+
+
+def _default_lan_url(listen: str) -> str:
+    host, port = listen.rsplit(":", 1) if ":" in listen else (listen, "8766")
+    if host in ("", "0.0.0.0", "::"):
+        host = "<host-lan-ip>"
+    return f"ws://{host}:{port}/rpc"
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="valet", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -263,6 +306,18 @@ def build_parser() -> argparse.ArgumentParser:
     client_init.add_argument("--url", required=True, help="ws://HOST:PORT/rpc")
     client_init.add_argument("--force", action="store_true")
     client_init.set_defaults(func=_cmd_client_init)
+
+    clients = sub.add_parser("clients", help="manage host-approved client identities")
+    clients_sub = clients.add_subparsers(dest="clients_cmd", required=True)
+    clients_add = clients_sub.add_parser("add", help="generate and approve a client key")
+    clients_add.add_argument("name", help="friendly client name")
+    clients_add.add_argument("--yes", "-y", action="store_true",
+                             help="replace an existing client key without prompting")
+    clients_add.add_argument("--host-name", default=None,
+                             help="host profile name to print in the client snippet")
+    clients_add.add_argument("--url", default=None,
+                             help="WebSocket URL to print in the client snippet")
+    clients_add.set_defaults(func=_cmd_clients_add)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
     run.add_argument("--cwd", default=None)

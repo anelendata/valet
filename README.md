@@ -466,14 +466,16 @@ curl -sS http://127.0.0.1:8765/call \
   -d '{"op":"ping"}'
 ```
 
-For Level 1 trusted-LAN RPC, create a client-only config on the second machine:
+For Level 1 trusted-LAN RPC, approve a client on the trusted host:
 
 ```bash
-valet client init --host-name my-main-laptop --url ws://192.168.1.25:8766/rpc
+valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
 ```
 
-Paste the printed `[identity.clients.client_...]` stanza into the trusted
-host's `config.toml`, set `[host].listen`, and start:
+This writes a new `[identity.clients...]` entry to the host's `config.toml` and
+prints a client-only TOML snippet. If the client name already exists, valet asks
+before rotating its key. Put the printed client config on the second machine,
+set `[host].listen` on the trusted host, and start:
 
 ```bash
 valet serve-lan
