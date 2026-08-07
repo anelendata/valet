@@ -1,4 +1,5 @@
 """The exec op runs commands and redacts secret values from their output."""
+import dataclasses
 import os
 import sys
 
@@ -70,6 +71,90 @@ def test_command_not_found_argv(cfg):
     )
     assert resp["ok"] is False
     assert resp["exit_code"] == 127
+
+
+def test_launch_os_error_is_command_error(cfg, monkeypatch):
+    def fail_launch(*_args, **_kwargs):
+        raise PermissionError("sensitive path")
+
+    monkeypatch.setattr("valet.executor.subprocess.Popen", fail_launch)
+
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": [sys.executable, "-c", "print('never')"], "shell": False}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "CommandError"
+    assert resp["detail"] == "command launch failed: permission denied"
+    assert "sensitive path" not in resp["detail"]
+
+
+def test_stream_launch_os_error_is_command_error(cfg, monkeypatch):
+    def fail_launch(*_args, **_kwargs):
+        raise PermissionError("sensitive path")
+
+    monkeypatch.setattr("valet.executor.subprocess.Popen", fail_launch)
+
+    events = list(Broker(cfg).handle_stream(
+        {"op": "exec", "cmd": [sys.executable, "-c", "print('never')"], "shell": False}
+    ))
+    resp = events[-1]
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "CommandError"
+    assert resp["detail"] == "command launch failed: permission denied"
+    assert "sensitive path" not in resp["detail"]
+
+
+def test_stream_shebangless_path_script_runs_when_shell_enabled(cfg, workspace):
+    bindir = workspace / "bin"
+    bindir.mkdir()
+    script = bindir / "handoff"
+    script.write_text(
+        'if [ "$AWS_PROFILE" = tiny ]; then printf "env-ok "; fi\n'
+        'printf "args=%s cwd=%s\\n" "$*" "$PWD"\n'
+    )
+    script.chmod(0o755)
+    cwd = workspace / "zendesk-jira"
+    cwd.mkdir()
+
+    events = list(Broker(cfg).handle_stream({
+        "op": "exec",
+        "cmd": ["handoff", "-p", ".", "-w", "workspace", "cloud", "schedule", "list"],
+        "shell": False,
+        "cwd": "zendesk-jira",
+        "env": {
+            "AWS_PROFILE": "tiny",
+            "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+        },
+    }))
+    resp = events[-1]
+    output = "".join(event["data"] for event in events if event.get("op") == "exec_chunk")
+
+    assert resp["ok"] is True
+    assert "env-ok args=-p . -w workspace cloud schedule list" in output
+    assert f"cwd={cwd}" in output
+
+
+def test_shebangless_path_script_requires_shell_fallback_enabled(cfg, workspace):
+    c = dataclasses.replace(cfg, exec=dataclasses.replace(cfg.exec, shell=False))
+    bindir = workspace / "bin"
+    bindir.mkdir()
+    script = bindir / "handoff"
+    script.write_text('printf "never\\n"\n')
+    script.chmod(0o755)
+
+    events = list(Broker(c).handle_stream({
+        "op": "exec",
+        "cmd": ["handoff"],
+        "shell": False,
+        "env": {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"},
+    }))
+    resp = events[-1]
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "CommandError"
+    assert resp["detail"] == "command launch failed: executable format error (missing shebang?)"
 
 
 def test_extra_env_is_passed_without_shell_and_redacted(cfg):

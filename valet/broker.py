@@ -206,6 +206,7 @@ class Broker:
                 cwd=plan.cwd,
                 timeout=plan.timeout,
                 extra_env=plan.extra_env,
+                allow_script_fallback=self.cfg.exec.shell,
             )
         except (TimeoutError_, CommandError) as exc:
             return {
@@ -260,6 +261,7 @@ class Broker:
                 timeout=plan.timeout,
                 extra_env=plan.extra_env,
                 cancel_event=cancel_event,
+                allow_script_fallback=self.cfg.exec.shell,
             ):
                 if isinstance(item, OutputChunk):
                     for text in buffers[item.stream].feed(item.text):

@@ -10,10 +10,12 @@ them back only after redaction.
 """
 from __future__ import annotations
 
+import errno
 import os
 import queue
 import shlex
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -69,6 +71,7 @@ def run(
     cwd: Optional[str] = None,
     timeout: int = 60,
     extra_env: Optional[dict[str, str]] = None,
+    allow_script_fallback: bool = False,
 ) -> RunResult:
     if shell:
         if not isinstance(cmd, str):
@@ -85,7 +88,7 @@ def run(
         env.update(extra_env)
 
     try:
-        proc = subprocess.Popen(
+        proc, tracked_cmd = _popen(
             popen_arg,
             shell=shell,
             cwd=cwd,
@@ -94,8 +97,9 @@ def run(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
+            allow_script_fallback=allow_script_fallback,
         )
-        _register_process(proc, popen_arg, shell=shell, cwd=cwd)
+        _register_process(proc, tracked_cmd, shell=shell, cwd=cwd)
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
@@ -108,6 +112,8 @@ def run(
         # argv mode with a missing executable — normalize to a 127 result so
         # callers get a uniform shape (matches how a shell reports not-found).
         return RunResult(exit_code=127, stdout="", stderr="command not found")
+    except OSError as exc:
+        raise CommandError(_launch_error_detail(exc)) from exc
     finally:
         if "proc" in locals():
             _unregister_process(proc)
@@ -127,6 +133,7 @@ def iter_run(
     timeout: int = 60,
     extra_env: Optional[dict[str, str]] = None,
     cancel_event: Optional[threading.Event] = None,
+    allow_script_fallback: bool = False,
 ) -> Iterator[StreamItem]:
     if shell:
         if not isinstance(cmd, str):
@@ -143,7 +150,7 @@ def iter_run(
         env.update(extra_env)
 
     try:
-        proc = subprocess.Popen(
+        proc, tracked_cmd = _popen(
             popen_arg,
             shell=shell,
             cwd=cwd,
@@ -153,11 +160,14 @@ def iter_run(
             text=True,
             bufsize=1,
             start_new_session=True,
+            allow_script_fallback=allow_script_fallback,
         )
     except FileNotFoundError:
         yield RunResult(exit_code=127, stdout="", stderr="command not found")
         return
-    _register_process(proc, popen_arg, shell=shell, cwd=cwd)
+    except OSError as exc:
+        raise CommandError(_launch_error_detail(exc)) from exc
+    _register_process(proc, tracked_cmd, shell=shell, cwd=cwd)
 
     out: dict[str, list[str]] = {"stdout": [], "stderr": []}
     q: queue.Queue[OutputChunk] = queue.Queue()
@@ -243,6 +253,82 @@ def iter_run(
         _unregister_process(proc)
 
 
+def _popen(
+    popen_arg: Command,
+    *,
+    shell: bool,
+    cwd: Optional[str],
+    env: Optional[dict[str, str]],
+    stdout,
+    stderr,
+    text: bool,
+    start_new_session: bool,
+    allow_script_fallback: bool,
+    bufsize: int = -1,
+) -> tuple[subprocess.Popen, Command]:
+    try:
+        proc = subprocess.Popen(
+            popen_arg,
+            shell=shell,
+            cwd=cwd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            bufsize=bufsize,
+            start_new_session=start_new_session,
+        )
+        return proc, popen_arg
+    except OSError as exc:
+        fallback = _script_fallback_arg(
+            popen_arg,
+            shell=shell,
+            cwd=cwd,
+            env=env,
+        ) if allow_script_fallback and _is_exec_format_error(exc) else None
+        if fallback is None:
+            raise
+        proc = subprocess.Popen(
+            fallback,
+            shell=False,
+            cwd=cwd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            bufsize=bufsize,
+            start_new_session=start_new_session,
+        )
+        return proc, fallback
+
+
+def _script_fallback_arg(
+    popen_arg: Command,
+    *,
+    shell: bool,
+    cwd: Optional[str],
+    env: Optional[dict[str, str]],
+) -> Optional[list[str]]:
+    if shell or isinstance(popen_arg, str) or not popen_arg:
+        return None
+    argv = [str(part) for part in popen_arg]
+    exe = argv[0]
+    if os.path.sep in exe:
+        script = exe
+        if cwd and not os.path.isabs(script):
+            script = os.path.join(cwd, script)
+    else:
+        path = (env or os.environ).get("PATH")
+        script = shutil.which(exe, path=path)
+    if not script:
+        return None
+    return ["/bin/sh", script, *argv[1:]]
+
+
+def _is_exec_format_error(exc: OSError) -> bool:
+    return getattr(exc, "errno", None) == errno.ENOEXEC
+
+
 def list_processes() -> list[ProcessInfo]:
     now = time.time()
     with _PROCESSES_LOCK:
@@ -310,6 +396,18 @@ def _kill_process(proc: subprocess.Popen, *, force: bool = False) -> None:
             proc.kill()
         else:
             proc.terminate()
+
+
+def _launch_error_detail(exc: OSError) -> str:
+    if isinstance(exc, PermissionError):
+        return "command launch failed: permission denied"
+    if isinstance(exc, IsADirectoryError):
+        return "command launch failed: executable is a directory"
+    if isinstance(exc, FileNotFoundError):
+        return "command not found"
+    if _is_exec_format_error(exc):
+        return "command launch failed: executable format error (missing shebang?)"
+    return "command launch failed"
 
 
 def _display_cmd(cmd: Command) -> str:
