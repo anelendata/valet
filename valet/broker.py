@@ -504,10 +504,13 @@ class Broker:
         detail: str,
         error_class: str = "authentication_failed",
         peer: Optional[str] = None,
+        phase: str = "handshake",
     ) -> None:
-        """Record a rejected handshake/authorization attempt.
+        """Record a rejected handshake or a revoked session.
 
-        Transports call this when a client fails to authenticate, so refused
+        Transports call this when a client fails to authenticate (phase
+        ``handshake``) or when an established session is torn down because its
+        identity was removed (phase ``session``), so refused and revoked
         connections leave a trail in the same audit sink as executed commands.
         The event carries no secret material — only who was refused and why.
         """
@@ -519,7 +522,7 @@ class Broker:
             "transport": transport,
             "broker_version": __version__,
             "op": op,
-            "phase": "handshake",
+            "phase": phase,
             "decision": "denied",
             "approval": "not_required",
             "ok": False,

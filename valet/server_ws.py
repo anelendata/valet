@@ -5,6 +5,7 @@ import getpass
 import json
 import queue
 import select
+import socket
 import socketserver
 import threading
 from typing import Any
@@ -14,6 +15,46 @@ from .config import BrokerConfig
 from .errors import ConfigError
 from .rpc import PROTOCOL, auth_nonce, legacy_request_from_rpc, verify_signature
 from .wsproto import WebSocketError, accept_key, read_http_headers, read_text, write_close, write_text
+
+# Sent to a client whose identity was removed from the config, right before the
+# host closes the connection on reload.
+REVOKED_REASON = "client identity was removed by the host"
+
+
+class _ConnectionRegistry:
+    """Tracks authenticated handlers so reload can revoke removed clients.
+
+    Kept separate from the socket server so it can be unit-tested without
+    binding a listener.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._handlers: dict[int, Any] = {}
+
+    def add(self, handler: Any) -> None:
+        with self._lock:
+            self._handlers[id(handler)] = handler
+
+    def remove(self, handler: Any) -> None:
+        with self._lock:
+            self._handlers.pop(id(handler), None)
+
+    def revoke_clients(self, removed_ids, reason: str) -> list[str]:
+        """Revoke every tracked connection whose client_id was removed.
+
+        Returns the client_ids actually revoked (one entry per connection).
+        """
+        removed = set(removed_ids)
+        if not removed:
+            return []
+        with self._lock:
+            targets = [h for h in self._handlers.values() if h.client_id in removed]
+        revoked = []
+        for handler in targets:
+            if handler.revoke(reason):
+                revoked.append(handler.client_id)
+        return revoked
 
 
 def _parse_listen(value: str) -> tuple[str, int]:
@@ -42,14 +83,55 @@ def auth_rejection_reason(response, client_id, identity, signature, host_id, non
 
 class _Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
+        self._write_lock = threading.Lock()
+        self._revoked = False
+        self.client_id = ""
+        registered = False
         try:
             self._upgrade()
-            client_id = self._authenticate()
-            self._serve_rpc(client_id)
+            self.client_id = self._authenticate()
+            self.server.connections.add(self)  # type: ignore[attr-defined]
+            registered = True
+            self._serve_rpc(self.client_id)
         except (OSError, WebSocketError, ConfigError):
             return
         finally:
-            write_close(self.request, mask=False)
+            if registered:
+                self.server.connections.remove(self)  # type: ignore[attr-defined]
+            with self._write_lock:
+                if not self._revoked:
+                    try:
+                        write_close(self.request, mask=False)
+                    except OSError:
+                        pass
+
+    def revoke(self, reason: str) -> bool:
+        """Send a final revocation message, then drop the connection.
+
+        Called from the reload thread when this client's identity was removed.
+        Returns True if it revoked a still-active connection, False if it was
+        already revoked. Safe to call concurrently with the handler thread: the
+        write lock serialises frames and the socket shutdown unblocks a reader.
+        """
+        with self._write_lock:
+            if self._revoked:
+                return False
+            self._revoked = True
+            try:
+                write_text(self.request, json.dumps({
+                    "protocol": PROTOCOL,
+                    "type": "auth.revoked",
+                    "error_class": "authentication_revoked",
+                    "detail": reason,
+                }), mask=False)
+                write_close(self.request, mask=False)
+            except OSError:
+                pass
+        try:
+            self.request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        return True
 
     @property
     def broker(self) -> Broker:
@@ -222,12 +304,23 @@ class _Handler(socketserver.BaseRequestHandler):
         })
 
     def _write(self, payload: dict) -> None:
-        write_text(self.request, json.dumps(payload), mask=False)
+        with self._write_lock:
+            if self._revoked:
+                return
+            write_text(self.request, json.dumps(payload), mask=False)
 
 
 class _Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.connections = _ConnectionRegistry()
+
+    def disconnect_clients(self, removed_ids, reason: str = REVOKED_REASON) -> list[str]:
+        """Revoke and drop every active connection for a removed client id."""
+        return self.connections.revoke_clients(removed_ids, reason)
 
 
 def make_server(cfg: BrokerConfig, *, broker: Broker | None = None) -> _Server:

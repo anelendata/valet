@@ -17,6 +17,7 @@ from .broker import Broker
 from .config import BrokerConfig, load_config
 from .server_uds import close_server as close_uds_server
 from .server_uds import make_server as make_uds_server
+from .server_ws import REVOKED_REASON
 from .server_ws import make_server as make_ws_server
 
 
@@ -134,7 +135,35 @@ def _apply_reloaded_config(broker: Broker, ws_server, new_cfg: BrokerConfig) -> 
     broker.reload(new_cfg)
     if ws_server is not None:
         ws_server.cfg = new_cfg  # type: ignore[attr-defined]
+        _disconnect_removed_clients(broker, ws_server, old_cfg, new_cfg)
     _warn_if_listener_restart_needed(old_cfg, new_cfg)
+
+
+def _disconnect_removed_clients(
+    broker: Broker,
+    ws_server,
+    old_cfg: BrokerConfig,
+    new_cfg: BrokerConfig,
+) -> None:
+    """Drop live LAN connections whose identity was removed on reload.
+
+    Each removed client gets a final revocation message before its socket is
+    closed; the tear-down is recorded in the audit log.
+    """
+    removed = set(old_cfg.identity.clients) - set(new_cfg.identity.clients)
+    if not removed:
+        return
+    revoked = ws_server.disconnect_clients(removed)
+    for client_id in revoked:
+        broker.audit_security_rejection(
+            op="auth",
+            caller=client_id,
+            transport="websocket",
+            detail=REVOKED_REASON,
+            error_class="authentication_revoked",
+            phase="session",
+        )
+        print(f"valet: disconnected removed client {client_id!r}")
 
 
 def _warn_if_listener_restart_needed(old_cfg: BrokerConfig, new_cfg: BrokerConfig) -> None:

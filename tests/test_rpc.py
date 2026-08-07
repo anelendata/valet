@@ -567,3 +567,65 @@ def test_auth_rejection_reason_flags_unapproved_client():
 
 def test_auth_rejection_reason_flags_bad_signature():
     assert _reason(signature="deadbeef") == "signature verification failed"
+
+
+class _FakeConn:
+    def __init__(self, client_id, revoke_result=True):
+        self.client_id = client_id
+        self.revoke_result = revoke_result
+        self.revoked_with = None
+
+    def revoke(self, reason):
+        self.revoked_with = reason
+        return self.revoke_result
+
+
+def test_connection_registry_revokes_only_removed_clients():
+    from valet.server_ws import _ConnectionRegistry
+
+    reg = _ConnectionRegistry()
+    keep = _FakeConn("keep")
+    drop = _FakeConn("drop")
+    reg.add(keep)
+    reg.add(drop)
+
+    revoked = reg.revoke_clients({"drop"}, "gone")
+
+    assert revoked == ["drop"]
+    assert drop.revoked_with == "gone"
+    assert keep.revoked_with is None
+
+
+def test_connection_registry_empty_removed_is_noop():
+    from valet.server_ws import _ConnectionRegistry
+
+    reg = _ConnectionRegistry()
+    conn = _FakeConn("a")
+    reg.add(conn)
+
+    assert reg.revoke_clients(set(), "gone") == []
+    assert conn.revoked_with is None
+
+
+def test_connection_registry_skips_already_revoked_connection():
+    from valet.server_ws import _ConnectionRegistry
+
+    reg = _ConnectionRegistry()
+    already = _FakeConn("drop", revoke_result=False)
+    reg.add(already)
+
+    # revoke() returning False means the connection was already torn down, so it
+    # must not be counted as a fresh revocation.
+    assert reg.revoke_clients({"drop"}, "gone") == []
+
+
+def test_connection_registry_removed_connection_is_not_revoked():
+    from valet.server_ws import _ConnectionRegistry
+
+    reg = _ConnectionRegistry()
+    conn = _FakeConn("drop")
+    reg.add(conn)
+    reg.remove(conn)
+
+    assert reg.revoke_clients({"drop"}, "gone") == []
+    assert conn.revoked_with is None

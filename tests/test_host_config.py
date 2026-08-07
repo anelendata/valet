@@ -1,9 +1,23 @@
 import dataclasses
+import json
 
 from valet.broker import Broker
 from valet.cli import main
-from valet.config import ClientIdentity, IdentityConfig, load_config
+from valet.config import AuditConfig, ClientIdentity, IdentityConfig, load_config
 from valet.server_host import _apply_reloaded_config
+
+
+class _FakeWsServer:
+    """Stand-in for the LAN server that records disconnect calls."""
+
+    def __init__(self, cfg=None):
+        self.cfg = cfg
+        self.disconnect_calls = []
+
+    def disconnect_clients(self, removed_ids, reason=None):
+        self.disconnect_calls.append((set(removed_ids), reason))
+        # Emulate the real server: every removed id had one live connection.
+        return list(removed_ids)
 
 
 def _config(path):
@@ -170,12 +184,8 @@ def test_legacy_name_prefixed_identity_still_loads(tmp_path):
 
 
 def test_reloaded_config_updates_broker_and_websocket_server_state(cfg):
-    class WsServer:
-        pass
-
     broker = Broker(cfg, audit_to_console=False)
-    ws_server = WsServer()
-    ws_server.cfg = cfg
+    ws_server = _FakeWsServer(cfg)
     new_cfg = dataclasses.replace(
         cfg,
         policy=dataclasses.replace(cfg.policy, deny=("echo",)),
@@ -190,3 +200,57 @@ def test_reloaded_config_updates_broker_and_websocket_server_state(cfg):
     assert resp["ok"] is False
     assert resp["error_class"] == "PolicyDenied"
     assert ws_server.cfg.identity.clients["new-client"].key == "new-key"
+    # Adding a client removes nobody, so no disconnect is attempted.
+    assert ws_server.disconnect_calls == []
+
+
+def _identity_cfg(cfg, client_ids):
+    return dataclasses.replace(
+        cfg,
+        identity=IdentityConfig(
+            clients={cid: ClientIdentity(key=f"key-{cid}") for cid in client_ids}
+        ),
+    )
+
+
+def test_reload_disconnects_only_removed_clients(cfg):
+    old_cfg = _identity_cfg(cfg, ["keep", "drop"])
+    new_cfg = _identity_cfg(cfg, ["keep"])
+    broker = Broker(old_cfg, audit_to_console=False)
+    ws_server = _FakeWsServer(old_cfg)
+
+    _apply_reloaded_config(broker, ws_server, new_cfg)
+
+    assert ws_server.disconnect_calls == [({"drop"}, None)]
+    assert ws_server.cfg is new_cfg
+
+
+def test_reload_without_removals_does_not_disconnect(cfg):
+    old_cfg = _identity_cfg(cfg, ["keep"])
+    new_cfg = _identity_cfg(cfg, ["keep", "added"])
+    broker = Broker(old_cfg, audit_to_console=False)
+    ws_server = _FakeWsServer(old_cfg)
+
+    _apply_reloaded_config(broker, ws_server, new_cfg)
+
+    assert ws_server.disconnect_calls == []
+
+
+def test_reload_audits_client_revocation(cfg, tmp_path):
+    audit_log = tmp_path / "audit.jsonl"
+    old_cfg = dataclasses.replace(
+        _identity_cfg(cfg, ["drop"]),
+        audit=AuditConfig(log_path=str(audit_log)),
+    )
+    new_cfg = dataclasses.replace(old_cfg, identity=IdentityConfig(clients={}))
+    broker = Broker(old_cfg, audit_to_console=False)
+    ws_server = _FakeWsServer(old_cfg)
+
+    _apply_reloaded_config(broker, ws_server, new_cfg)
+
+    event = json.loads(audit_log.read_text().strip())
+    assert event["op"] == "auth"
+    assert event["phase"] == "session"
+    assert event["decision"] == "denied"
+    assert event["error_class"] == "authentication_revoked"
+    assert event["caller"] == "drop"
