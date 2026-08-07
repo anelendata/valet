@@ -333,8 +333,20 @@ they drop into scripts like the real command would.
 For trusted-LAN RPC, approve a client on the trusted host:
 
 ```bash
-valet clients add my-ai-box
-valet clients list
+$ valet clients add my-ai-box
+valet: added client 'my-ai-box' in ./config.toml
+
+Client config:
+[client]
+id = "my-ai-box"
+key = "xxxxxxxxxxxxxxxxxxxxxxxx"
+default_host = "my-laptop"
+reconnect_max_retries = 5
+reconnect_backoff_seconds = 0.25
+reconnect_backoff_max_seconds = 3.0
+
+[hosts.my-laptop]
+url = "ws://<host-lan-ip>:8766/rpc"
 ```
 
 This writes a new `[identity.clients.<id>]` entry to the host's `config.toml`
@@ -345,13 +357,18 @@ running.
 Put the printed client config on the second machine (i.e. agent),
 set `[host].lan = true` and `[host].listen` on the trusted host.
 
-The client can then use the same commands through the selected host:
+The client can then use the same commands through the default host:
 
 ```bash
 valet ping
-valet run -- handoff status
+valet --env AWS_PROFILE=prod run -- aws s3 ls
 valet sh 'aws s3 ls | head'
 valet repl
+```
+
+You can select host with `--host` option:
+```bash
+valet --host my-laptop -- run ls
 ```
 
 To revoke a LAN client, remove it from the trusted host config:
@@ -377,7 +394,7 @@ reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
 
-[hosts.my-main-laptop]
+[hosts.my-laptop]
 # Optional per-host overrides use the same keys.
 ```
 
