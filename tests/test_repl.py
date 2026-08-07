@@ -138,6 +138,73 @@ def test_meta_call_passes_json_through():
     assert sent[0] == {"op": "ping"}
 
 
+def test_meta_processes_list_formats_processes():
+    resp = {
+        "op": "processes.list",
+        "ok": True,
+        "processes": [
+            {
+                "pid": 123,
+                "runtime_seconds": 1.25,
+                "shell": False,
+                "cmd": "python -c sleep",
+            }
+        ],
+    }
+    send, sent = _recorder(resp=resp)
+
+    _, out = run_command(":processes list", Session(), send)
+
+    assert sent == [{"op": "processes.list"}]
+    assert "PID\tSECONDS\tSHELL\tCOMMAND" in out
+    assert "123\t1.25\tfalse\tpython -c sleep" in out
+
+
+def test_meta_processes_list_empty():
+    send, _ = _recorder(resp={"op": "processes.list", "ok": True, "processes": []})
+
+    _, out = run_command(":processes", Session(), send)
+
+    assert out == "no running subprocesses"
+
+
+def test_meta_jobs_alias_lists_processes():
+    send, sent = _recorder(resp={"op": "processes.list", "ok": True, "processes": []})
+
+    run_command(":jobs", Session(), send)
+
+    assert sent == [{"op": "processes.list"}]
+
+
+def test_meta_processes_kill_sends_pid():
+    send, sent = _recorder(resp={"op": "processes.kill", "ok": True, "pid": 123,
+                                 "killed": True})
+
+    _, out = run_command(":processes kill 123", Session(), send)
+
+    assert sent == [{"op": "processes.kill", "pid": 123}]
+    assert out == "killed subprocess 123"
+
+
+def test_meta_kill_alias_sends_pid():
+    send, sent = _recorder(resp={"op": "processes.kill", "ok": True, "pid": 123,
+                                 "killed": True})
+
+    _, out = run_command(":kill 123", Session(), send)
+
+    assert sent == [{"op": "processes.kill", "pid": 123}]
+    assert out == "killed subprocess 123"
+
+
+def test_meta_kill_rejects_invalid_pid_without_sending():
+    send, sent = _recorder()
+
+    _, out = run_command(":kill nope", Session(), send)
+
+    assert out == "usage: :kill <pid>"
+    assert sent == []
+
+
 def test_format_exec_shows_stderr_and_exit():
     out = format_exec({"op": "exec", "ok": False, "exit_code": 2,
                        "stdout": "", "stderr": "boom"})

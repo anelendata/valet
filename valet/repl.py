@@ -39,6 +39,8 @@ Type any command to run it; output has secrets redacted.
   :cwd [dir]           show or change the working directory (same as `cd`)
   :shell [on|off]      show or toggle shell mode (default off)
   :secrets             how many secret values are being redacted for the cwd
+  :processes [list]    list subprocesses started by valet (:jobs also works)
+  :processes kill PID  terminate a valet subprocess (:kill PID also works)
   :call <json>         send a raw request object to the daemon
   :quit, :exit         leave (Ctrl-D also works)
 """
@@ -144,6 +146,10 @@ def _meta(body: str, session: Session, send: Send) -> tuple[bool, Optional[str]]
             return False, "connection to daemon lost. Exiting."
         n = resp.get("redacted_value_count", "?")
         return True, f"redacting {n} secret value(s) for {resp.get('cwd') or '(default)'}"
+    if name in ("processes", "procs", "jobs"):
+        return _meta_processes(arg, send)
+    if name == "kill":
+        return _meta_processes_kill(arg, send, "usage: :kill <pid>")
     if name == "call":
         if not arg:
             return True, ':usage: :call {"op":"exec","cmd":"echo hi"}'
@@ -158,6 +164,62 @@ def _meta(body: str, session: Session, send: Send) -> tuple[bool, Optional[str]]
         return True, json.dumps(resp, indent=2)
 
     return True, f"unknown meta-command: :{name} (try :help)"
+
+
+def _meta_processes(body: str, send: Send) -> tuple[bool, Optional[str]]:
+    parts = body.split()
+    if not parts or parts[0] in ("list", "ls"):
+        if len(parts) > 1:
+            return True, "usage: :processes [list] | :processes kill <pid>"
+        try:
+            resp = send({"op": "processes.list"})
+        except ConnectionError:
+            return False, "connection to daemon lost. Exiting."
+        return True, _format_processes(resp)
+    if parts[0] == "kill" and len(parts) == 2:
+        return _meta_processes_kill(
+            parts[1],
+            send,
+            "usage: :processes [list] | :processes kill <pid>",
+        )
+    return True, "usage: :processes [list] | :processes kill <pid>"
+
+
+def _meta_processes_kill(
+    pid_text: str,
+    send: Send,
+    usage: str,
+) -> tuple[bool, Optional[str]]:
+    try:
+        pid = int(pid_text, 10)
+    except ValueError:
+        return True, usage
+    if pid <= 0:
+        return True, usage
+    try:
+        resp = send({"op": "processes.kill", "pid": pid})
+    except ConnectionError:
+        return False, "connection to daemon lost. Exiting."
+    if not resp.get("ok"):
+        return True, format_exec(resp)
+    return True, f"killed subprocess {resp.get('pid')}"
+
+
+def _format_processes(resp: dict) -> Optional[str]:
+    if not resp.get("ok"):
+        return format_exec(resp)
+    processes = resp.get("processes") or []
+    if not processes:
+        return "no running subprocesses"
+    rows = ["PID\tSECONDS\tSHELL\tCOMMAND"]
+    for item in processes:
+        rows.append(
+            f"{item.get('pid')}\t"
+            f"{item.get('runtime_seconds')}\t"
+            f"{str(bool(item.get('shell'))).lower()}\t"
+            f"{item.get('cmd') or ''}"
+        )
+    return "\n".join(rows)
 
 
 def format_exec(resp: dict) -> Optional[str]:

@@ -144,6 +144,10 @@ Useful meta-commands:
 :shell on
 :shell off
 :secrets
+:processes list
+:processes kill <pid>
+:jobs
+:kill <pid>
 :quit
 ```
 
