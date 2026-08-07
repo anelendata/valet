@@ -82,12 +82,25 @@ def _change_dir(target: str, session: Session, send: Send) -> tuple[bool, Option
         req["cwd"] = session.cwd
     try:
         resp = send(req)
-    except ConnectionError:
-        return False, "connection to daemon lost. Exiting."
+    except ConnectionError as exc:
+        return False, _connection_lost_message(exc)
     if resp.get("ok"):
         session.cwd = resp.get("cwd")
         return True, None  # shell-like: silent on success, prompt shows the dir
     return True, f"cd: {resp.get('detail') or resp.get('error_class') or 'failed'}"
+
+
+def _connection_lost_message(exc: Exception) -> str:
+    """Message shown when the daemon connection drops and the REPL exits.
+
+    A refused/revoked identity arrives here as a ConnectionError carrying the
+    host's reason, so the user learns they were rejected rather than seeing a
+    bare "connection lost".
+    """
+    detail = str(exc).strip()
+    if detail:
+        return f"valet: {detail}. Exiting."
+    return "connection to daemon lost. Exiting."
 
 
 def run_command(line: str, session: Session, send: Send) -> tuple[bool, Optional[str]]:
@@ -110,8 +123,8 @@ def run_command(line: str, session: Session, send: Send) -> tuple[bool, Optional
         req["cwd"] = session.cwd
     try:
         resp = send(req)
-    except ConnectionError:
-        return False, "connection to daemon lost. Exiting."
+    except ConnectionError as exc:
+        return False, _connection_lost_message(exc)
     return True, format_exec(resp)
 
 

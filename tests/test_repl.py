@@ -4,6 +4,7 @@ import posixpath
 
 from valet.repl import (
     Session,
+    _connection_lost_message,
     command_candidates,
     completion_candidates,
     format_candidate_columns,
@@ -338,3 +339,33 @@ def test_candidate_list_is_two_columns():
 def test_tab_completion_binding_supports_libedit_and_gnu_readline():
     assert tab_completion_binding("Importing this module enables libedit") == "bind ^I rl_complete"
     assert tab_completion_binding("GNU readline") == "tab: complete"
+
+
+def test_run_command_exits_and_reports_reason_on_revoked_identity():
+    def send(_req):
+        # The transport raises a ConnectionError carrying the host's reason when
+        # the client's identity has been revoked (removed on config reload).
+        raise ConnectionError("client identity is not approved by this host")
+
+    keep_going, output = run_command("handoff status", Session(), send)
+
+    assert keep_going is False
+    assert "not approved" in output
+    assert "Exiting" in output
+
+
+def test_pure_cd_exits_and_reports_reason_on_revoked_identity():
+    def send(_req):
+        raise ConnectionError("client identity is not approved by this host")
+
+    keep_going, output = run_command("cd sub", Session(), send)
+
+    assert keep_going is False
+    assert "not approved" in output
+
+
+def test_connection_lost_message_falls_back_without_detail():
+    assert (
+        _connection_lost_message(ConnectionError())
+        == "connection to daemon lost. Exiting."
+    )

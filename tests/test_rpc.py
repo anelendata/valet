@@ -10,6 +10,7 @@ from valet.config import AuditConfig, ClientIdentity, HostConfig, IdentityConfig
 from valet.errors import ConfigError
 from valet.rpc import (
     PROTOCOL,
+    RpcAuthError,
     RpcError,
     Target,
     ValetClient,
@@ -305,6 +306,15 @@ def _auth_ok():
     return {"protocol": PROTOCOL, "type": "auth.ok"}
 
 
+def _auth_failed():
+    return {
+        "protocol": PROTOCOL,
+        "type": "auth.failed",
+        "error_class": "authentication_failed",
+        "detail": "client identity is not approved by this host",
+    }
+
+
 def _rpc_host(**overrides):
     values = {
         "name": "test-host",
@@ -339,6 +349,58 @@ def _install_fake_rpc_io(monkeypatch):
     monkeypatch.setattr("valet.rpc.write_text", fake_write_text)
     monkeypatch.setattr("valet.rpc.write_close", lambda sock, mask: None)
     monkeypatch.setattr("valet.rpc.time.sleep", lambda seconds: None)
+
+
+def test_websocket_auth_failure_is_terminal_and_not_retried(monkeypatch):
+    _install_fake_rpc_io(monkeypatch)
+    attempts = []
+
+    def connect(url):
+        attempts.append(url)
+        return FakeRpcSocket([_auth_challenge(), _auth_failed()])
+
+    monkeypatch.setattr("valet.rpc._connect_websocket", connect)
+
+    with pytest.raises(RpcAuthError) as excinfo:
+        _WebSocketRpcTransport(_rpc_host())
+
+    # A refused identity must not be retried, and the host's reason survives.
+    assert len(attempts) == 1
+    assert "not approved" in str(excinfo.value)
+
+
+def test_websocket_request_stream_raises_on_revoked_identity(monkeypatch):
+    _install_fake_rpc_io(monkeypatch)
+    first = FakeRpcSocket([_auth_challenge(), _auth_ok()], fail_request_write=True)
+    second = FakeRpcSocket([_auth_challenge(), _auth_failed()])
+    sockets = [first, second]
+    monkeypatch.setattr("valet.rpc._connect_websocket", lambda _url: sockets.pop(0))
+
+    transport = _WebSocketRpcTransport(_rpc_host())
+    try:
+        # The write fails, reconnect hits auth.failed; that must propagate as a
+        # terminal RpcAuthError rather than a recoverable transport-error dict.
+        with pytest.raises(RpcAuthError):
+            transport.request_stream(
+                {"op": "exec", "cmd": "echo hi"}, lambda _event: None
+            )
+    finally:
+        transport.close()
+
+
+def test_websocket_request_raises_on_revoked_identity(monkeypatch):
+    _install_fake_rpc_io(monkeypatch)
+    first = FakeRpcSocket([_auth_challenge(), _auth_ok()], fail_request_write=True)
+    second = FakeRpcSocket([_auth_challenge(), _auth_failed()])
+    sockets = [first, second]
+    monkeypatch.setattr("valet.rpc._connect_websocket", lambda _url: sockets.pop(0))
+
+    transport = _WebSocketRpcTransport(_rpc_host())
+    try:
+        with pytest.raises(RpcAuthError):
+            transport.request({"op": "ping"})
+    finally:
+        transport.close()
 
 
 def test_websocket_transport_retries_initial_connect_with_backoff(monkeypatch):

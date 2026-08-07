@@ -26,6 +26,11 @@ class RpcError(ConnectionError):
     pass
 
 
+class RpcAuthError(RpcError):
+    """The host refused this client's identity (terminal, do not retry)."""
+    pass
+
+
 StreamCallback = Callable[[dict], None]
 
 
@@ -110,6 +115,8 @@ class _WebSocketRpcTransport:
         request_id = _request_id()
         try:
             self._write_request(request_id, req)
+        except RpcAuthError:
+            raise
         except RpcError as exc:
             return _transport_error_response(req, str(exc))
         while True:
@@ -133,6 +140,8 @@ class _WebSocketRpcTransport:
         request_id = _request_id()
         try:
             self._write_request(request_id, req)
+        except RpcAuthError:
+            raise
         except RpcError as exc:
             return _transport_error_response(req, str(exc))
         cancelled = False
@@ -192,6 +201,10 @@ class _WebSocketRpcTransport:
                 self.sock = _connect_websocket(self.host.url)
                 self._authenticate()
                 return
+            except RpcAuthError:
+                # The host refused this identity; retrying will not help.
+                self._close_socket()
+                raise
             except (OSError, RpcError) as exc:
                 last_error = exc
                 self._close_socket()
@@ -235,6 +248,8 @@ class _WebSocketRpcTransport:
     def _lost_during_request_response(self, req: dict) -> dict:
         try:
             self._connect_with_backoff()
+        except RpcAuthError:
+            raise
         except RpcError as exc:
             return _transport_error_response(req, str(exc))
         return _transport_error_response(
@@ -260,7 +275,9 @@ class _WebSocketRpcTransport:
         write_text(self.sock, json.dumps(response), mask=True)
         accepted = self._read_message()
         if accepted.get("type") != "auth.ok":
-            raise RpcError(str(accepted.get("detail") or "authentication failed"))
+            # A refused or revoked identity is terminal — surface it distinctly
+            # so callers stop retrying and can tell the user they were rejected.
+            raise RpcAuthError(str(accepted.get("detail") or "authentication failed"))
 
     def _send_cancel(self, request_id: str) -> None:
         self._send_text(json.dumps({
