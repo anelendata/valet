@@ -1,63 +1,57 @@
 ;; workspace.sb — macOS Seatbelt (sandbox-exec) profile confining a command to
 ;; a single workspace directory.
 ;;
-;; This is a PROTOTYPE and is intentionally NOT wired into valet. It shows the
-;; real boundary that command-line policy cannot provide: even if a command
-;; computes a path or opens a file internally, the kernel denies reads/writes
-;; outside the workspace and denies all network access.
+;; PROTOTYPE. Launch with:
+;;   sandbox-exec -D WORKSPACE=/abs/workspace -f workspace.sb CMD...
+;; (run-sandboxed.sh resolves WORKSPACE to an absolute path first.)
 ;;
-;; Launch with:  sandbox-exec -D WORKSPACE=/abs/workspace -f workspace.sb CMD...
-;; (use run-sandboxed.sh, which resolves WORKSPACE to an absolute path first.)
+;; DESIGN: this uses (allow default) as the base, then carves out the sensitive
+;; reads, jails writes to the workspace, and denies the network. That is a
+;; deliberate trade-off. A hand-rolled (deny default) profile is stricter on
+;; paper but reliably ABORTS ordinary programs at launch (exit -6 / SIGABRT)
+;; because the dynamic linker and system libraries need many paths that are hard
+;; to enumerate and that change between macOS versions. (allow default) launches
+;; everything reliably; the carve-outs below are what actually matter for
+;; containment. See README.md for a stricter, tune-it-yourself variant.
 ;;
-;; SBPL is undocumented and version-sensitive; the system read paths below cover
-;; recent macOS but may need tuning. Apple deprecates sandbox-exec yet it still
-;; functions; treat this as a reference, not a supported product.
+;; What this blocks:
+;;   - reading home directories, the login keychain, and root's home
+;;   - writing anywhere except the workspace and scratch temp dirs
+;;   - all network access (curl/ssh/DNS exfiltration)
+;; What it still allows (weaker than a full jail): reading system locations such
+;; as /etc, /usr, /Library (minus keychains), /opt, /Applications.
 
 (version 1)
 
-;; Default: deny everything, quietly. While tuning, change to
-;; (deny default (with report)) and watch the Console for what to allow.
-(deny default (with no-log))
+;; Base: allow what a normal process needs to launch and run. Everything below
+;; narrows this; in SBPL the LAST matching rule wins.
+(allow default)
 
-;; Let programs launch, fork, and signal themselves.
-(allow process-fork)
-(allow process-exec)
-(allow signal (target self))
-(allow sysctl-read)
-(allow mach-lookup)
+;; --- Reads: block the sensitive locations outside the workspace ------------
+(deny file-read*
+    (subpath "/Users")
+    (subpath "/private/var/root")
+    (subpath "/private/var/db/sudo")
+    (subpath "/Library/Keychains")
+    (subpath "/Network/Users"))
 
-;; Allow stat()/metadata broadly so path resolution works; actual content reads
-;; stay restricted to the locations enumerated below.
-(allow file-read-metadata)
+;; Re-grant the workspace, which lives under /Users. WORKSPACE is passed with -D
+;; and must be an absolute, symlink-free path.
+(allow file-read* (subpath (param "WORKSPACE")))
 
-;; Read-only access to the system locations needed to load and run executables
-;; and their shared libraries.
-(allow file-read*
-    (subpath "/usr")
-    (subpath "/bin")
-    (subpath "/sbin")
-    (subpath "/System")
-    (subpath "/Library")
-    (subpath "/private/var/db/dyld")
-    (subpath "/private/var/select")
-    (literal "/dev/null")
-    (literal "/dev/zero")
-    (literal "/dev/random")
-    (literal "/dev/urandom")
-    (literal "/dev/dtracehelper")
-    (literal "/dev/tty")
-    (literal "/etc/localtime"))
-
-;; The workspace: full read + write. WORKSPACE is supplied at launch with -D.
-(allow file-read* file-write*
-    (subpath (param "WORKSPACE")))
-
-;; System temp dirs many tools expect. Comment these out for a stricter jail
-;; (some programs will then fail to run).
-(allow file-read* file-write*
+;; --- Writes: confine to the workspace and scratch temp ---------------------
+(deny file-write* (subpath "/"))
+(allow file-write*
+    (subpath (param "WORKSPACE"))
     (subpath "/private/tmp")
     (subpath "/private/var/tmp")
-    (subpath "/private/var/folders"))
+    (subpath "/private/var/folders")
+    (literal "/dev/null")
+    (literal "/dev/zero")
+    (literal "/dev/tty")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+    (literal "/dev/dtracehelper"))
 
-;; No network at all — blocks curl/ssh/DNS exfiltration outright.
+;; --- Network: deny outright ------------------------------------------------
 (deny network*)

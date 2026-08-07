@@ -26,10 +26,11 @@ attempts internally.
 
 ## Files
 
-- `workspace.sb` — the Seatbelt (SBPL) profile. Denies everything by default,
-  then allows: process exec, read-only access to system locations needed to run
-  binaries, full read/write **only** under `WORKSPACE` (and system temp dirs),
-  and **no network**.
+- `workspace.sb` — the Seatbelt (SBPL) profile. Uses `(allow default)` as the
+  base (so programs launch reliably), then **blocks reads** of home directories,
+  the login keychain, and root's home; **jails writes** to the workspace and
+  scratch temp; and **denies all network**. This trade-off is deliberate — see
+  "Caveats" for why a stricter `(deny default)` profile aborts programs.
 - `run-sandboxed.sh` — resolves the workspace to an absolute path and launches
   `sandbox-exec -D WORKSPACE=... -f workspace.sb <command>`.
 - `demo.sh` — creates a throwaway workspace and shows workspace access
@@ -59,14 +60,21 @@ contrib/sandbox-exec/run-sandboxed.sh ~/work sh -c 'curl https://example.com'
 - **macOS only.** On Linux the equivalent is `bubblewrap`/`nsjail` or a
   container with mount + network namespaces and seccomp.
 - **`sandbox-exec` is deprecated by Apple.** It still works on current macOS and
-  is widely used, but SBPL is undocumented and version-sensitive. The system
-  read paths in `workspace.sb` cover recent macOS; if a program fails to launch,
-  switch the profile's first line to `(deny default (with report))`, watch
-  Console for the denied path, and add it.
+  is widely used, but SBPL is undocumented and version-sensitive.
+- **Reads outside `/Users` are still allowed.** The profile blocks the sensitive
+  spots (home dirs, keychain, root) but not all of `/etc`, `/Library`, `/opt`,
+  `/System`, `/usr`. If you want a true "only the workspace is readable" jail,
+  that needs a `(deny default)` profile — which reliably **aborts programs at
+  launch (exit -6 / SIGABRT)** unless you painstakingly enumerate every path the
+  dynamic linker and each tool needs, per macOS version. That is why the shipped
+  profile uses `(allow default)` with carve-outs. To attempt the strict variant,
+  start from `(deny default (with report))`, run `valet doctor` (or the demo)
+  repeatedly, and add each path the Console reports as denied until programs
+  launch. Add more `(deny file-read* ...)` carve-outs (e.g. `/opt`, extra
+  `/Library` subpaths) to tighten the shipped profile without that risk.
 - **Not a full jail.** This confines file and network access. It does not
-  restrict CPU/memory, IPC, or every mach service, and system temp dirs are
-  writable by default (tighten by removing that block). Treat it as a strong
-  containment layer, not a VM.
+  restrict CPU/memory, IPC, or every mach service, and scratch temp dirs are
+  writable. Treat it as a strong containment layer, not a VM.
 
 ## Use it with `valet serve`
 

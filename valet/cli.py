@@ -3,6 +3,7 @@
 Subcommands:
   valet                 interactive redacting shell (default; like `python` bare)
   valet repl            same as above, explicitly
+  valet doctor          check config and the OS sandbox setup
   valet serve           run the configured host daemon
   valet serve-http      run the HTTP broker adapter with bearer auth
   valet serve-lan       run the Level 1 WebSocket RPC host adapter
@@ -26,7 +27,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets as _secrets
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,6 +73,135 @@ def _cmd_init(args: argparse.Namespace) -> int:
     path.write_text(new)
     print(f"valet: wrote a new fingerprint_salt to {path}")
     return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_config_path()
+    try:
+        cfg = load_config(path)
+    except ValetError as exc:
+        print(f"valet: could not load config: {exc}", file=sys.stderr)
+        return 2
+
+    print("valet doctor\n")
+    workspace = _resolve_workspace(cfg.exec.workspace)
+    ws_note = "(unset)"
+    if workspace:
+        ws_note = f"{workspace}  [{'exists' if os.path.isdir(workspace) else 'MISSING'}]"
+    print(f"  config file:  {path}")
+    print(f"  workspace:    {ws_note}")
+    print(f"  shell:        {'on' if cfg.exec.shell else 'off'}")
+    print(
+        f"  policy:       reads={_onoff(cfg.policy.enforce_workspace_reads)} "
+        f"writes={_onoff(cfg.policy.enforce_workspace_writes)}  "
+        f"deny=+{len(cfg.policy.deny)}  "
+        f"allow={'(none)' if not cfg.policy.allow else ','.join(cfg.policy.allow)}"
+    )
+    print(f"  sandbox:      {cfg.exec.sandbox_profile or '(not configured)'}")
+    print()
+
+    failed = _doctor_sandbox_checks(cfg, workspace)
+    print()
+    print("result: " + ("FAILED — see above" if failed else "all checks passed"))
+    return 1 if failed else 0
+
+
+def _onoff(value: bool) -> str:
+    return "on" if value else "off"
+
+
+def _resolve_workspace(workspace) -> str:
+    if not workspace:
+        return ""
+    return os.path.realpath(os.path.expanduser(os.path.expandvars(str(workspace))))
+
+
+def _doctor_line(status: str, text: str) -> None:
+    print(f"  [{status:^4}] {text}")
+
+
+def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
+    """Run sandbox checks. Returns True if any hard check failed."""
+    profile = cfg.exec.sandbox_profile
+    if not profile:
+        print("sandbox checks: skipped ([exec].sandbox_profile is unset)")
+        return False
+
+    print("sandbox checks:")
+    failed = False
+
+    if sys.platform != "darwin":
+        _doctor_line("WARN", "sandbox_profile is set but sandbox-exec is macOS-only")
+        return False
+
+    exe = shutil.which("sandbox-exec")
+    if not exe:
+        _doctor_line("FAIL", "sandbox-exec not found on PATH")
+        return True
+    _doctor_line(" OK ", f"sandbox-exec present: {exe}")
+
+    profile_path = os.path.expanduser(os.path.expandvars(profile))
+    if not os.path.isfile(profile_path):
+        _doctor_line("FAIL", f"profile not found: {profile_path}")
+        return True
+    _doctor_line(" OK ", f"profile readable: {profile_path}")
+
+    if not workspace or not os.path.isdir(workspace):
+        _doctor_line("FAIL", "[exec].workspace must be set and exist for the sandbox")
+        return True
+
+    def run(*cmd):
+        full = ["sandbox-exec", "-D", f"WORKSPACE={workspace}", "-f", profile_path, *cmd]
+        try:
+            return subprocess.run(full, capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return exc
+
+    # 1. A trivial command must launch without aborting (the exit -6 you hit).
+    res = run("/usr/bin/true")
+    if not hasattr(res, "returncode"):
+        _doctor_line("FAIL", f"could not run a sandboxed command: {res}")
+        return True
+    if res.returncode == -6:
+        _doctor_line("FAIL", "profile aborts programs at launch (SIGABRT / exit -6)")
+        print("         → the profile is too strict for process startup; use the")
+        print("           shipped contrib/sandbox-exec/workspace.sb, or see its README.")
+        failed = True
+    elif res.returncode != 0:
+        _doctor_line("FAIL", f"trivial command failed (exit {res.returncode}): "
+                             f"{res.stderr.strip()[:200]}")
+        failed = True
+    else:
+        _doctor_line(" OK ", "launches a trivial command")
+
+    # 2. The workspace must be readable inside the sandbox.
+    res = run("/bin/ls", workspace)
+    if hasattr(res, "returncode") and res.returncode == 0:
+        _doctor_line(" OK ", "workspace is readable inside the sandbox")
+    else:
+        _doctor_line("FAIL", "workspace is NOT readable inside the sandbox")
+        failed = True
+
+    # 3. The home directory must NOT be readable inside the sandbox.
+    home = os.path.expanduser("~")
+    res = run("/bin/ls", home)
+    if hasattr(res, "returncode") and res.returncode == 0:
+        _doctor_line("WARN", "home directory IS readable inside the sandbox "
+                             "(reads are not confined)")
+    else:
+        _doctor_line(" OK ", "home directory is blocked inside the sandbox")
+
+    # 4. The profile should deny the network (static check).
+    try:
+        profile_text = Path(profile_path).read_text()
+    except OSError:
+        profile_text = ""
+    if "deny network" in profile_text:
+        _doctor_line(" OK ", "profile denies network access")
+    else:
+        _doctor_line("WARN", "profile has no `(deny network*)` rule")
+
+    return failed
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -445,6 +578,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("init", help="generate a fingerprint_salt").set_defaults(func=_cmd_init)
+    sub.add_parser("doctor", help="check config and the OS sandbox setup"
+                   ).set_defaults(func=_cmd_doctor)
     sub.add_parser("serve", help="run the configured host daemon").set_defaults(func=_cmd_serve)
     sub.add_parser("serve-http", help="run the HTTP broker adapter with bearer auth"
                    ).set_defaults(func=_cmd_serve_http)

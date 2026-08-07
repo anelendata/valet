@@ -39,8 +39,8 @@ run_case "list the home directory (expect DENIED)" \
 run_case "read AWS credentials (expect DENIED)" \
   sh -c 'cat "$HOME/.aws/credentials"'
 
-run_case "write outside the workspace (expect DENIED)" \
-  sh -c 'echo escapee > /tmp/valet-escapee-demo.txt && echo wrote'
+run_case "write into the home directory (expect DENIED)" \
+  sh -c 'echo escapee > "$HOME/valet-escapee-demo.txt" && echo wrote'
 
 run_case "reach the network (expect DENIED)" \
   sh -c 'curl -sS --max-time 5 https://example.com >/dev/null && echo fetched'

@@ -171,3 +171,40 @@ def test_processes_kill_sends_broker_process_kill(monkeypatch, capsys):
     assert conn.requests == [{"op": "processes.kill", "pid": 123}]
     assert conn.closed is True
     assert "killed subprocess 123" in capsys.readouterr().out
+
+
+def test_doctor_reports_config_and_skips_sandbox_when_unset(tmp_path, capsys):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[broker]\nfingerprint_salt = 'x'\n\n"
+        f"[exec]\nworkspace = '{ws}'\n"
+    )
+
+    rc = main(["-c", str(config), "doctor"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "valet doctor" in out
+    assert "reads=on writes=on" in out
+    assert "sandbox checks: skipped" in out
+
+
+def test_doctor_fails_when_sandbox_profile_missing(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("valet.cli.sys.platform", "darwin")
+    monkeypatch.setattr("valet.cli.shutil.which", lambda _name: "/usr/bin/sandbox-exec")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[broker]\nfingerprint_salt = 'x'\n\n"
+        f"[exec]\nworkspace = '{ws}'\nsandbox_profile = '{tmp_path / 'nope.sb'}'\n"
+    )
+
+    rc = main(["-c", str(config), "doctor"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "profile not found" in out
+    assert "FAILED" in out
