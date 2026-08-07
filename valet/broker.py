@@ -344,8 +344,7 @@ class Broker:
         return {"op": "chdir", "ok": True, "cwd": newpath}
 
     def _redaction_info(self, request: dict) -> dict:
-        cwd = request.get("cwd") or self.cfg.exec.workspace
-        cwd = os.path.expanduser(cwd) if cwd else None
+        cwd = self._resolve_cwd(request.get("cwd"))
         redactor = self._redactor_for(cwd)
         return {"ok": True, "cwd": cwd,
                 "redacted_value_count": len(redactor.secret_values)}
@@ -354,8 +353,7 @@ class Broker:
         from .repl import completion_candidates
 
         line = str(request.get("line", ""))
-        cwd = request.get("cwd") or self.cfg.exec.workspace
-        cwd = os.path.expanduser(str(cwd)) if cwd else None
+        cwd = self._resolve_cwd(request.get("cwd"))
         workspace = self.cfg.exec.workspace if self.cfg.policy.enforce_workspace_reads else None
         candidates = completion_candidates(line, cwd, workspace=workspace)
         return {"op": "complete", "ok": True, "cwd": cwd, "candidates": candidates}
@@ -398,8 +396,7 @@ class Broker:
         cmd = self._normalize_cmd(raw_cmd, shell)
         extra_env = self._normalize_env(request.get("env"))
 
-        cwd = request.get("cwd") or self.cfg.exec.workspace
-        cwd = os.path.expanduser(cwd) if cwd else None
+        cwd = self._resolve_cwd(request.get("cwd"))
         if cwd is not None and not os.path.isdir(cwd):
             raise ValidationError("cwd does not exist")
 
@@ -426,7 +423,22 @@ class Broker:
                 return shlex.split(raw_cmd)
             except ValueError as exc:
                 raise ValidationError(f"could not parse command: {exc}") from exc
+        if not isinstance(raw_cmd, (list, tuple)):
+            raise ValidationError("cmd must be a string or argv list")
         return [str(t) for t in raw_cmd]
+
+    def _resolve_cwd(self, raw_cwd: Any) -> Optional[str]:
+        cwd = raw_cwd or self.cfg.exec.workspace
+        if cwd is None:
+            return None
+        cwd = os.path.expanduser(os.path.expandvars(str(cwd)))
+        if not os.path.isabs(cwd):
+            workspace = self.cfg.exec.workspace
+            if workspace:
+                cwd = os.path.join(os.path.expanduser(os.path.expandvars(workspace)), cwd)
+            else:
+                cwd = os.path.abspath(cwd)
+        return os.path.realpath(cwd)
 
     @staticmethod
     def _normalize_env(raw_env: Any) -> dict[str, str]:
@@ -572,8 +584,7 @@ class Broker:
         return self._redactor_for(self._audit_cwd(request), extra_values=extra_env.values())
 
     def _audit_cwd(self, request: dict) -> Optional[str]:
-        cwd = request.get("cwd") or self.cfg.exec.workspace
-        return os.path.expanduser(str(cwd)) if cwd else None
+        return self._resolve_cwd(request.get("cwd"))
 
     def _audit_command(self, request: dict, redactor: Redactor) -> Optional[str]:
         raw_cmd = request.get("cmd")

@@ -18,8 +18,10 @@ redacts known and suspected secret values, and returns only the sanitized result
 - Use `valet run -- ...` for exact argv execution. Shell is disabled by default;
   use `valet sh '...'` only when the trusted host explicitly enables
   `[exec] shell = true`.
-- Use `valet run --cwd DIR -- ...` to run a one-shot command in a directory.
-  This is the shell-free replacement for patterns like `cd DIR; command`.
+- Use `valet --cwd DIR run -- ...` to run a one-shot command in a directory.
+  `valet run --cwd DIR -- ...` also works. Relative cwd values resolve on the
+  trusted host under `[exec].workspace`; this is the shell-free replacement for
+  patterns like `cd DIR; command`.
 - Use `valet --env NAME=value run -- ...` for per-command environment variables
   instead of shell assignment syntax.
 - Do not use host process tools such as `ps`, `kill`, `pkill`, or `killall`.
@@ -38,9 +40,9 @@ machine. It is selected by default when no remote host is configured.
 ```bash
 valet ping
 valet run -- aws sts get-caller-identity --profile prod-readonly
-valet run --cwd projects/app -- cat text.txt
+valet --cwd projects/app run -- cat text.txt
 valet --env AWS_PROFILE=prod-readonly run -- aws sts get-caller-identity
-valet --env AWS_PROFILE=prod-readonly run --cwd projects/app -- aws s3 ls
+valet --env AWS_PROFILE=prod-readonly --cwd projects/app run -- aws s3 ls
 valet repl
 ```
 
@@ -57,9 +59,9 @@ LAN mode uses a client-only `client.toml` and WebSocket RPC to a trusted host:
 valet hosts
 valet --host my-main-laptop ping
 valet --host my-main-laptop run -- handoff status
-valet --host my-main-laptop run --cwd projects/app -- cat text.txt
+valet --host my-main-laptop --cwd projects/app run -- cat text.txt
 valet --host my-main-laptop --env AWS_PROFILE=prod-readonly run -- aws s3 ls
-valet --host my-main-laptop --env AWS_PROFILE=prod-readonly run --cwd projects/app -- aws s3 ls
+valet --host my-main-laptop --env AWS_PROFILE=prod-readonly --cwd projects/app run -- aws s3 ls
 valet --host my-main-laptop processes list
 valet --host my-main-laptop repl
 ```
@@ -143,7 +145,7 @@ valet --host my-main-laptop repl
 
 Inside the REPL, `cd` sticks only when it is a standalone line. With shell mode
 off, do not use shell separators such as `cd DIR; cat file`; use two REPL lines
-or one-shot `run --cwd`:
+or one-shot `--cwd`:
 
 ```text
 valet> cd projects/app
@@ -151,7 +153,7 @@ app valet> cat text.txt
 ```
 
 ```bash
-valet --host my-main-laptop run --cwd projects/app -- cat text.txt
+valet --host my-main-laptop --cwd projects/app run -- cat text.txt
 ```
 
 Useful meta-commands:

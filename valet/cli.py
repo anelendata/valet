@@ -411,6 +411,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-e", "--env", "-env", action="append", default=[],
                    metavar="NAME=VALUE",
                    help="set an environment variable for run/sh without shell syntax")
+    p.add_argument("--cwd", default=None,
+                   help="working directory for run/sh without shell syntax")
     p.set_defaults(func=_cmd_repl)  # no subcommand => REPL
     sub = p.add_subparsers(dest="cmd")
 
@@ -462,14 +464,14 @@ def build_parser() -> argparse.ArgumentParser:
     clients_remove.set_defaults(func=_cmd_clients_remove)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
-    run.add_argument("--cwd", default=None)
+    run.add_argument("--cwd", default=argparse.SUPPRESS)
     run.add_argument("--timeout", type=int, default=60)
     run.add_argument("command", nargs=argparse.REMAINDER,
                      help="the command and its arguments")
     run.set_defaults(func=_cmd_run)
 
     sh = sub.add_parser("sh", help="run a shell command line, print redacted output")
-    sh.add_argument("--cwd", default=None)
+    sh.add_argument("--cwd", default=argparse.SUPPRESS)
     sh.add_argument("--timeout", type=int, default=60)
     sh.add_argument("command", help="the command line to run via the shell")
     sh.set_defaults(func=_cmd_sh)

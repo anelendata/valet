@@ -1,4 +1,5 @@
 """The exec op runs commands and redacts secret values from their output."""
+import os
 import sys
 
 from valet.broker import Broker
@@ -29,6 +30,24 @@ def test_cwd_dotenv_is_loaded_and_redacted(cfg, workspace):
         {"op": "exec", "cmd": "echo tok_live_abcdef123456", "cwd": str(workspace)}
     )
     assert "tok_live_abcdef123456" not in resp["stdout"]
+
+
+def test_relative_cwd_resolves_from_workspace(cfg, workspace):
+    subdir = workspace / "zendesk-jira"
+    subdir.mkdir()
+    script = "import os; print(os.getcwd())"
+    expected = os.path.realpath(str(subdir))
+
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", script],
+        "shell": False,
+        "cwd": "zendesk-jira",
+    })
+
+    assert resp["ok"] is True
+    assert resp["cwd"] == expected
+    assert resp["stdout"].strip() == expected
 
 
 def test_nonzero_exit_is_reported(cfg):

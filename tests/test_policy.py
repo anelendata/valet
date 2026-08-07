@@ -291,6 +291,12 @@ def test_workspace_read_jail_blocks_outside_cwd(cfg, tmp_path):
     assert resp["error_class"] == "PolicyDenied"
 
 
+def test_workspace_read_jail_blocks_relative_cwd_escape(cfg):
+    c = _workspace_read_cfg(cfg)
+    resp = Broker(c).handle({"op": "exec", "cmd": "pwd", "cwd": ".."})
+    assert resp["error_class"] == "PolicyDenied"
+
+
 def test_workspace_read_jail_resolves_symlinks(cfg, tmp_path):
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n")

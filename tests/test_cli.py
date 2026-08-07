@@ -39,6 +39,43 @@ def test_run_env_flags_attach_env_to_exec_request(monkeypatch):
     assert captured["cmd"] == ["aws", "s3", "ls"]
 
 
+def test_run_global_cwd_attaches_to_exec_request(monkeypatch):
+    captured = {}
+
+    def fake_streaming_one_shot(_args, request):
+        captured.update(request)
+        return 0
+
+    monkeypatch.setattr("valet.cli._streaming_one_shot", fake_streaming_one_shot)
+
+    rc = main([
+        "--client-config", "client.toml",
+        "--cwd", "zendesk-jira",
+        "run", "--", "ls",
+    ])
+
+    assert rc == 0
+    assert captured["shell"] is False
+    assert captured["cwd"] == "zendesk-jira"
+    assert captured["cmd"] == ["ls"]
+
+
+def test_run_subcommand_cwd_still_attaches_to_exec_request(monkeypatch):
+    captured = {}
+
+    def fake_streaming_one_shot(_args, request):
+        captured.update(request)
+        return 0
+
+    monkeypatch.setattr("valet.cli._streaming_one_shot", fake_streaming_one_shot)
+
+    rc = main(["run", "--cwd", "zendesk-jira", "--", "ls"])
+
+    assert rc == 0
+    assert captured["cwd"] == "zendesk-jira"
+    assert captured["cmd"] == ["ls"]
+
+
 def test_processes_kill_sends_broker_process_kill(monkeypatch, capsys):
     conn = _FakeConnection({"op": "processes.kill", "ok": True, "pid": 123, "killed": True})
     monkeypatch.setattr("valet.cli._connect", lambda _args: (conn, object(), None))

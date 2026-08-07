@@ -455,6 +455,7 @@ Then, from anywhere (including the agent):
 ```bash
 valet run -- aws s3 ls                   # argv, no shell (exact)
 valet --env AWS_PROFILE=prod run -- aws s3 ls
+valet --cwd projects/app run -- ls       # cwd without shell syntax
 valet sh 'aws s3 ls | grep prod'         # requires [exec] shell = true
 valet call --json '{"op":"ping"}'
 ```
