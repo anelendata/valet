@@ -106,6 +106,25 @@ def test_client_config_is_remote_subset(tmp_path):
     assert cfg.hosts["main"].host_id == "main-host-id"
 
 
+def test_host_id_defaults_to_section_name(tmp_path):
+    # A [hosts.<name>] block with no host_id pins to the section name, so a
+    # config named after the host needs no separate host_id line.
+    path = tmp_path / "client.toml"
+    path.write_text(
+        "[client]\n"
+        'id = "client_a"\n'
+        'key = "secret-client-key"\n'
+        'default_host = "daigos-mbp-2021"\n'
+        "\n"
+        "[hosts.daigos-mbp-2021]\n"
+        'url = "ws://10.0.0.100:8766/rpc"\n'
+    )
+
+    cfg = load_client_config(path)
+
+    assert cfg.hosts["daigos-mbp-2021"].host_id == "daigos-mbp-2021"
+
+
 def test_client_config_loads_reconnect_defaults_and_host_overrides(tmp_path):
     path = tmp_path / "client.toml"
     path.write_text(

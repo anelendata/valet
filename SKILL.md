@@ -89,7 +89,6 @@ reconnect_backoff_max_seconds = 3.0
 
 [hosts.my-main-laptop]
 url = "ws://192.168.1.25:8766/rpc"
-host_id = "my-main-laptop"
 ```
 
 Per-host reconnect overrides can be placed under `[hosts.<name>]` with the same

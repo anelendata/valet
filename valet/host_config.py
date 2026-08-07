@@ -104,6 +104,11 @@ def client_config_snippet(
     url: str,
     host_id: str,
 ) -> str:
+    # host_id defaults to the section name on the client, so only emit it when
+    # the section is labelled differently from the host's own id.
+    host_id_line = (
+        f'host_id = "{_toml_escape(host_id)}"\n' if host_id and host_id != host_name else ""
+    )
     return (
         "[client]\n"
         f'id = "{_toml_escape(update.client_id)}"\n'
@@ -115,7 +120,7 @@ def client_config_snippet(
         "\n"
         f"[hosts.{_toml_key(host_name)}]\n"
         f'url = "{_toml_escape(url)}"\n'
-        f'host_id = "{_toml_escape(host_id)}"\n'
+        f"{host_id_line}"
     )
 
 

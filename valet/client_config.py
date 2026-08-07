@@ -91,7 +91,11 @@ def load_client_config(
             url=url,
             client_id=host_client_id,
             key=host_key,
-            host_id=str(value.get("host_id", "")),
+            # host_id defaults to the [hosts.<name>] section key, so a config
+            # whose section is already named after the host needs no separate
+            # host_id line. Set it explicitly only to label the section
+            # differently from the host's own [host].id.
+            host_id=str(value.get("host_id") or name),
             reconnect_max_retries=int(
                 value.get("reconnect_max_retries", reconnect_max_retries)
             ),
@@ -126,7 +130,7 @@ def write_new_client_config(path: Path, *, host_name: str, url: str) -> ClientCo
         "\n"
         f"[hosts.{host_name}]\n"
         f'url = "{url}"\n'
-        f'host_id = "{host_name}"\n'
+        # host_id is implied by the section name here, so it is omitted.
     )
     path.write_text(text)
     return load_client_config(path)

@@ -82,7 +82,9 @@ def test_clients_add_updates_host_config(tmp_path, capsys):
     assert cfg.identity.clients["local-box"].key
     out = capsys.readouterr().out
     assert 'id = "local-box"' in out
-    assert 'host_id = "test-host"' in out
+    # The section is named after the host, so host_id is implied and omitted.
+    assert "[hosts.test-host]" in out
+    assert "host_id" not in out
     assert 'url = "ws://<host-lan-ip>:8766/rpc"' in out
 
 
