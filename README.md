@@ -641,5 +641,3 @@ IDs/keys; nonzero exits and missing binaries are reported; unknown ops, missing
 exec output arrives as redacted chunks with structured-output buffering; audit
 logging records streamed exec start and final events; and the REPL runs lines
 and handles meta-commands.
-
-See [`docs/codex_usage.md`](docs/codex_usage.md) for how an agent uses valet.
