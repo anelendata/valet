@@ -107,8 +107,13 @@ def _cmd_repl(args: argparse.Namespace) -> int:
         print(f"valet: could not connect: {exc}", file=sys.stderr)
         return 2
     try:
+        # A local target reads the host's [exec].shell from its own config; a
+        # remote target has no access to it, so ask the host for its default.
+        # Without this the REPL would default remote sessions to shell=off and
+        # send shell=False, running argv mode even when the host allows a shell.
+        shell_default = cfg.exec.shell if cfg else _remote_shell_default(conn)
         session = Session(
-            shell=cfg.exec.shell if cfg else False,
+            shell=shell_default,
             host_label=target.name if target.is_remote else None,
             completion_workspace=(cfg.exec.workspace
                                   if cfg and cfg.policy.enforce_workspace_reads else None),
@@ -124,6 +129,19 @@ def _cmd_repl(args: argparse.Namespace) -> int:
         return interact(send, session=session)
     finally:
         conn.close()
+
+
+def _remote_shell_default(conn: ValetClient) -> bool:
+    """Ask a remote host whether it defaults exec to shell mode.
+
+    Falls back to False if the host is old enough not to report it or the
+    ping fails; the host still rejects shell requests it does not allow.
+    """
+    try:
+        resp = conn.request({"op": "ping"})
+    except (ConnectionError, RpcError, OSError):
+        return False
+    return bool(resp.get("shell_default", False))
 
 
 def _one_shot(args: argparse.Namespace, request: dict) -> int:

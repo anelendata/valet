@@ -1,6 +1,12 @@
 from valet.cli import main
 
 
+class _FakeTarget:
+    def __init__(self, is_remote):
+        self.is_remote = is_remote
+        self.name = "lan-host" if is_remote else "local"
+
+
 class _FakeConnection:
     def __init__(self, response):
         self.response = response
@@ -9,6 +15,8 @@ class _FakeConnection:
 
     def request(self, request):
         self.requests.append(request)
+        if isinstance(self.response, dict) and request.get("op") == "ping":
+            return {"ok": True, "pong": True, **self.response.get("ping", {})}
         return self.response
 
     def request_stream(self, request, on_event):
@@ -107,6 +115,50 @@ def test_run_prints_final_stderr_from_streaming_response(monkeypatch, capsys):
         "timeout": 60,
         "stream": True,
     }]
+
+
+def test_repl_remote_adopts_host_shell_default(monkeypatch):
+    # A remote target has no local config, so the REPL must learn the host's
+    # [exec].shell default from a ping — otherwise it defaults to shell=off and
+    # runs argv mode, breaking `VAR=value cmd ...` env prefixes.
+    conn = _FakeConnection({"ping": {"shell_default": True}})
+    monkeypatch.setattr(
+        "valet.cli._connect",
+        lambda _args: (conn, _FakeTarget(is_remote=True), None),
+    )
+    captured = {}
+
+    def fake_interact(_send, session):
+        captured["shell"] = session.shell
+        return 0
+
+    monkeypatch.setattr("valet.cli.interact", fake_interact)
+
+    rc = main(["--host", "lan-host"])
+
+    assert rc == 0
+    assert captured["shell"] is True
+    assert {"op": "ping"} in conn.requests
+
+
+def test_repl_remote_defaults_shell_off_when_host_disallows(monkeypatch):
+    conn = _FakeConnection({"ping": {"shell_default": False}})
+    monkeypatch.setattr(
+        "valet.cli._connect",
+        lambda _args: (conn, _FakeTarget(is_remote=True), None),
+    )
+    captured = {}
+
+    def fake_interact(_send, session):
+        captured["shell"] = session.shell
+        return 0
+
+    monkeypatch.setattr("valet.cli.interact", fake_interact)
+
+    rc = main(["--host", "lan-host"])
+
+    assert rc == 0
+    assert captured["shell"] is False
 
 
 def test_processes_kill_sends_broker_process_kill(monkeypatch, capsys):

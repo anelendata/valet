@@ -161,7 +161,12 @@ class Broker:
                 response = {**base, **self._chdir(request)}
                 return response
             if op == "ping":
-                response = {**base, "ok": True, "pong": True}
+                response = {
+                    **base,
+                    "ok": True,
+                    "pong": True,
+                    "shell_default": self.cfg.exec.shell,
+                }
                 return response
             if op == "redaction_info":
                 response = {**base, **self._redaction_info(request)}
