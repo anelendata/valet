@@ -6,8 +6,8 @@ directly.
 The name *valet*: it holds your keys, brings the car around, and hands you back
 only what you asked for, never the keys.
 
-The agent stays in a sandbox where it cannot read `~/.aws`, `.env`,
-`.secrets`, or other credential files. valet runs outside that sandbox, where it
+The agent stays in a sandbox where it cannot read credential files like
+`~/.aws`, `.env`, `.secrets`, etc. valet runs outside that sandbox, where it
 can use those credentials on the agent's behalf. Before valet returns anything,
 it scrubs known and suspected secret values from stdout, stderr, and the echoed
 command.
@@ -18,7 +18,13 @@ In simple terms:
 2. valet decides whether the request is allowed;
 3. valet runs the approved action with the credentials available to it;
 4. valet redacts sensitive values from the result;
-5. the agent sees the useful result, not the keys.
+5. the agent sees the useful result, not the sensitive info.
+
+Benefits:
+
+1. Safe-guard secrets while moving fast with agents
+2. Keep agents light-weighted without loading apps and keys
+3. Manage and audit multi-agent host access and tool usage
 
 ![Valet-mediated agent interaction](images/valet-interaction.svg)
 
