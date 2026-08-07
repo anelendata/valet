@@ -439,10 +439,18 @@ References:
 
 ## Install & run
 
+### Running from the a sandbox inside the host
+
+Install valet in the host and sandbox:
+
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
+```
+(You can also use uv)
 
+In the host,
+```
 cp config.example.toml config.toml     # config.toml is git-ignored
 $EDITOR config.toml                     # set workspace + secret_sources
 valet init                              # optional: stable redaction tags
@@ -450,45 +458,50 @@ valet init                              # optional: stable redaction tags
 valet serve                             # start the daemon (keep this shell open)
 ```
 
-Then, from anywhere (including the agent):
+From a sandbox running in the same machine,
 
 ```bash
+# Lists files in the host's workspace root
+valet run -- ls
+```
+
+Run privileged commands according to host's environment:
+
+```bash
+valet repl # (or simply valet) to start REPL mode
 valet run -- aws s3 ls                   # argv, no shell (exact)
-valet --env AWS_PROFILE=prod run -- aws s3 ls
 valet --cwd projects/app run -- ls       # cwd without shell syntax
+valet --env AWS_PROFILE=prod run -- aws s3 ls
 valet sh 'aws s3 ls | grep prod'         # requires [exec] shell = true
-valet call --json '{"op":"ping"}'
 ```
 
 `run`/`sh` print redacted stdout/stderr and exit with the command's code, so
 they drop into scripts like the real command would.
 
-For Level 1 trusted-LAN RPC, approve a client on the trusted host:
+### Running from a node in the local network
+
+For trusted-LAN RPC, approve a client on the trusted host:
 
 ```bash
-valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
+valet clients add my-ai-box
 valet clients list
 ```
 
 This writes a new `[identity.clients.<id>]` entry to the host's `config.toml`
-and prints a client-only TOML snippet. The section name is the client `id` used
-for auth — it is the sole identifier (no separate display name), and the
-argument you pass is used as-is (spaces become hyphens), with no `client-`
-prefix added. If the id already exists, valet asks before rotating its key. Put
-the printed client config on the second machine,
-set `[host].lan = true` and `[host].listen` on the trusted host, and start:
+and prints a client-only TOML snippet. (If the id already exists, valet asks
+before rotating its key.) valet hot-reloads the config if the server is already
+running.
 
-```bash
-valet serve
-```
+Put the printed client config on the second machine (i.e. agent),
+set `[host].lan = true` and `[host].listen` on the trusted host.
 
 The client can then use the same commands through the selected host:
 
 ```bash
-valet --host my-main-laptop ping
-valet --host my-main-laptop run -- handoff status
-valet --host my-main-laptop sh 'aws s3 ls | head'
-valet --host my-main-laptop repl
+valet ping
+valet run -- handoff status
+valet sh 'aws s3 ls | head'
+valet repl
 ```
 
 To revoke a LAN client, remove it from the trusted host config:
@@ -502,8 +515,8 @@ automatically.
 
 The client config only contains host URLs and that client's identity key. Host
 secret sources, redaction salts, policy, and audit settings stay in the trusted
-host config. `ws://` is for trusted development LANs; public internet relay
-support belongs to the future `wss://` Level 2 transport.
+host config. `ws://` is for trusted development LANs. (public internet relay
+support belongs to the future `wss://` transport in the future development.)
 
 WebSocket clients reconnect automatically with exponential backoff. The defaults
 are conservative and can be tuned in the client-only config:
