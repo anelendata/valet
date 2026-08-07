@@ -1,9 +1,14 @@
 # OS-level sandbox prototype (macOS `sandbox-exec`)
 
-A **standalone prototype** that confines a command to a single workspace
-directory using the macOS kernel sandbox. It is deliberately **not wired into
-valet** — it lives here in `contrib/` so you can evaluate the approach without
-changing valet's behavior.
+Confines a command to a single workspace directory using the macOS kernel
+sandbox. You can use it two ways:
+
+- **With `valet serve`** — set `[exec].sandbox_profile` in `config.toml` to the
+  path of `workspace.sb`; valet then runs every command as
+  `sandbox-exec -D WORKSPACE=<workspace> -f <profile> <command>`. See
+  "Use it with valet" below.
+- **Standalone** — the `run-sandboxed.sh` / `demo.sh` scripts here let you try
+  the boundary directly, without valet.
 
 ## Why this exists
 
@@ -63,10 +68,40 @@ contrib/sandbox-exec/run-sandboxed.sh ~/work sh -c 'curl https://example.com'
   writable by default (tighten by removing that block). Treat it as a strong
   containment layer, not a VM.
 
-## If you later integrate it into valet
+## Use it with `valet serve`
 
-The natural seam is `valet/executor.py:_popen` — prefix the argv with
-`sandbox-exec -D WORKSPACE=<workspace> -f <profile>` when a sandbox is
-configured and available, falling back (loudly) to unsandboxed execution on
-non-macOS hosts. Keep it behind an explicit config flag so the dependency on a
-deprecated tool is opt-in. Left out on purpose here.
+Do **not** run the daemon itself under the sandbox — it needs to read
+`~/.aws/credentials` (for redaction), read its config, and write
+`~/.valet/audit.jsonl`, all outside the workspace. Valet wraps each *child
+command* instead, via an opt-in config flag:
+
+1. Copy the profile somewhere stable (not inside the workspace, so a client
+   cannot edit it):
+
+   ```bash
+   cp contrib/sandbox-exec/workspace.sb ~/.valet/workspace.sb
+   ```
+
+2. In `config.toml`, set the workspace and point at the profile:
+
+   ```toml
+   [exec]
+   workspace = "~/work"
+   sandbox_profile = "~/.valet/workspace.sb"
+   ```
+
+3. Start the daemon normally:
+
+   ```bash
+   valet serve
+   ```
+
+Every command now runs as
+`sandbox-exec -D WORKSPACE=<workspace> -f <profile> <command>`. The policy layer
+still runs first (it analyzes the *real* command, not the wrapper); the sandbox
+is the backstop that holds even when static analysis is fooled. On a non-macOS
+host, or without `sandbox-exec` on PATH, commands fail to launch — the flag is
+macOS-only by design.
+
+Implementation seam: `Broker._maybe_sandbox` in `valet/broker.py` builds the
+wrapper; the executor is unchanged.

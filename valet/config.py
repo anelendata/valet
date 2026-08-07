@@ -31,6 +31,10 @@ class ExecConfig:
     # Shell execution is disabled by default. Set shell=true explicitly only for
     # trusted hosts that need shell syntax.
     shell: bool = False
+    # Optional OS sandbox: path to a macOS sandbox-exec (.sb) profile. When set,
+    # every command is wrapped with `sandbox-exec -D WORKSPACE=<workspace> -f
+    # <profile>`, giving a real kernel boundary. Requires [exec].workspace.
+    sandbox_profile: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +160,10 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
         exec=ExecConfig(
             workspace=_expand(workspace) if workspace else None,
             shell=bool(exec_.get("shell", False)),
+            sandbox_profile=(
+                _expand(exec_["sandbox_profile"])
+                if exec_.get("sandbox_profile") else None
+            ),
         ),
         redaction=RedactionConfig(
             secret_sources=tuple(_expand(s) for s in red.get("secret_sources", ())),

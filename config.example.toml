@@ -102,6 +102,14 @@ workspace = "~"
 # `&&`. Prefer `valet --env NAME=value run ...` for per-command env vars.
 shell = false
 
+# Optional OS sandbox (macOS). Path to a sandbox-exec (.sb) profile; when set,
+# every command is run as `sandbox-exec -D WORKSPACE=<workspace> -f <profile>
+# <command>`, a real kernel boundary that command-line policy cannot provide.
+# Requires [exec].workspace, and `sandbox-exec` on PATH. A ready profile ships
+# in contrib/sandbox-exec/workspace.sb — copy it somewhere stable and point here.
+# Leave unset to run commands without an OS sandbox.
+#   sandbox_profile = "~/.valet/workspace.sb"
+
 [redaction]
 # ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
 #

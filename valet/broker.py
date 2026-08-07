@@ -47,12 +47,14 @@ _PEM_LINE_RE = re.compile(r"-----BEGIN [^-]+-----")
 @dataclass
 class _ExecPlan:
     cmd: Any
-    shell: bool
+    shell: bool          # the caller's intent, reported back and audited
     cwd: Optional[str]
     timeout: int
     extra_env: dict[str, str]
     redactor: Redactor
     echoed: str
+    run_shell: bool = False  # how the executor actually runs it (a sandbox
+                             # wrapper makes this an argv even for shell mode)
 
 
 class _StreamRedactor:
@@ -207,7 +209,7 @@ class Broker:
         try:
             result = run(
                 plan.cmd,
-                shell=plan.shell,
+                shell=plan.run_shell,
                 cwd=plan.cwd,
                 timeout=plan.timeout,
                 extra_env=plan.extra_env,
@@ -263,7 +265,7 @@ class Broker:
             result: Optional[RunResult] = None
             for item in iter_run(
                 plan.cmd,
-                shell=plan.shell,
+                shell=plan.run_shell,
                 cwd=plan.cwd,
                 timeout=plan.timeout,
                 extra_env=plan.extra_env,
@@ -424,8 +426,34 @@ class Broker:
 
         redactor = self._redactor_for(cwd, extra_values=extra_env.values())
         echoed = cmd if isinstance(cmd, str) else shlex.join(cmd)
-        return _ExecPlan(cmd=cmd, shell=shell, cwd=cwd, timeout=timeout,
-                         extra_env=extra_env, redactor=redactor, echoed=echoed)
+        run_cmd, run_shell = self._maybe_sandbox(cmd, shell)
+        return _ExecPlan(cmd=run_cmd, shell=shell, cwd=cwd, timeout=timeout,
+                         extra_env=extra_env, redactor=redactor, echoed=echoed,
+                         run_shell=run_shell)
+
+    def _maybe_sandbox(self, cmd: Any, shell: bool) -> tuple[Any, bool]:
+        """Wrap a command in the configured OS sandbox, if any.
+
+        Returns ``(command, run_shell)``. Without a sandbox the command runs as
+        given. With one, it becomes an argv prefixed by ``sandbox-exec`` (a real
+        binary), so a shell command is executed as ``sandbox-exec ... /bin/sh -c
+        <line>`` and ``run_shell`` is False even though the caller asked for a
+        shell.
+        """
+        profile = self.cfg.exec.sandbox_profile
+        if not profile:
+            return cmd, shell
+        root = self._workspace_root()
+        if root is None:
+            raise PolicyError("sandbox requires [exec].workspace to be set")
+        prefix = [
+            "sandbox-exec",
+            "-D", f"WORKSPACE={root}",
+            "-f", os.path.expanduser(os.path.expandvars(profile)),
+        ]
+        if shell:
+            return prefix + ["/bin/sh", "-c", cmd], False
+        return prefix + list(cmd), False
 
     @staticmethod
     def _normalize_cmd(raw_cmd, shell: bool):

@@ -3,7 +3,11 @@ import dataclasses
 import os
 import sys
 
+import pytest
+
 from valet.broker import Broker
+from valet.config import ExecConfig
+from valet.errors import PolicyError
 
 
 def test_runs_command_and_returns_output(cfg):
@@ -343,6 +347,60 @@ def test_whole_file_content_masked_as_one_blob(cfg, workspace, tmp_path):
     assert "EXAMPLE" not in out                 # no key material
     assert "aws_secret_access_key" not in out   # whole content masked, not just value
     assert out.strip().startswith("[REDACTED")
+
+
+# --- OS sandbox wrapping (sandbox-exec) --------------------------------------
+
+def _sandbox_cfg(cfg, profile="/etc/valet/workspace.sb"):
+    return dataclasses.replace(
+        cfg,
+        exec=ExecConfig(workspace=cfg.exec.workspace, shell=True, sandbox_profile=profile),
+    )
+
+
+def test_sandbox_wraps_argv_command(cfg):
+    plan = Broker(_sandbox_cfg(cfg))._exec_plan(
+        {"op": "exec", "cmd": ["ls", "-la"], "shell": False}
+    )
+    root = os.path.realpath(cfg.exec.workspace)
+    assert plan.cmd == [
+        "sandbox-exec", "-D", f"WORKSPACE={root}",
+        "-f", "/etc/valet/workspace.sb", "ls", "-la",
+    ]
+    assert plan.run_shell is False
+    assert plan.shell is False
+    # The echoed/audited command stays the real one, not the wrapper.
+    assert plan.echoed == "ls -la"
+
+
+def test_sandbox_wraps_shell_command_as_argv(cfg):
+    plan = Broker(_sandbox_cfg(cfg))._exec_plan(
+        {"op": "exec", "cmd": "echo hi | cat", "shell": True}
+    )
+    root = os.path.realpath(cfg.exec.workspace)
+    assert plan.cmd == [
+        "sandbox-exec", "-D", f"WORKSPACE={root}",
+        "-f", "/etc/valet/workspace.sb", "/bin/sh", "-c", "echo hi | cat",
+    ]
+    # run_shell is False (executed as an argv), but the caller's shell intent is
+    # preserved for the response and audit.
+    assert plan.run_shell is False
+    assert plan.shell is True
+    assert plan.echoed == "echo hi | cat"
+
+
+def test_sandbox_requires_workspace(cfg):
+    c = dataclasses.replace(
+        cfg, exec=ExecConfig(workspace=None, shell=False, sandbox_profile="/x.sb")
+    )
+    with pytest.raises(PolicyError):
+        Broker(c)._exec_plan({"op": "exec", "cmd": ["ls"], "shell": False})
+
+
+def test_no_sandbox_leaves_command_unwrapped(cfg):
+    plan = Broker(cfg)._exec_plan({"op": "exec", "cmd": ["ls"], "shell": False})
+    assert plan.cmd == ["ls"]
+    assert plan.run_shell is False
 
 
 # --- chdir (stateful cd, jailed to workspace) --------------------------------
