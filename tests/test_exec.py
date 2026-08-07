@@ -245,6 +245,21 @@ def test_stream_exec_yields_chunks_and_final(cfg):
     assert final["streamed"] is True
 
 
+def test_stream_command_not_found_returns_stderr_in_final(cfg):
+    events = list(Broker(cfg).handle_stream(
+        {"op": "exec", "cmd": ["definitely-not-a-real-binary-xyz"], "shell": False}
+    ))
+    chunks = [event for event in events if event.get("op") == "exec_chunk"]
+    final = events[-1]
+
+    assert chunks == []
+    assert final["op"] == "exec"
+    assert final["ok"] is False
+    assert final["exit_code"] == 127
+    assert final["stdout"] == ""
+    assert final["stderr"] == "definitely-not-a-real-binary-xyz: command not found"
+
+
 def test_stream_exec_buffers_structured_secret_dump(cfg):
     secret = "1afbedbd65fedc34591eac1a79a9de2aff1aefe64"
     text = (

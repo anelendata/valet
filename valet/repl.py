@@ -241,6 +241,10 @@ def format_exec(resp: dict) -> Optional[str]:
         parts.append(out)
     if err:
         parts.append(err)
+    if resp.get("ok") is False and "exit_code" not in resp:
+        error_class = resp.get("error_class") or "error"
+        detail = resp.get("detail") or ""
+        parts.append(f"valet: {error_class}: {detail}".rstrip())
     code = resp.get("exit_code", 0)
     if code not in (0, None):
         parts.append(f"[exit {code}]")

@@ -11,6 +11,12 @@ class _FakeConnection:
         self.requests.append(request)
         return self.response
 
+    def request_stream(self, request, on_event):
+        self.requests.append(request)
+        for event in self.response.get("events", ()):
+            on_event(event)
+        return self.response.get("final", self.response)
+
     def close(self):
         self.closed = True
 
@@ -74,6 +80,33 @@ def test_run_subcommand_cwd_still_attaches_to_exec_request(monkeypatch):
     assert rc == 0
     assert captured["cwd"] == "zendesk-jira"
     assert captured["cmd"] == ["ls"]
+
+
+def test_run_prints_final_stderr_from_streaming_response(monkeypatch, capsys):
+    conn = _FakeConnection({
+        "final": {
+            "op": "exec",
+            "ok": False,
+            "exit_code": 127,
+            "stdout": "",
+            "stderr": "woeijw: command not found",
+        },
+    })
+    monkeypatch.setattr("valet.cli._connect", lambda _args: (conn, object(), None))
+
+    rc = main(["run", "--", "woeijw"])
+
+    captured = capsys.readouterr()
+    assert rc == 127
+    assert captured.out == ""
+    assert captured.err == "woeijw: command not found\n"
+    assert conn.requests == [{
+        "op": "exec",
+        "cmd": ["woeijw"],
+        "shell": False,
+        "timeout": 60,
+        "stream": True,
+    }]
 
 
 def test_processes_kill_sends_broker_process_kill(monkeypatch, capsys):

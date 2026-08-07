@@ -217,6 +217,12 @@ def test_format_exec_error_response():
     assert "Timeout" in out
 
 
+def test_format_exec_exec_error_response():
+    out = format_exec({"op": "exec", "ok": False, "error_class": "CommandError",
+                       "detail": "command launch failed"})
+    assert out == "valet: CommandError: command launch failed"
+
+
 def test_format_exec_shows_policy_denial_for_exec_requests():
     out = format_exec({"op": "exec", "ok": False, "error_class": "PolicyDenied",
                        "detail": "command is on the deny list"})

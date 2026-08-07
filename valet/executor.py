@@ -111,7 +111,7 @@ def run(
     except FileNotFoundError:
         # argv mode with a missing executable — normalize to a 127 result so
         # callers get a uniform shape (matches how a shell reports not-found).
-        return RunResult(exit_code=127, stdout="", stderr="command not found")
+        return RunResult(exit_code=127, stdout="", stderr=_not_found_detail(popen_arg))
     except OSError as exc:
         raise CommandError(_launch_error_detail(exc)) from exc
     finally:
@@ -163,7 +163,7 @@ def iter_run(
             allow_script_fallback=allow_script_fallback,
         )
     except FileNotFoundError:
-        yield RunResult(exit_code=127, stdout="", stderr="command not found")
+        yield RunResult(exit_code=127, stdout="", stderr=_not_found_detail(popen_arg))
         return
     except OSError as exc:
         raise CommandError(_launch_error_detail(exc)) from exc
@@ -408,6 +408,16 @@ def _launch_error_detail(exc: OSError) -> str:
     if _is_exec_format_error(exc):
         return "command launch failed: executable format error (missing shebang?)"
     return "command launch failed"
+
+
+def _not_found_detail(cmd: Command) -> str:
+    if isinstance(cmd, str):
+        name = cmd.split(None, 1)[0] if cmd.split(None, 1) else cmd
+    elif cmd:
+        name = str(cmd[0])
+    else:
+        name = ""
+    return f"{name}: command not found" if name else "command not found"
 
 
 def _display_cmd(cmd: Command) -> str:

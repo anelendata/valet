@@ -252,6 +252,7 @@ class Broker:
                 "stdout": _StreamRedactor(plan.redactor),
                 "stderr": _StreamRedactor(plan.redactor),
             }
+            emitted = {"stdout": False, "stderr": False}
 
             result: Optional[RunResult] = None
             for item in iter_run(
@@ -265,6 +266,7 @@ class Broker:
             ):
                 if isinstance(item, OutputChunk):
                     for text in buffers[item.stream].feed(item.text):
+                        emitted[item.stream] = True
                         yield {**base, "op": "exec_chunk", "stream": item.stream,
                                "data": text}
                 else:
@@ -275,6 +277,7 @@ class Broker:
 
             for stream, buffer in buffers.items():
                 for text in buffer.finish():
+                    emitted[stream] = True
                     yield {**base, "op": "exec_chunk", "stream": stream, "data": text}
 
             response = {
@@ -285,8 +288,12 @@ class Broker:
                 "cwd": plan.cwd,
                 "shell": plan.shell,
                 "cmd": self._safe(plan.redactor, plan.echoed),
-                "stdout": "",
-                "stderr": "",
+                "stdout": (
+                    "" if emitted["stdout"] else self._safe(plan.redactor, result.stdout)
+                ),
+                "stderr": (
+                    "" if emitted["stderr"] else self._safe(plan.redactor, result.stderr)
+                ),
                 "streamed": True,
                 "redacted_value_count": len(plan.redactor.secret_values),
             }
