@@ -63,11 +63,11 @@ def test_clients_add_updates_host_config(tmp_path, capsys):
 
     assert rc == 0
     cfg = load_config(path)
-    assert "client-local-box" in cfg.identity.clients
-    assert cfg.identity.clients["client-local-box"].name == "local box"
-    assert cfg.identity.clients["client-local-box"].key
+    assert "local-box" in cfg.identity.clients
+    assert "client-local-box" not in cfg.identity.clients
+    assert cfg.identity.clients["local-box"].key
     out = capsys.readouterr().out
-    assert 'id = "client-local-box"' in out
+    assert 'id = "local-box"' in out
     assert 'host_id = "test-host"' in out
     assert 'url = "ws://<host-lan-ip>:8766/rpc"' in out
 
@@ -76,10 +76,10 @@ def test_clients_add_rotates_existing_with_yes(tmp_path):
     path = tmp_path / "config.toml"
     _config(path)
     assert main(["-c", str(path), "clients", "add", "local box"]) == 0
-    first = load_config(path).identity.clients["client-local-box"].key
+    first = load_config(path).identity.clients["local-box"].key
 
     assert main(["-c", str(path), "clients", "add", "local box", "--yes"]) == 0
-    second = load_config(path).identity.clients["client-local-box"].key
+    second = load_config(path).identity.clients["local-box"].key
 
     assert second
     assert second != first
@@ -89,11 +89,11 @@ def test_clients_add_existing_requires_confirmation(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
     _config(path)
     assert main(["-c", str(path), "clients", "add", "local box"]) == 0
-    first = load_config(path).identity.clients["client-local-box"].key
+    first = load_config(path).identity.clients["local-box"].key
     monkeypatch.setattr("builtins.input", lambda _prompt: "n")
 
     rc = main(["-c", str(path), "clients", "add", "local box"])
-    second = load_config(path).identity.clients["client-local-box"].key
+    second = load_config(path).identity.clients["local-box"].key
 
     assert rc == 1
     assert second == first
@@ -109,10 +109,9 @@ def test_clients_list_prints_approved_clients(tmp_path, capsys):
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "client-local-box" in out
-    assert "name=local box" in out
+    assert "local-box" in out
     assert "key=set" in out
-    assert load_config(path).identity.clients["client-local-box"].key not in out
+    assert load_config(path).identity.clients["local-box"].key not in out
 
 
 def test_clients_remove_deletes_approved_client(tmp_path, capsys):
@@ -124,10 +123,10 @@ def test_clients_remove_deletes_approved_client(tmp_path, capsys):
     rc = main(["-c", str(path), "clients", "remove", "local box"])
 
     assert rc == 0
-    assert "client-local-box" not in load_config(path).identity.clients
+    assert "local-box" not in load_config(path).identity.clients
     out = capsys.readouterr().out
     assert "removed client" in out
-    assert "client-local-box" in out
+    assert "local-box" in out
 
 
 def test_clients_remove_missing_client_reports_not_found(tmp_path, capsys):
@@ -138,6 +137,36 @@ def test_clients_remove_missing_client_reports_not_found(tmp_path, capsys):
 
     assert rc == 1
     assert "not found" in capsys.readouterr().err
+
+
+def test_clients_add_rejects_empty_id(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    _config(path)
+
+    rc = main(["-c", str(path), "clients", "add", "!!!"])
+
+    assert rc == 2
+    assert "client id" in capsys.readouterr().err
+
+
+def test_legacy_name_prefixed_identity_still_loads(tmp_path):
+    # Configs written before the id-only schema carry a `name` field and a
+    # `client-` prefixed section. They must keep authenticating: the section
+    # name is the id, and the legacy `name` is ignored.
+    path = tmp_path / "config.toml"
+    _config(path)
+    path.write_text(
+        path.read_text()
+        + '\n[identity.clients.client-legacy-box]\n'
+        'name = "legacy box"\n'
+        'key = "legacy-key"\n'
+    )
+
+    cfg = load_config(path)
+
+    assert "client-legacy-box" in cfg.identity.clients
+    assert cfg.identity.clients["client-legacy-box"].key == "legacy-key"
+    assert not hasattr(cfg.identity.clients["client-legacy-box"], "name")
 
 
 def test_reloaded_config_updates_broker_and_websocket_server_state(cfg):
@@ -151,7 +180,7 @@ def test_reloaded_config_updates_broker_and_websocket_server_state(cfg):
         cfg,
         policy=dataclasses.replace(cfg.policy, deny=("echo",)),
         identity=IdentityConfig(
-            clients={"new-client": ClientIdentity(name="new", key="new-key")}
+            clients={"new-client": ClientIdentity(key="new-key")}
         ),
     )
 

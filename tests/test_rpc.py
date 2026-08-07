@@ -425,7 +425,7 @@ def test_websocket_transport_does_not_replay_after_read_failure(monkeypatch):
 def ws_server(cfg):
     host_cfg = HostConfig(id="test-host", listen="127.0.0.1:0")
     identity = IdentityConfig(
-        clients={"client_a": ClientIdentity(name="test client", key="client-secret")}
+        clients={"client_a": ClientIdentity(key="client-secret")}
     )
     server = make_server(dataclasses.replace(
         cfg,
@@ -528,7 +528,7 @@ def test_websocket_rpc_cancel_stops_streamed_exec(ws_server):
 
 
 def _reason(**overrides):
-    identity = ClientIdentity(name="c", key="client-secret")
+    identity = ClientIdentity(key="client-secret")
     good_sig = _signature("client-secret", "host-1", "nonce-1", "client_a")
     args = {
         "response": {"type": "auth.response", "client_id": "client_a"},

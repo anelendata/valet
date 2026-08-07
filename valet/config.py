@@ -89,7 +89,6 @@ class HostConfig:
 
 @dataclass(frozen=True)
 class ClientIdentity:
-    name: str
     key: str
 
 
@@ -201,8 +200,7 @@ def _load_client_identities(raw: object) -> dict[str, ClientIdentity]:
         key = str(value.get("key", ""))
         if not key:
             continue
-        clients[str(client_id)] = ClientIdentity(
-            name=str(value.get("name", client_id)),
-            key=key,
-        )
+        # The section name is the client id used for auth lookup. A legacy
+        # ``name`` field is tolerated for backward compatibility but ignored.
+        clients[str(client_id)] = ClientIdentity(key=key)
     return clients

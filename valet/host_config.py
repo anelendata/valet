@@ -1,4 +1,10 @@
-"""Edit host-side config for Level 1 client identities."""
+"""Edit host-side config for Level 1 client identities.
+
+A client identity is a single ``[identity.clients.<id>]`` section whose ``<id>``
+is the client id used for challenge-response auth. The id is the only
+identifier — there is no separate display name, and no ``client-`` prefix is
+added (the section already namespaces it under ``identity.clients``).
+"""
 from __future__ import annotations
 
 import re
@@ -10,7 +16,6 @@ from pathlib import Path
 @dataclass(frozen=True)
 class ClientKeyUpdate:
     client_id: str
-    name: str
     key: str
     existed: bool
 
@@ -18,7 +23,6 @@ class ClientKeyUpdate:
 @dataclass(frozen=True)
 class ClientIdentityEntry:
     client_id: str
-    name: str
     has_key: bool
 
 
@@ -26,10 +30,23 @@ def generate_client_key() -> str:
     return secrets.token_urlsafe(32)
 
 
-def find_client_identity(path: Path, name: str) -> str | None:
+def normalize_client_id(raw: str) -> str:
+    """Coerce a client id into a config-safe bare-key form.
+
+    Spaces and other punctuation collapse to hyphens; the result is lowercased.
+    Raises ``ValueError`` when nothing usable remains.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw.strip()).strip("-").lower()
+    if not slug:
+        raise ValueError("client id must contain at least one letter or digit")
+    return slug
+
+
+def find_client_identity(path: Path, client_id: str) -> str | None:
     text = path.read_text()
-    client_id, existed = _find_client_identity(text, name)
-    return client_id if existed else None
+    normalized = normalize_client_id(client_id)
+    existing_id, existed = _find_client_identity(text, normalized)
+    return existing_id if existed else None
 
 
 def list_client_identities(path: Path) -> list[ClientIdentityEntry]:
@@ -39,7 +56,6 @@ def list_client_identities(path: Path) -> list[ClientIdentityEntry]:
         body = text[start:end]
         entries.append(ClientIdentityEntry(
             client_id=client_id,
-            name=_read_string_value(body, "name") or client_id,
             has_key=bool(_read_string_value(body, "key")),
         ))
     return entries
@@ -48,31 +64,30 @@ def list_client_identities(path: Path) -> list[ClientIdentityEntry]:
 def upsert_client_identity(
     path: Path,
     *,
-    name: str,
+    client_id: str,
     key: str | None = None,
 ) -> ClientKeyUpdate:
     text = path.read_text()
-    client_id, existed = _find_client_identity(text, name)
-    if client_id is None:
-        client_id = _client_id_for_name(name)
+    normalized = normalize_client_id(client_id)
+    _existing_id, existed = _find_client_identity(text, normalized)
     key = key or generate_client_key()
-    updated = _replace_or_append_identity(text, client_id=client_id, name=name, key=key)
+    updated = _replace_or_append_identity(text, client_id=normalized, key=key)
     path.write_text(updated)
-    return ClientKeyUpdate(client_id=client_id, name=name, key=key, existed=existed)
+    return ClientKeyUpdate(client_id=normalized, key=key, existed=existed)
 
 
-def remove_client_identity(path: Path, name: str) -> ClientIdentityEntry | None:
+def remove_client_identity(path: Path, client_id: str) -> ClientIdentityEntry | None:
     text = path.read_text()
-    client_id, existed = _find_client_identity(text, name)
-    if not existed or client_id is None:
+    normalized = normalize_client_id(client_id)
+    existing_id, existed = _find_client_identity(text, normalized)
+    if not existed or existing_id is None:
         return None
-    for existing_id, start, end in _identity_sections(text):
-        if existing_id != client_id:
+    for section_id, start, end in _identity_sections(text):
+        if section_id != existing_id:
             continue
         body = text[start:end]
         entry = ClientIdentityEntry(
-            client_id=client_id,
-            name=_read_string_value(body, "name") or client_id,
+            client_id=section_id,
             has_key=bool(_read_string_value(body, "key")),
         )
         updated = text[:start] + text[end:]
@@ -104,17 +119,15 @@ def client_config_snippet(
     )
 
 
-def _find_client_identity(text: str, name: str) -> tuple[str | None, bool]:
-    for client_id, start, end in _identity_sections(text):
-        body = text[start:end]
-        configured_name = _read_string_value(body, "name")
-        if client_id == name or configured_name == name:
-            return client_id, True
+def _find_client_identity(text: str, client_id: str) -> tuple[str | None, bool]:
+    for section_id, start, end in _identity_sections(text):
+        if section_id == client_id:
+            return section_id, True
     return None, False
 
 
-def _replace_or_append_identity(text: str, *, client_id: str, name: str, key: str) -> str:
-    section = _identity_section(client_id, name, key)
+def _replace_or_append_identity(text: str, *, client_id: str, key: str) -> str:
+    section = _identity_section(client_id, key)
     for existing_id, start, end in _identity_sections(text):
         if existing_id == client_id:
             return text[:start] + section + text[end:]
@@ -133,10 +146,9 @@ def _identity_sections(text: str) -> list[tuple[str, int, int]]:
     return sections
 
 
-def _identity_section(client_id: str, name: str, key: str) -> str:
+def _identity_section(client_id: str, key: str) -> str:
     return (
         f"[identity.clients.{_toml_key(client_id)}]\n"
-        f'name = "{_toml_escape(name)}"\n'
         f'key = "{_toml_escape(key)}"\n'
     )
 
@@ -146,11 +158,6 @@ def _read_string_value(text: str, key: str) -> str | None:
     if not match:
         return None
     return bytes(match.group(1), "utf-8").decode("unicode_escape")
-
-
-def _client_id_for_name(name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip()).strip("-").lower()
-    return "client-" + (slug or secrets.token_hex(4))
 
 
 def _toml_key(value: str) -> str:

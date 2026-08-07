@@ -80,7 +80,7 @@ policy.
 
 ```toml
 [client]
-id = "client-local-ai-box"
+id = "local-ai-box"
 key = "client-shared-key"
 default_host = "my-main-laptop"
 reconnect_max_retries = 5
@@ -209,5 +209,7 @@ the caller to decide whether retrying is safe.
 - WebSocket timeout from a sandbox: check `HTTP_PROXY`/`HTTPS_PROXY` and
   `NO_PROXY`; Valet tunnels WebSocket connections through HTTP CONNECT when a
   proxy is configured.
-- Authentication failed: regenerate or rotate the client key on the trusted host
-  with `valet clients add <name> --yes`, then update the client config.
+- Authentication failed: confirm the client's `id` matches the host's
+  `[identity.clients.<id>]` section name, then regenerate or rotate the client
+  key on the trusted host with `valet clients add <id> --yes` and update the
+  client config.

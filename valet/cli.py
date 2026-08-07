@@ -37,6 +37,7 @@ from .host_config import (
     client_config_snippet,
     find_client_identity,
     list_client_identities,
+    normalize_client_id,
     remove_client_identity,
     upsert_client_identity,
 )
@@ -344,28 +345,32 @@ def _cmd_clients_add(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    name = args.name.strip()
-    if not name:
-        print("valet clients add: client name cannot be empty", file=sys.stderr)
+    raw_id = args.client_id.strip()
+    if not raw_id:
+        print("valet clients add: client id cannot be empty", file=sys.stderr)
+        return 2
+    try:
+        client_id = normalize_client_id(raw_id)
+    except ValueError as exc:
+        print(f"valet clients add: {exc}", file=sys.stderr)
         return 2
 
-    existing_id = find_client_identity(path, name)
-    if existing_id and not args.yes:
+    if find_client_identity(path, client_id) and not args.yes:
         answer = input(
-            f"valet: client {name!r} already exists as {existing_id!r}. "
+            f"valet: client {client_id!r} already exists. "
             "Replace its key? [y/N] "
         )
         if answer.strip().lower() not in ("y", "yes"):
             print("valet: client key unchanged.")
             return 1
 
-    update = upsert_client_identity(path, name=name)
+    update = upsert_client_identity(path, client_id=client_id)
     cfg = load_config(path)
     host_name = args.host_name or cfg.host.id
     url = args.url or _default_lan_url(cfg.host.listen)
 
     action = "rotated" if update.existed else "added"
-    print(f"valet: {action} client {update.name!r} in {path}")
+    print(f"valet: {action} client {update.client_id!r} in {path}")
     print("\nClient config:")
     print(client_config_snippet(update, host_name=host_name, url=url, host_id=cfg.host.id))
     return 0
@@ -384,7 +389,7 @@ def _cmd_clients_list(args: argparse.Namespace) -> int:
         return 0
     for entry in sorted(entries, key=lambda item: item.client_id):
         key_state = "key=set" if entry.has_key else "key=missing"
-        print(f"{entry.client_id}\tname={entry.name}\t{key_state}")
+        print(f"{entry.client_id}\t{key_state}")
     return 0
 
 
@@ -395,16 +400,21 @@ def _cmd_clients_remove(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    name = args.name.strip()
-    if not name:
-        print("valet clients remove: client name cannot be empty", file=sys.stderr)
+    raw_id = args.client_id.strip()
+    if not raw_id:
+        print("valet clients remove: client id cannot be empty", file=sys.stderr)
+        return 2
+    try:
+        client_id = normalize_client_id(raw_id)
+    except ValueError as exc:
+        print(f"valet clients remove: {exc}", file=sys.stderr)
         return 2
 
-    removed = remove_client_identity(path, name)
+    removed = remove_client_identity(path, client_id)
     if removed is None:
-        print(f"valet: client {name!r} was not found in {path}", file=sys.stderr)
+        print(f"valet: client {client_id!r} was not found in {path}", file=sys.stderr)
         return 1
-    print(f"valet: removed client {removed.name!r} ({removed.client_id}) from {path}")
+    print(f"valet: removed client {removed.client_id!r} from {path}")
     return 0
 
 
@@ -469,7 +479,9 @@ def build_parser() -> argparse.ArgumentParser:
     clients_sub.add_parser("list", help="list approved client identities"
                            ).set_defaults(func=_cmd_clients_list)
     clients_add = clients_sub.add_parser("add", help="generate and approve a client key")
-    clients_add.add_argument("name", help="friendly client name")
+    clients_add.add_argument("client_id", metavar="id",
+                             help="client id (the identity's section name; "
+                                  "spaces become hyphens)")
     clients_add.add_argument("--yes", "-y", action="store_true",
                              help="replace an existing client key without prompting")
     clients_add.add_argument("--host-name", default=None,
@@ -478,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
                              help="WebSocket URL to print in the client snippet")
     clients_add.set_defaults(func=_cmd_clients_add)
     clients_remove = clients_sub.add_parser("remove", help="remove an approved client key")
-    clients_remove.add_argument("name", help="client id or friendly client name")
+    clients_remove.add_argument("client_id", metavar="id", help="client id to remove")
     clients_remove.set_defaults(func=_cmd_clients_remove)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")

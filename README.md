@@ -480,9 +480,12 @@ valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
 valet clients list
 ```
 
-This writes a new `[identity.clients...]` entry to the host's `config.toml` and
-prints a client-only TOML snippet. If the client name already exists, valet asks
-before rotating its key. Put the printed client config on the second machine,
+This writes a new `[identity.clients.<id>]` entry to the host's `config.toml`
+and prints a client-only TOML snippet. The section name is the client `id` used
+for auth — it is the sole identifier (no separate display name), and the
+argument you pass is used as-is (spaces become hyphens), with no `client-`
+prefix added. If the id already exists, valet asks before rotating its key. Put
+the printed client config on the second machine,
 set `[host].lan = true` and `[host].listen` on the trusted host, and start:
 
 ```bash
