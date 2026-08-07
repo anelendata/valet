@@ -88,11 +88,11 @@ error dumps) — not against a command deliberately obfuscating one.
 ## Transport
 
 Today the primary transport is a local Unix domain socket, with an optional
-loopback HTTP adapter for clients that cannot speak UDS. The broker core is
-transport-agnostic: the same request/response shape can be carried over HTTP
-today and, with careful authentication and authorization design, WebSocket or
-networked transports in the future. The long-term idea is not limited to one
-machine; it is to let sandboxed agents request approved capabilities from a
+trusted-LAN WebSocket RPC host for clients on another machine. The broker core
+is transport-agnostic: the same request/response shape is carried over UDS and
+WebSocket today and, with careful authentication and authorization design, over
+other networked transports in the future. The long-term idea is not limited to
+one machine; it is to let sandboxed agents request approved capabilities from a
 trusted valet service wherever that service is safely deployed.
 
 **Unix domain socket** (primary). The socket file is `0600`, owned by the user
@@ -103,9 +103,10 @@ request sets `"stream": true`, the daemon may send zero or more `exec_chunk`
 events before the final response. The core ([`valet/broker.py`](valet/broker.py))
 is transport-agnostic.
 
-**HTTP adapter** (optional). For clients that cannot speak UDS, run
-`valet serve-http`. It exposes the same JSON request/response contract over
-HTTP `POST /` or `POST /call`, protected by `Authorization: Bearer <token>`.
-The default bind host is `127.0.0.1`; change `[http].host` only when you
-deliberately want another interface exposed. The bearer token is required.
+**WebSocket RPC host** (optional). For clients on another machine, run
+`valet serve-lan`. It carries the same JSON request/response contract over a
+Level 1 trusted-LAN WebSocket connection, with challenge-response authentication
+against approved client identities. It is disabled unless `[host].lan = true`;
+bind `[host].listen` to `127.0.0.1` for local testing, or a LAN interface only
+on a trusted network.
 

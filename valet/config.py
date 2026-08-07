@@ -68,15 +68,6 @@ class PolicyConfig:
 
 
 @dataclass(frozen=True)
-class HttpConfig:
-    # Loopback by default; set deliberately if you want another interface.
-    host: str = "127.0.0.1"
-    port: int = 8765
-    # Required to serve HTTP. Keep it in config.toml, which is git-ignored.
-    bearer_token: str = ""
-
-
-@dataclass(frozen=True)
 class AuditConfig:
     # Optional newline-delimited JSON audit log path. Empty means no file log.
     log_path: str = ""
@@ -111,7 +102,6 @@ class BrokerConfig:
     exec: ExecConfig = field(default_factory=ExecConfig)
     redaction: RedactionConfig = field(default_factory=RedactionConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
-    http: HttpConfig = field(default_factory=HttpConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
     host: HostConfig = field(default_factory=HostConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
@@ -141,7 +131,6 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     exec_ = raw.get("exec", {})
     red = raw.get("redaction", {})
     pol = raw.get("policy", {})
-    http = raw.get("http", {})
     audit = raw.get("audit", {})
     host = raw.get("host", {})
     identity = raw.get("identity", {})
@@ -178,11 +167,6 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             deny_read_paths=tuple(pol.get("deny_read_paths", ())),
             enforce_workspace_reads=bool(pol.get("enforce_workspace_reads", True)),
             enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", True)),
-        ),
-        http=HttpConfig(
-            host=str(http.get("host", "127.0.0.1")),
-            port=int(http.get("port", 8765)),
-            bearer_token=str(http.get("bearer_token", "")),
         ),
         audit=AuditConfig(
             log_path=_expand(str(audit.get("log_path", ""))),

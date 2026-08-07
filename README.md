@@ -198,7 +198,7 @@ The file is newline-delimited JSON. Non-streaming requests append one final
 JSON object. Streamed exec requests append a `phase = "started"` event as soon
 as policy allows the command and the process is about to run, then append a
 final event when the command finishes. When `console = true`, `valet serve` and
-`valet serve-http` also print readable server-console entries:
+`valet serve-lan` also print readable server-console entries:
 
 ```text
 2026-08-05T12:31:03Z INFO: codex uds allowed started aws ecs describe-services ...
@@ -462,16 +462,6 @@ valet call --json '{"op":"ping"}'
 
 `run`/`sh` print redacted stdout/stderr and exit with the command's code, so
 they drop into scripts like the real command would.
-
-For HTTP, set `[http].bearer_token` in `config.toml` and start:
-
-```bash
-valet serve-http
-curl -sS http://127.0.0.1:8765/call \
-  -H "Authorization: Bearer $VALET_HTTP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"op":"ping"}'
-```
 
 For Level 1 trusted-LAN RPC, approve a client on the trusted host:
 

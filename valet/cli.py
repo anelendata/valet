@@ -5,7 +5,6 @@ Subcommands:
   valet repl            same as above, explicitly
   valet doctor          check config and the OS sandbox setup
   valet serve           run the configured host daemon
-  valet serve-http      run the HTTP broker adapter with bearer auth
   valet serve-lan       run the Level 1 WebSocket RPC host adapter
   valet run CMD...      run an argv (no shell) and print redacted output
   valet sh 'CMDLINE'    run a shell command line when [exec].shell=true
@@ -48,7 +47,6 @@ from .host_config import (
 from .rpc import RpcError, ValetClient, resolve_target
 from .repl import Session, interact
 from .server_host import serve as serve_host
-from .server_http import serve as serve_http
 from .server_ws import serve as serve_lan
 
 
@@ -207,11 +205,6 @@ def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
 def _cmd_serve(args: argparse.Namespace) -> int:
     path = Path(args.config) if args.config else default_config_path()
     serve_host(load_config(path), config_path=path)
-    return 0
-
-
-def _cmd_serve_http(args: argparse.Namespace) -> int:
-    serve_http(load_config(args.config))
     return 0
 
 
@@ -581,8 +574,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="check config and the OS sandbox setup"
                    ).set_defaults(func=_cmd_doctor)
     sub.add_parser("serve", help="run the configured host daemon").set_defaults(func=_cmd_serve)
-    sub.add_parser("serve-http", help="run the HTTP broker adapter with bearer auth"
-                   ).set_defaults(func=_cmd_serve_http)
     sub.add_parser("serve-lan", help="run the Level 1 trusted-LAN WebSocket RPC host"
                    ).set_defaults(func=_cmd_serve_lan)
     sub.add_parser("repl", help="interactive redacting shell (default)"
