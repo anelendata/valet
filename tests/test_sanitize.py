@@ -66,3 +66,25 @@ def test_is_clean_detects_residual_secret():
     red = Redactor.build(["topsecretvalue"], salt="s")
     assert red.is_clean("nothing here") is True
     assert red.is_clean("oops topsecretvalue") is False
+
+
+def test_workspace_root_is_virtualized():
+    red = Redactor.build([], salt="s", workspace_root="/Users/x/projects")
+    # The root itself and paths beneath it collapse to the virtual root.
+    assert red.redact("/Users/x/projects") == "/"
+    assert red.redact("cwd=/Users/x/projects\n") == "cwd=/\n"
+    assert red.redact("/Users/x/projects/zendesk/files") == "/zendesk/files"
+
+
+def test_workspace_root_virtualization_respects_boundaries():
+    red = Redactor.build([], salt="s", workspace_root="/Users/x/projects")
+    # A sibling that merely shares the prefix must not be rewritten.
+    assert red.redact("/Users/x/projectsX") == "/Users/x/projectsX"
+    assert red.redact("/Users/x/projects-old/a") == "/Users/x/projects-old/a"
+    # A same-named dir under a different parent is left alone (lookbehind).
+    assert red.redact("/other/Users/x/projects") == "/other/Users/x/projects"
+
+
+def test_workspace_root_absent_leaves_paths_untouched():
+    red = Redactor.build([], salt="s")
+    assert red.redact("/Users/x/projects/a") == "/Users/x/projects/a"

@@ -216,14 +216,15 @@ class Broker:
         except (TimeoutError_, CommandError) as exc:
             return {
                 "op": "exec", "ok": False, "error_class": exc.error_class,
-                "detail": str(exc), "cwd": plan.cwd, "shell": plan.shell,
+                "detail": str(exc), "cwd": self._to_virtual(plan.cwd),
+                "shell": plan.shell,
             }
 
         return {
             "op": "exec",
             "ok": result.exit_code == 0,
             "exit_code": result.exit_code,
-            "cwd": plan.cwd,
+            "cwd": self._to_virtual(plan.cwd),
             "shell": plan.shell,
             "cmd": self._safe(plan.redactor, plan.echoed),
             "stdout": self._safe(plan.redactor, result.stdout),
@@ -290,7 +291,7 @@ class Broker:
                 "op": "exec",
                 "ok": result.exit_code == 0,
                 "exit_code": result.exit_code,
-                "cwd": plan.cwd,
+                "cwd": self._to_virtual(plan.cwd),
                 "shell": plan.shell,
                 "cmd": self._safe(plan.redactor, plan.echoed),
                 "stdout": (
@@ -332,35 +333,35 @@ class Broker:
         """Resolve a `cd` for a stateful client, jailed to the workspace.
 
         The daemon is stateless; the REPL holds the cwd and calls this to move
-        it. ``realpath`` resolves ``..`` and symlinks first, so neither can be
-        used to climb above the workspace root.
+        it. With a workspace set the client speaks in virtual paths ("/" is the
+        workspace root); ``realpath`` resolves ``..`` and symlinks first, so
+        neither can be used to climb above the root, and the reply is virtual so
+        the real parent path is never disclosed.
         """
-        workspace = self.cfg.exec.workspace
+        root = self._workspace_root()
         target = str(request.get("target", "") or "")
-        cur = request.get("cwd") or workspace
 
-        # A bare `cd` (or `cd ~`) returns to the workspace root when jailed.
-        if target in ("", "~") and workspace:
-            newpath = os.path.realpath(os.path.expanduser(workspace))
-        else:
+        if root is None:
+            cur = request.get("cwd")
             t = os.path.expanduser(os.path.expandvars(target)) if target else "."
             base = os.path.expanduser(cur) if cur else os.getcwd()
             newpath = os.path.realpath(t if os.path.isabs(t) else os.path.join(base, t))
+            if not os.path.isdir(newpath):
+                raise ValidationError("no such directory")
+            return {"op": "chdir", "ok": True, "cwd": newpath}
 
+        base_real = self._real_from_virtual(request.get("cwd") or "/", None)
+        newpath = self._real_from_virtual(target, base_real)
         if not os.path.isdir(newpath):
             raise ValidationError("no such directory")
-
-        if workspace:
-            wroot = os.path.realpath(os.path.expanduser(workspace))
-            if newpath != wroot and not newpath.startswith(wroot + os.sep):
-                raise PolicyError("cannot cd above the workspace")
-
-        return {"op": "chdir", "ok": True, "cwd": newpath}
+        if newpath != root and not newpath.startswith(root + os.sep):
+            raise PolicyError("cannot cd above the workspace")
+        return {"op": "chdir", "ok": True, "cwd": self._to_virtual(newpath)}
 
     def _redaction_info(self, request: dict) -> dict:
         cwd = self._resolve_cwd(request.get("cwd"))
         redactor = self._redactor_for(cwd)
-        return {"ok": True, "cwd": cwd,
+        return {"ok": True, "cwd": self._to_virtual(cwd),
                 "redacted_value_count": len(redactor.secret_values)}
 
     def _complete(self, request: dict) -> dict:
@@ -370,15 +371,17 @@ class Broker:
         cwd = self._resolve_cwd(request.get("cwd"))
         workspace = self.cfg.exec.workspace if self.cfg.policy.enforce_workspace_reads else None
         candidates = completion_candidates(line, cwd, workspace=workspace)
-        return {"op": "complete", "ok": True, "cwd": cwd, "candidates": candidates}
+        return {"op": "complete", "ok": True, "cwd": self._to_virtual(cwd),
+                "candidates": candidates}
 
     def _processes_list(self, request: dict) -> dict:
+        redactor = self._redactor_for(None)
         processes = [
             {
                 "pid": item.pid,
-                "cmd": item.cmd,
+                "cmd": self._safe(redactor, item.cmd),
                 "shell": item.shell,
-                "cwd": item.cwd,
+                "cwd": self._to_virtual(item.cwd),
                 "started_at": item.started_at,
                 "runtime_seconds": round(item.runtime_seconds, 3),
             }
@@ -441,18 +444,74 @@ class Broker:
             raise ValidationError("cmd must be a string or argv list")
         return [str(t) for t in raw_cmd]
 
-    def _resolve_cwd(self, raw_cwd: Any) -> Optional[str]:
-        cwd = raw_cwd or self.cfg.exec.workspace
-        if cwd is None:
+    def _workspace_root(self) -> Optional[str]:
+        """The real, canonical workspace root, or None when unconfigured."""
+        workspace = self.cfg.exec.workspace
+        if not workspace:
             return None
-        cwd = os.path.expanduser(os.path.expandvars(str(cwd)))
-        if not os.path.isabs(cwd):
-            workspace = self.cfg.exec.workspace
-            if workspace:
-                cwd = os.path.join(os.path.expanduser(os.path.expandvars(workspace)), cwd)
-            else:
+        return os.path.realpath(os.path.expanduser(os.path.expandvars(workspace)))
+
+    def _to_virtual(self, real: Optional[str]) -> Optional[str]:
+        """Present a real path as a workspace-relative virtual path.
+
+        The workspace root becomes "/", a child becomes "/child", and anything
+        outside the workspace (which should not normally occur) is returned as
+        is so we never invent a misleading mapping.
+        """
+        if real is None:
+            return None
+        root = self._workspace_root()
+        if not root or root == os.sep:
+            return real
+        real = os.path.realpath(real)
+        if real == root:
+            return "/"
+        if real.startswith(root + os.sep):
+            return "/" + real[len(root) + 1:]
+        return real
+
+    def _real_from_virtual(self, path: Any, base_real: Optional[str]) -> str:
+        """Resolve a client path (virtual absolute or relative) to a real path.
+
+        With a workspace set, an absolute path is virtual (rooted at the
+        workspace), a bare/`~` path is the workspace root, and a relative path is
+        joined onto ``base_real``. Callers jail the result where needed.
+        """
+        root = self._workspace_root()
+        assert root is not None
+        target = os.path.expandvars(str(path or ""))
+        if target in ("", "~"):
+            return root
+        if target.startswith("~/"):
+            target = "/" + target[2:]
+        if target.startswith("/"):
+            # Disambiguate a real absolute path from a virtual one:
+            #   1. already inside the workspace  -> real, as-is
+            #   2. names an existing workspace child ("/sub") -> virtual
+            #   3. otherwise -> real, as-is (legacy callers, outside paths)
+            real = os.path.realpath(target)
+            if real == root or real.startswith(root + os.sep):
+                return real
+            virtual = os.path.realpath(os.path.join(root, target.lstrip("/")))
+            if os.path.isdir(virtual):
+                return virtual
+            return real
+        base = base_real or root
+        return os.path.realpath(os.path.join(base, target))
+
+    def _resolve_cwd(self, raw_cwd: Any) -> Optional[str]:
+        root = self._workspace_root()
+        if root is None:
+            cwd = raw_cwd
+            if cwd is None:
+                return None
+            cwd = os.path.expanduser(os.path.expandvars(str(cwd)))
+            if not os.path.isabs(cwd):
                 cwd = os.path.abspath(cwd)
-        return os.path.realpath(cwd)
+            return os.path.realpath(cwd)
+        if not raw_cwd:
+            return root
+        return self._real_from_virtual(raw_cwd, root)
 
     @staticmethod
     def _normalize_env(raw_env: Any) -> dict[str, str]:
@@ -485,6 +544,7 @@ class Broker:
             values, self.cfg.fingerprint_salt,
             suspected=self.cfg.redaction.redact_suspected,
             high_entropy=self.cfg.redaction.redact_high_entropy,
+            workspace_root=self._workspace_root() or "",
         )
 
     @staticmethod

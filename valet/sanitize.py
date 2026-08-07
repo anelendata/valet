@@ -60,19 +60,37 @@ class Redactor:
     salt: str
     suspected: bool = True
     high_entropy: bool = False
+    workspace_root: str = ""
 
     @classmethod
     def build(cls, secret_values: Iterable[str], salt: str,
-              suspected: bool = True, high_entropy: bool = False) -> "Redactor":
+              suspected: bool = True, high_entropy: bool = False,
+              workspace_root: str = "") -> "Redactor":
         # Longest first so a value that is a substring of another is not
         # partially masked by the shorter one.
         vals = tuple(sorted({v for v in secret_values if v}, key=len, reverse=True))
         return cls(secret_values=vals, salt=salt, suspected=suspected,
-                   high_entropy=high_entropy)
+                   high_entropy=high_entropy, workspace_root=workspace_root)
+
+    def __post_init__(self) -> None:
+        # Precompile the workspace-root rewrite. The lookbehind/lookahead keep it
+        # to real path boundaries so ``/ws`` in ``/other/ws`` or ``/wsX`` is left
+        # alone; only the workspace root (and paths beneath it) collapse to "/".
+        root = self.workspace_root
+        if root and root != "/":
+            self._root_re = re.compile(
+                r"(?<![\w./-])" + re.escape(root) + r"(?:/|(?![\w./-]))"
+            )
+        else:
+            self._root_re = None
 
     def redact(self, text: str) -> str:
         if not text:
             return text
+        # Layer 0: virtualize the workspace root so no output — command stdout,
+        # error text, echoed paths — leaks the real parent directory above it.
+        if self._root_re is not None:
+            text = self._root_re.sub("/", text)
         # Layer 1: exact known secret values → tagged with a stable fingerprint
         # so distinct secrets stay distinguishable without being revealed.
         for value in self.secret_values:

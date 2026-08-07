@@ -90,6 +90,11 @@ console = true
 # in the interactive shell `cd` sticks for the session but cannot climb above
 # this directory (.. and symlinks are resolved first). Leave unset to use the
 # daemon's own working directory and impose no cd jail.
+#
+# When set, the workspace is presented as a virtual root: it appears as "/" (a
+# child as "/child"), and the real parent path is stripped from all output
+# during redaction, so `pwd` and any command that prints an absolute path under
+# the workspace never disclose the directories above it.
 workspace = "~"
 
 # Shell execution is disabled by default. Leave this false unless you trust all
