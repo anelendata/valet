@@ -53,8 +53,8 @@ def test_relative_cwd_resolves_from_workspace(cfg, workspace):
     # The workspace presents as a virtual root, so both the reported cwd and the
     # command's own getcwd() output are relative to it — the real parent path
     # never leaks.
-    assert resp["cwd"] == "/zendesk-jira"
-    assert resp["stdout"].strip() == "/zendesk-jira"
+    assert resp["cwd"] == "./zendesk-jira"
+    assert resp["stdout"].strip() == "./zendesk-jira"
 
 
 def test_nonzero_exit_is_reported(cfg):
@@ -234,7 +234,7 @@ def test_complete_op_returns_host_path_candidates(cfg, workspace):
 
     assert resp["op"] == "complete"
     assert resp["ok"] is True
-    assert resp["cwd"] == "/"
+    assert resp["cwd"] == "./"
     assert resp["candidates"] == ["data.json", "dataset/"]
 
 
@@ -409,7 +409,7 @@ def test_chdir_within_workspace(cfg, workspace):
     (workspace / "sub").mkdir()
     resp = Broker(cfg).handle({"op": "chdir", "target": "sub"})
     assert resp["ok"] is True
-    assert resp["cwd"] == "/sub"
+    assert resp["cwd"] == "./sub"
 
 
 def test_virtual_root_hides_parent_path_in_output(cfg, workspace):
@@ -417,9 +417,9 @@ def test_virtual_root_hides_parent_path_in_output(cfg, workspace):
     # the virtual path, never the real parent directory.
     resp = Broker(cfg).handle({"op": "exec", "cmd": "pwd", "shell": True})
     assert resp["ok"] is True
-    assert resp["stdout"].strip() == "/"
+    assert resp["stdout"].strip() == "./"
     assert str(workspace) not in resp["stdout"]
-    assert resp["cwd"] == "/"
+    assert resp["cwd"] == "./"
 
 
 def test_virtual_root_strips_parent_prefix_from_nested_paths(cfg, workspace):
@@ -431,7 +431,7 @@ def test_virtual_root_strips_parent_prefix_from_nested_paths(cfg, workspace):
         "shell": True,
     })
     assert resp["ok"] is True
-    assert resp["stdout"].strip() == "/zendesk-jira/files"
+    assert resp["stdout"].strip() == "./zendesk-jira/files"
     assert str(workspace) not in resp["stdout"]
 
 
@@ -444,8 +444,8 @@ def test_virtual_absolute_cwd_resolves_within_workspace(cfg, workspace):
         "cwd": "/zendesk-jira",   # virtual absolute path from the REPL
     })
     assert resp["ok"] is True
-    assert resp["cwd"] == "/zendesk-jira"
-    assert resp["stdout"].strip() == "/zendesk-jira"
+    assert resp["cwd"] == "./zendesk-jira"
+    assert resp["stdout"].strip() == "./zendesk-jira"
 
 
 def test_chdir_above_workspace_is_blocked(cfg, workspace):
@@ -469,8 +469,8 @@ def test_chdir_bare_returns_to_workspace_root(cfg, workspace):
         {"op": "chdir", "cwd": str(workspace / "a" / "b"), "target": ""}
     )
     assert resp["ok"] is True
-    # The workspace root presents as the virtual root "/".
-    assert resp["cwd"] == "/"
+    # The workspace root presents as the virtual root "./".
+    assert resp["cwd"] == "./"
 
 
 def test_chdir_nonexistent_rejected(cfg, workspace):

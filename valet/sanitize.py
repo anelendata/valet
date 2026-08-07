@@ -75,7 +75,7 @@ class Redactor:
     def __post_init__(self) -> None:
         # Precompile the workspace-root rewrite. The lookbehind/lookahead keep it
         # to real path boundaries so ``/ws`` in ``/other/ws`` or ``/wsX`` is left
-        # alone; only the workspace root (and paths beneath it) collapse to "/".
+        # alone; only the workspace root (and paths beneath it) collapse to "./".
         root = self.workspace_root
         if root and root != "/":
             self._root_re = re.compile(
@@ -89,8 +89,9 @@ class Redactor:
             return text
         # Layer 0: virtualize the workspace root so no output — command stdout,
         # error text, echoed paths — leaks the real parent directory above it.
+        # The "./" prefix marks a workspace-relative path (not the real root).
         if self._root_re is not None:
-            text = self._root_re.sub("/", text)
+            text = self._root_re.sub("./", text)
         # Layer 1: exact known secret values → tagged with a stable fingerprint
         # so distinct secrets stay distinguishable without being revealed.
         for value in self.secret_values:

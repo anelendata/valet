@@ -70,10 +70,10 @@ def test_is_clean_detects_residual_secret():
 
 def test_workspace_root_is_virtualized():
     red = Redactor.build([], salt="s", workspace_root="/Users/x/projects")
-    # The root itself and paths beneath it collapse to the virtual root.
-    assert red.redact("/Users/x/projects") == "/"
-    assert red.redact("cwd=/Users/x/projects\n") == "cwd=/\n"
-    assert red.redact("/Users/x/projects/zendesk/files") == "/zendesk/files"
+    # The root itself and paths beneath it collapse to the "./" virtual root.
+    assert red.redact("/Users/x/projects") == "./"
+    assert red.redact("cwd=/Users/x/projects\n") == "cwd=./\n"
+    assert red.redact("/Users/x/projects/zendesk/files") == "./zendesk/files"
 
 
 def test_workspace_root_virtualization_respects_boundaries():

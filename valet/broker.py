@@ -482,9 +482,11 @@ class Broker:
     def _to_virtual(self, real: Optional[str]) -> Optional[str]:
         """Present a real path as a workspace-relative virtual path.
 
-        The workspace root becomes "/", a child becomes "/child", and anything
+        The workspace root becomes "./", a child becomes "./child", and anything
         outside the workspace (which should not normally occur) is returned as
-        is so we never invent a misleading mapping.
+        is so we never invent a misleading mapping. The "./" prefix (rather than
+        a bare "/") signals a workspace-relative path so it is not mistaken for
+        the real filesystem root.
         """
         if real is None:
             return None
@@ -493,9 +495,9 @@ class Broker:
             return real
         real = os.path.realpath(real)
         if real == root:
-            return "/"
+            return "./"
         if real.startswith(root + os.sep):
-            return "/" + real[len(root) + 1:]
+            return "./" + real[len(root) + 1:]
         return real
 
     def _real_from_virtual(self, path: Any, base_real: Optional[str]) -> str:

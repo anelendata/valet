@@ -265,11 +265,17 @@ def format_exec(resp: dict) -> Optional[str]:
 
 
 def prompt_for(session: Session) -> str:
-    """`<lastdir> valet> `, or plain `valet> ` if the cwd is unknown."""
+    """`<cwd> valet> `, or plain `valet> ` if the cwd is unknown.
+
+    A virtual workspace path ("./...") is shown in full so it reads as
+    workspace-relative, never as the real filesystem root. A real absolute path
+    (no workspace jail) falls back to its basename to keep the prompt short.
+    """
     prefix = f"{session.host_label}:" if session.host_label else ""
-    if session.cwd:
-        name = os.path.basename(session.cwd.rstrip("/")) or session.cwd
-        return f"{prefix}{name} valet> "
+    cwd = session.cwd
+    if cwd:
+        shown = cwd if cwd.startswith("./") else (os.path.basename(cwd.rstrip("/")) or cwd)
+        return f"{prefix}{shown} valet> "
     return f"{prefix}valet> "
 
 
