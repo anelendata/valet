@@ -138,8 +138,8 @@ its hardened Codex or Claude Code sandbox, where it cannot read `.env`,
 result of an approved privileged command, it calls valet instead:
 
 ```bash
-sandbox$ valet run -- aws s3 ls s3://my-prod-bucket/releases/ --profile prod-readonly
-sandbox$ valet sh 'psql "$DATABASE_URL" --csv -c "select status, count(*) from jobs group by status"'
+sandbox$ valet --env AWS_PROFILE=prod-readonly run -- aws s3 ls s3://my-prod-bucket/releases/
+sandbox$ valet run -- psql --csv -c "select status, count(*) from jobs group by status"
 ```
 
 From the user's point of view, this gives the agent useful operational output
@@ -153,6 +153,11 @@ enough context to redact it safely.
 Use `valet serve` for day-to-day local agent sessions. Stop it with Ctrl-C when
 the session is over. If a client reports that no daemon is running, start
 `valet serve` again from the trusted terminal.
+
+While `valet serve` is running it watches `config.toml` and reloads changes to
+policy, redaction, audit settings, and approved LAN client identities. Listener
+bind settings such as `broker.socket_path`, `[host].lan`, and `[host].listen`
+are read when the server starts; restart `valet serve` after changing those.
 
 ### REPL mode
 
@@ -449,8 +454,9 @@ Then, from anywhere (including the agent):
 
 ```bash
 valet run -- aws s3 ls                   # argv, no shell (exact)
-valet sh 'aws s3 ls | grep prod'         # shell: pipes, globs, redirection
-valet call --json '{"op":"exec","cmd":"env"}'
+valet --env AWS_PROFILE=prod run -- aws s3 ls
+valet sh 'aws s3 ls | grep prod'         # requires [exec] shell = true
+valet call --json '{"op":"ping"}'
 ```
 
 `run`/`sh` print redacted stdout/stderr and exit with the command's code, so
@@ -465,6 +471,61 @@ curl -sS http://127.0.0.1:8765/call \
   -H "Content-Type: application/json" \
   -d '{"op":"ping"}'
 ```
+
+For Level 1 trusted-LAN RPC, approve a client on the trusted host:
+
+```bash
+valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
+valet clients list
+```
+
+This writes a new `[identity.clients...]` entry to the host's `config.toml` and
+prints a client-only TOML snippet. If the client name already exists, valet asks
+before rotating its key. Put the printed client config on the second machine,
+set `[host].lan = true` and `[host].listen` on the trusted host, and start:
+
+```bash
+valet serve
+```
+
+The client can then use the same commands through the selected host:
+
+```bash
+valet --host my-main-laptop ping
+valet --host my-main-laptop run -- handoff status
+valet --host my-main-laptop sh 'aws s3 ls | head'
+valet --host my-main-laptop repl
+```
+
+To revoke a LAN client, remove it from the trusted host config:
+
+```bash
+valet clients remove local-ai-box
+```
+
+The running `valet serve` process reloads the updated client registry
+automatically.
+
+The client config only contains host URLs and that client's identity key. Host
+secret sources, redaction salts, policy, and audit settings stay in the trusted
+host config. `ws://` is for trusted development LANs; public internet relay
+support belongs to the future `wss://` Level 2 transport.
+
+WebSocket clients reconnect automatically with exponential backoff. The defaults
+are conservative and can be tuned in the client-only config:
+
+```toml
+[client]
+reconnect_max_retries = 5
+reconnect_backoff_seconds = 0.25
+reconnect_backoff_max_seconds = 3.0
+
+[hosts.my-main-laptop]
+# Optional per-host overrides use the same keys.
+```
+
+If the socket drops while a command is already in flight, valet reconnects for
+the next prompt but does not silently replay that command.
 
 ### Interactive mode — a redacting shell
 
@@ -489,8 +550,10 @@ and is **jailed to the workspace** — `..` and symlinks can't climb above
 `[exec].workspace` (a bare `cd` returns to the workspace root). A compound line
 (`cd x && y`) is not intercepted: the `cd` there applies only to that
 subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
-`:shell`, `:secrets`, `:call`, `:quit`); everything else runs. Ctrl-D also exits.
-Up/Down and Ctrl-P/Ctrl-N recall previously submitted commands.
+`:shell`, `:secrets`, `:processes`, `:call`, `:quit`); everything else runs.
+Use `:processes list` (or `:jobs`) to list subprocesses started by Valet, and
+`:processes kill <pid>` (or `:kill <pid>`) to terminate one of them. Ctrl-D
+also exits. Up/Down and Ctrl-P/Ctrl-N recall previously submitted commands.
 Press Tab to complete commands from `PATH` (and shell builtins) or files from the
 current directory. File candidates include a trailing `/` for directories. When
 there is more than one match, valet displays them in two columns; lists taller
@@ -519,6 +582,29 @@ The knobs split into two families that do fundamentally different things:
 | `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
 | `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
 | `audit.log_path` | Appends metadata-only JSON objects for requests; streamed execs get an immediate `started` event plus a final event | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
+
+By default, `[exec].shell` is `false`; `valet sh`, REPL shell mode, and direct
+shell executables such as `sh -c` are refused unless the host explicitly sets
+`shell = true`. Valet also starts with built-in dangerous command bans for
+environment/process/system-control commands such as `env`, `printenv`, `kill`,
+`pkill`, `killall`, `ps`, `sudo`, `reboot`, `halt`, `launchctl`, `osascript`,
+and `valet` itself.
+
+When a command launched by Valet needs to be inspected or stopped, use Valet's
+own process registry instead of host process tools:
+
+```bash
+valet processes list
+valet processes kill <pid>
+```
+
+Only subprocesses started and currently tracked by Valet can be killed this way.
+
+For per-command environment variables, prefer shell-free argv mode:
+
+```bash
+valet --env AWS_PROFILE=prod-readonly run -- aws s3 ls
+```
 
 **`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
 difference is only *how the file is located*. `secret_sources` is one fixed

@@ -1,12 +1,15 @@
 # valet local config holds real project paths, AWS profiles, and the
 # fingerprint salt. NEVER commit it. Only config.example.toml is tracked.
 config.toml
+client.toml
 *.local.toml
 valet.config.toml
 
 # runtime
 *.sock
 .valet/
+.uv/
+.python-version
 __pycache__/
 *.pyc
 .pytest_cache/

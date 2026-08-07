@@ -66,7 +66,7 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     allow_reuse_address = True
 
 
-def serve(cfg: BrokerConfig) -> None:
+def make_server(cfg: BrokerConfig, *, broker: Broker | None = None) -> _Server:
     _check_sock_path(cfg.socket_path)
     sock_path = Path(cfg.socket_path)
     sock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,8 +80,22 @@ def serve(cfg: BrokerConfig) -> None:
         pass
 
     server = _Server(str(sock_path), _Handler)
-    server.broker = Broker(cfg, audit_to_console=cfg.audit.console)  # type: ignore[attr-defined]
+    server.broker = broker or Broker(cfg, audit_to_console=cfg.audit.console)  # type: ignore[attr-defined]
+    server.socket_path = sock_path  # type: ignore[attr-defined]
     os.chmod(sock_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    return server
+
+
+def close_server(server: _Server) -> None:
+    sock_path = getattr(server, "socket_path", None)
+    server.server_close()
+    if sock_path and sock_path.exists():
+        sock_path.unlink()
+
+
+def serve(cfg: BrokerConfig) -> None:
+    server = make_server(cfg)
+    sock_path = server.socket_path  # type: ignore[attr-defined]
 
     print(f"valet: listening on {sock_path} (0600). Ctrl-C to stop.")
     try:
@@ -89,9 +103,7 @@ def serve(cfg: BrokerConfig) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
-        if sock_path.exists():
-            sock_path.unlink()
+        close_server(server)
 
 
 class Connection:

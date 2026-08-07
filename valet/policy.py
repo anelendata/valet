@@ -1,9 +1,11 @@
 """Execution policy — command allow/deny and path bans.
 
-Two kinds of constraint, both off unless configured (valet stays permissive by
-default):
+Valet starts with a small built-in deny list for commands that control the host,
+processes, shells, or valet itself. Additional policy constraints are configured
+with:
 
-  - ``deny`` — program-name deny list (e.g. ``curl``, ``rm``).
+  - built-in dangerous command bans — process/system control and valet itself.
+  - ``deny`` — additional program-name deny list (e.g. ``curl``, ``rm``).
   - ``deny_read_paths`` — glob patterns of files a command may not reference,
     so it cannot reveal their content. Supports ``**`` (any depth), ``*``, and
     ``?``. Example: ``**/.env`` bans reading any ``.env`` no matter where it
@@ -44,6 +46,22 @@ from .errors import PolicyError
 
 Command = Union[str, list[str]]
 
+BUILTIN_DENY: tuple[str, ...] = (
+    # Valet control-plane recursion.
+    "valet",
+    # Environment/process discovery/control.
+    "env", "printenv",
+    "kill", "killall", "pkill", "ps", "pgrep", "top", "htop", "lsof",
+    # Privilege/session/system control.
+    "sudo", "su", "doas", "login", "passwd",
+    "shutdown", "reboot", "halt", "poweroff",
+    "launchctl", "osascript",
+)
+
+SHELL_COMMANDS: tuple[str, ...] = (
+    "sh", "bash", "zsh", "fish", "csh", "tcsh", "ksh",
+)
+
 # Tokens made up entirely of these characters are shell control operators and
 # act as sub-command separators (";", "&&", "||", "|", "&", "(", ")", "<", ">").
 _OPERATOR_CHARS = set(";&|()<>")
@@ -57,6 +75,7 @@ def _is_config_name(path: str) -> bool:
 @dataclass(frozen=True)
 class Policy:
     workspace: Optional[str] = None
+    allow_shell: bool = False
     allow: tuple[str, ...] = ()
     deny: tuple[str, ...] = ()
     deny_read_paths: tuple[str, ...] = ()
@@ -64,9 +83,16 @@ class Policy:
     enforce_workspace_writes: bool = False
 
     @classmethod
-    def from_config(cls, cfg: PolicyConfig, workspace: Optional[str]) -> "Policy":
+    def from_config(
+        cls,
+        cfg: PolicyConfig,
+        workspace: Optional[str],
+        *,
+        allow_shell: bool = False,
+    ) -> "Policy":
         return cls(
             workspace=workspace,
+            allow_shell=allow_shell,
             allow=tuple(cfg.allow),
             deny=tuple(cfg.deny),
             # Expand ~ / $VARS in patterns up front so absolute patterns like
@@ -93,7 +119,11 @@ class Policy:
             if any(self._is_protected_config_path(tok, effective_cwd) for tok in sub):
                 raise PolicyError("config.toml is protected")
 
-            if self.deny and os.path.basename(sub[0]) in self.deny:
+            command = _effective_command(sub)
+            if not self.allow_shell and command in SHELL_COMMANDS:
+                raise PolicyError("shell execution is disabled")
+
+            if command in _casefold_names(BUILTIN_DENY + self.deny):
                 raise PolicyError("command is on the deny list")
 
             for tok in sub[1:]:
@@ -168,6 +198,45 @@ def _split_subcommands(cmd: Command) -> list[list[str]]:
         for tokens in _split_line(line):
             subs.append(tokens)
     return subs
+
+
+def _casefold_names(names: tuple[str, ...]) -> set[str]:
+    return {name.casefold() for name in names}
+
+
+def _effective_command(tokens: list[str]) -> str:
+    i = 0
+    while i < len(tokens) and _is_env_assignment(tokens[i]):
+        i += 1
+    if i >= len(tokens):
+        return ""
+
+    command = os.path.basename(tokens[i]).casefold()
+    if command != "env":
+        return command
+
+    i += 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if _is_env_assignment(tok):
+            i += 1
+            continue
+        if tok == "--":
+            i += 1
+            break
+        if tok.startswith("-"):
+            # Keep env option handling intentionally conservative. Options with
+            # their own arguments are treated as the env command itself rather
+            # than guessing where the child command begins.
+            return command
+        break
+    if i >= len(tokens):
+        return command
+    return os.path.basename(tokens[i]).casefold()
+
+
+def _is_env_assignment(token: str) -> bool:
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token) is not None
 
 
 def _split_line(line: str) -> list[list[str]]:

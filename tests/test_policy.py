@@ -3,7 +3,7 @@ import dataclasses
 from pathlib import Path
 
 from valet.broker import Broker
-from valet.config import PolicyConfig
+from valet.config import ExecConfig, PolicyConfig
 from valet.policy import Policy
 
 
@@ -37,6 +37,96 @@ def test_non_denied_command_still_runs(cfg):
 
 def test_policy_check_is_noop_without_constraints():
     Policy().check("anything at all", cwd=None)  # must not raise
+
+
+def test_shell_execution_is_disabled_by_default(cfg):
+    locked = dataclasses.replace(
+        cfg,
+        exec=ExecConfig(workspace=cfg.exec.workspace, shell=False),
+    )
+
+    resp = Broker(locked).handle(
+        {"op": "exec", "cmd": "echo blocked", "shell": True}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+    assert resp["detail"] == "shell execution is disabled"
+
+
+def test_shell_command_bypass_is_disabled_by_default(cfg):
+    locked = dataclasses.replace(
+        cfg,
+        exec=ExecConfig(workspace=cfg.exec.workspace, shell=False),
+    )
+
+    resp = Broker(locked).handle(
+        {"op": "exec", "cmd": ["sh", "-c", "echo blocked"], "shell": False}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+    assert resp["detail"] == "shell execution is disabled"
+
+
+def test_explicit_shell_config_allows_shell_commands(cfg):
+    enabled = dataclasses.replace(
+        cfg,
+        exec=ExecConfig(workspace=cfg.exec.workspace, shell=True),
+    )
+
+    resp = Broker(enabled).handle(
+        {"op": "exec", "cmd": "printf 'ok\\n'", "shell": True}
+    )
+
+    assert resp["ok"] is True
+    assert resp["stdout"] == "ok\n"
+
+
+def test_builtin_dangerous_commands_are_denied(cfg):
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": ["kill", "12345"], "shell": False}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+    assert resp["detail"] == "command is on the deny list"
+
+
+def test_builtin_env_command_is_denied(cfg):
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": ["env"], "shell": False}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_builtin_dangerous_commands_are_denied_inside_shell_lines(cfg):
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": "echo ok; pkill something", "shell": True}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_builtin_dangerous_commands_are_denied_after_env_assignment(cfg):
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": "AWS_PROFILE=tiny kill 12345", "shell": True}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+
+
+def test_builtin_dangerous_commands_are_denied_after_env_wrapper(cfg):
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": ["env", "AWS_PROFILE=tiny", "kill", "12345"], "shell": False}
+    )
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
 
 
 # --- built-in config.toml protection ----------------------------------------

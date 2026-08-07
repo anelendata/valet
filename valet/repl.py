@@ -37,8 +37,10 @@ Type any command to run it; output has secrets redacted.
 `cd <dir>` sticks for the session (jailed to the workspace). Meta-commands:
   :help, :?            this help
   :cwd [dir]           show or change the working directory (same as `cd`)
-  :shell [on|off]      show or toggle shell mode (default on)
+  :shell [on|off]      show or toggle shell mode (default off)
   :secrets             how many secret values are being redacted for the cwd
+  :processes [list]    list subprocesses started by valet (:jobs also works)
+  :processes kill PID  terminate a valet subprocess (:kill PID also works)
   :call <json>         send a raw request object to the daemon
   :quit, :exit         leave (Ctrl-D also works)
 """
@@ -52,7 +54,9 @@ BANNER = (
 @dataclass
 class Session:
     cwd: Optional[str] = None      # None => daemon's configured workspace
-    shell: bool = True
+    shell: bool = False
+    host_label: Optional[str] = None
+    completion_send: Optional[Send] = None
     # Set by the CLI when policy.enforce_workspace_reads is enabled.
     completion_workspace: Optional[str] = None
 
@@ -142,6 +146,10 @@ def _meta(body: str, session: Session, send: Send) -> tuple[bool, Optional[str]]
             return False, "connection to daemon lost. Exiting."
         n = resp.get("redacted_value_count", "?")
         return True, f"redacting {n} secret value(s) for {resp.get('cwd') or '(default)'}"
+    if name in ("processes", "procs", "jobs"):
+        return _meta_processes(arg, send)
+    if name == "kill":
+        return _meta_processes_kill(arg, send, "usage: :kill <pid>")
     if name == "call":
         if not arg:
             return True, ':usage: :call {"op":"exec","cmd":"echo hi"}'
@@ -156,6 +164,62 @@ def _meta(body: str, session: Session, send: Send) -> tuple[bool, Optional[str]]
         return True, json.dumps(resp, indent=2)
 
     return True, f"unknown meta-command: :{name} (try :help)"
+
+
+def _meta_processes(body: str, send: Send) -> tuple[bool, Optional[str]]:
+    parts = body.split()
+    if not parts or parts[0] in ("list", "ls"):
+        if len(parts) > 1:
+            return True, "usage: :processes [list] | :processes kill <pid>"
+        try:
+            resp = send({"op": "processes.list"})
+        except ConnectionError:
+            return False, "connection to daemon lost. Exiting."
+        return True, _format_processes(resp)
+    if parts[0] == "kill" and len(parts) == 2:
+        return _meta_processes_kill(
+            parts[1],
+            send,
+            "usage: :processes [list] | :processes kill <pid>",
+        )
+    return True, "usage: :processes [list] | :processes kill <pid>"
+
+
+def _meta_processes_kill(
+    pid_text: str,
+    send: Send,
+    usage: str,
+) -> tuple[bool, Optional[str]]:
+    try:
+        pid = int(pid_text, 10)
+    except ValueError:
+        return True, usage
+    if pid <= 0:
+        return True, usage
+    try:
+        resp = send({"op": "processes.kill", "pid": pid})
+    except ConnectionError:
+        return False, "connection to daemon lost. Exiting."
+    if not resp.get("ok"):
+        return True, format_exec(resp)
+    return True, f"killed subprocess {resp.get('pid')}"
+
+
+def _format_processes(resp: dict) -> Optional[str]:
+    if not resp.get("ok"):
+        return format_exec(resp)
+    processes = resp.get("processes") or []
+    if not processes:
+        return "no running subprocesses"
+    rows = ["PID\tSECONDS\tSHELL\tCOMMAND"]
+    for item in processes:
+        rows.append(
+            f"{item.get('pid')}\t"
+            f"{item.get('runtime_seconds')}\t"
+            f"{str(bool(item.get('shell'))).lower()}\t"
+            f"{item.get('cmd') or ''}"
+        )
+    return "\n".join(rows)
 
 
 def format_exec(resp: dict) -> Optional[str]:
@@ -185,10 +249,11 @@ def format_exec(resp: dict) -> Optional[str]:
 
 def prompt_for(session: Session) -> str:
     """`<lastdir> valet> `, or plain `valet> ` if the cwd is unknown."""
+    prefix = f"{session.host_label}:" if session.host_label else ""
     if session.cwd:
         name = os.path.basename(session.cwd.rstrip("/")) or session.cwd
-        return f"{name} valet> "
-    return "valet> "
+        return f"{prefix}{name} valet> "
+    return f"{prefix}valet> "
 
 
 def _word_start(line: str) -> int:
@@ -381,6 +446,27 @@ def completion_candidates(line: str, cwd: Optional[str], path: Optional[str] = N
     return path_candidates(prefix, cwd, workspace)
 
 
+def session_completion_candidates(line: str, session: Session) -> list[str]:
+    """Return completion candidates, using the daemon when configured."""
+    if session.completion_send is not None:
+        req = {"op": "complete", "line": line}
+        if session.cwd:
+            req["cwd"] = session.cwd
+        try:
+            resp = session.completion_send(req)
+        except (ConnectionError, OSError):
+            return []
+        if resp.get("ok") and isinstance(resp.get("candidates"), list):
+            return [str(candidate) for candidate in resp["candidates"]]
+        if session.host_label:
+            return []
+    return completion_candidates(
+        line,
+        session.cwd,
+        workspace=session.completion_workspace,
+    )
+
+
 def format_candidate_columns(candidates: list[str]) -> str:
     """Render candidates in two readable columns for readline's display hook."""
     if not candidates:
@@ -441,8 +527,7 @@ def _configure_completion(readline, session: Session) -> None:
         nonlocal matches
         if state == 0:
             line = readline.get_line_buffer()[:readline.get_endidx()]
-            matches = completion_candidates(line, session.cwd,
-                                            workspace=session.completion_workspace)
+            matches = session_completion_candidates(line, session)
         return matches[state] if state < len(matches) else None
 
     def display(_substitution: str, display_matches: list[str], _longest: int) -> None:
@@ -551,8 +636,7 @@ def _libedit_input(prompt: str, session: Session, readline) -> str:
                 continue
             if char == "\t":
                 before = "".join(buffer[:cursor])
-                candidates = completion_candidates(before, session.cwd,
-                                                   workspace=session.completion_workspace)
+                candidates = session_completion_candidates(before, session)
                 if len(candidates) == 1:
                     buffer, cursor = _replace_current_word(buffer, cursor, candidates[0])
                 elif candidates:

@@ -44,6 +44,34 @@ port = 8765
 # git-ignored config.toml, and do not put it in prompts or logs.
 bearer_token = "CHANGE_ME_to_a_long_random_token"
 
+[host]
+# Level 1 trusted-LAN WebSocket RPC host settings. The LAN listener is disabled
+# unless lan = true. Bind to 127.0.0.1 for local testing, or deliberately choose
+# a LAN interface such as 0.0.0.0 only on a trusted network.
+id = "my-main-laptop"
+lan = false
+listen = "127.0.0.1:8766"
+
+# Client-only config.toml also supports reconnect tuning for WebSocket hosts:
+#
+# [client]
+# reconnect_max_retries = 5
+# reconnect_backoff_seconds = 0.25
+# reconnect_backoff_max_seconds = 3.0
+#
+# The same keys can be set under [hosts.<name>] to override one host.
+
+[identity.clients]
+# Approved Level 1 clients go here. Let valet generate and update this section:
+#   valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
+#   valet clients list
+#   valet clients remove local-ai-box
+# Then put the printed client-only TOML snippet on the client machine and run
+# `valet serve` on this host.
+#
+# `valet serve` reloads changes to approved clients automatically. Restart only
+# when changing listener bind settings such as [host].lan or [host].listen.
+
 [audit]
 # Optional newline-delimited JSON audit log. Each line is one JSON object, so
 # the server can append safely without rewriting the whole file.
@@ -64,8 +92,10 @@ console = true
 # daemon's own working directory and impose no cd jail.
 workspace = "~"
 
-# Run commands through a shell by default (pipes, globs, redirection).
-shell = true
+# Shell execution is disabled by default. Leave this false unless you trust all
+# clients of this host and need shell syntax such as pipes, globs, redirects, or
+# `&&`. Prefer `valet --env NAME=value run ...` for per-command env vars.
+shell = false
 
 [redaction]
 # ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
@@ -115,12 +145,18 @@ redact_high_entropy = false
 [policy]
 # ==== FAMILY 2: block EXECUTION — decide whether the command runs at all ====
 #
-# PERMISSIVE by default — everything below is off unless you set it.
+# PERMISSIVE by default except for Valet's built-in dangerous command bans:
+# environment/process/system-control commands such as env/printenv/kill/pkill/
+# killall/ps/sudo/reboot, common shell executables when [exec].shell=false, and
+# valet itself. Use `valet processes list` and `valet processes kill <pid>` to
+# inspect or stop subprocesses started by Valet.
+#
+# Everything below is additional local policy.
 # An empty allow list means "allow everything".
 allow = []
 
-# Program-name deny list (matched on the command's basename). Use to forbid a
-# whole tool, e.g. deny = ["rm", "curl"].
+# Additional program-name deny list (matched on the command's basename). Use to
+# forbid a whole tool, e.g. deny = ["rm", "curl"].
 deny = []
 
 # deny_read_paths: glob patterns of files a command may not reference — valet

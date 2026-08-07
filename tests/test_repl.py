@@ -12,6 +12,7 @@ from valet.repl import (
     path_candidates,
     prompt_for,
     run_command,
+    session_completion_candidates,
     tab_completion_binding,
 )
 
@@ -47,7 +48,7 @@ def test_plain_line_runs_as_command():
     assert keep is True
     assert sent[0]["op"] == "exec"
     assert sent[0]["cmd"] == "echo hi"
-    assert sent[0]["shell"] is True
+    assert sent[0]["shell"] is False
     assert out == "hi"
 
 
@@ -83,7 +84,7 @@ def test_cd_sticks_for_session():
     assert sent[0]["op"] == "chdir"        # not an exec
     # a subsequent command runs in the new dir
     run_command("ls", sess, send)
-    assert sent[1] == {"op": "exec", "cmd": "ls", "shell": True, "cwd": "/ws/x-com"}
+    assert sent[1] == {"op": "exec", "cmd": "ls", "shell": False, "cwd": "/ws/x-com"}
 
 
 def test_bare_cd_returns_to_workspace_root():
@@ -111,10 +112,10 @@ def test_prompt_shows_last_dir_name():
 def test_meta_shell_toggle_changes_requests():
     send, sent = _recorder()
     sess = Session()
-    run_command(":shell off", sess, send)
-    assert sess.shell is False
+    run_command(":shell on", sess, send)
+    assert sess.shell is True
     run_command("echo hi", sess, send)
-    assert sent[0]["shell"] is False
+    assert sent[0]["shell"] is True
 
 
 def test_meta_help_does_not_send():
@@ -135,6 +136,73 @@ def test_meta_call_passes_json_through():
     send, sent = _recorder(resp={"ok": True, "pong": True})
     run_command(':call {"op":"ping"}', Session(), send)
     assert sent[0] == {"op": "ping"}
+
+
+def test_meta_processes_list_formats_processes():
+    resp = {
+        "op": "processes.list",
+        "ok": True,
+        "processes": [
+            {
+                "pid": 123,
+                "runtime_seconds": 1.25,
+                "shell": False,
+                "cmd": "python -c sleep",
+            }
+        ],
+    }
+    send, sent = _recorder(resp=resp)
+
+    _, out = run_command(":processes list", Session(), send)
+
+    assert sent == [{"op": "processes.list"}]
+    assert "PID\tSECONDS\tSHELL\tCOMMAND" in out
+    assert "123\t1.25\tfalse\tpython -c sleep" in out
+
+
+def test_meta_processes_list_empty():
+    send, _ = _recorder(resp={"op": "processes.list", "ok": True, "processes": []})
+
+    _, out = run_command(":processes", Session(), send)
+
+    assert out == "no running subprocesses"
+
+
+def test_meta_jobs_alias_lists_processes():
+    send, sent = _recorder(resp={"op": "processes.list", "ok": True, "processes": []})
+
+    run_command(":jobs", Session(), send)
+
+    assert sent == [{"op": "processes.list"}]
+
+
+def test_meta_processes_kill_sends_pid():
+    send, sent = _recorder(resp={"op": "processes.kill", "ok": True, "pid": 123,
+                                 "killed": True})
+
+    _, out = run_command(":processes kill 123", Session(), send)
+
+    assert sent == [{"op": "processes.kill", "pid": 123}]
+    assert out == "killed subprocess 123"
+
+
+def test_meta_kill_alias_sends_pid():
+    send, sent = _recorder(resp={"op": "processes.kill", "ok": True, "pid": 123,
+                                 "killed": True})
+
+    _, out = run_command(":kill 123", Session(), send)
+
+    assert sent == [{"op": "processes.kill", "pid": 123}]
+    assert out == "killed subprocess 123"
+
+
+def test_meta_kill_rejects_invalid_pid_without_sending():
+    send, sent = _recorder()
+
+    _, out = run_command(":kill nope", Session(), send)
+
+    assert out == "usage: :kill <pid>"
+    assert sent == []
 
 
 def test_format_exec_shows_stderr_and_exit():
@@ -216,6 +284,45 @@ def test_completion_uses_commands_at_command_positions_and_files_elsewhere(tmp_p
     assert completion_candidates("dep", str(tmp_path), str(tmp_path)) == ["deploy"]
     assert completion_candidates("echo dat", str(tmp_path), str(tmp_path)) == ["data.json"]
     assert completion_candidates("echo ok | dep", str(tmp_path), str(tmp_path)) == ["deploy"]
+
+
+def test_session_completion_uses_daemon_when_configured():
+    sent = []
+
+    def send(req):
+        sent.append(req)
+        return {"op": "complete", "ok": True, "candidates": ["remote.txt"]}
+
+    sess = Session(cwd="/remote/ws", host_label="host-a", completion_send=send)
+
+    assert session_completion_candidates("echo rem", sess) == ["remote.txt"]
+    assert sent == [{"op": "complete", "line": "echo rem", "cwd": "/remote/ws"}]
+
+
+def test_remote_session_completion_does_not_guess_locally_on_daemon_error(tmp_path):
+    (tmp_path / "remote.txt").write_text("this is only local test data\n")
+
+    def send(_req):
+        return {"op": "complete", "ok": False, "detail": "old daemon"}
+
+    sess = Session(
+        cwd=str(tmp_path),
+        host_label="host-a",
+        completion_send=send,
+    )
+
+    assert session_completion_candidates("echo rem", sess) == []
+
+
+def test_local_session_completion_falls_back_when_daemon_lacks_complete(tmp_path):
+    (tmp_path / "local.txt").write_text("ok\n")
+
+    def send(_req):
+        return {"op": "complete", "ok": False, "detail": "old daemon"}
+
+    sess = Session(cwd=str(tmp_path), completion_send=send)
+
+    assert session_completion_candidates("echo loc", sess) == ["local.txt"]
 
 
 def test_candidate_list_is_two_columns():

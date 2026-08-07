@@ -23,8 +23,8 @@ def test_secret_value_is_redacted_from_stdout(cfg):
 
 
 def test_cwd_dotenv_is_loaded_and_redacted(cfg, workspace):
-    # A .env in the working directory should be auto-loaded and its value hidden.
-    (workspace / ".env").write_text("API_TOKEN=tok_live_abcdef123456\n")
+    # A configured cwd secret file should be auto-loaded and its value hidden.
+    (workspace / "env_values_test").write_text("API_TOKEN=tok_live_abcdef123456\n")
     resp = Broker(cfg).handle(
         {"op": "exec", "cmd": "echo tok_live_abcdef123456", "cwd": str(workspace)}
     )
@@ -51,6 +51,33 @@ def test_command_not_found_argv(cfg):
     )
     assert resp["ok"] is False
     assert resp["exit_code"] == 127
+
+
+def test_extra_env_is_passed_without_shell_and_redacted(cfg):
+    value = "tiny-profile-secret-value"
+    script = "import os; print(os.environ['AWS_PROFILE'])"
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", script],
+        "shell": False,
+        "env": {"AWS_PROFILE": value},
+    })
+
+    assert resp["ok"] is True
+    assert value not in resp["stdout"]
+    assert "REDACTED:secret:" in resp["stdout"]
+
+
+def test_bad_env_name_is_rejected(cfg):
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": ["echo", "ok"],
+        "shell": False,
+        "env": {"BAD-NAME": "x"},
+    })
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "ValidationError"
 
 
 def test_missing_cmd_rejected(cfg):
@@ -85,6 +112,20 @@ def test_redaction_info_op(cfg):
     resp = Broker(cfg).handle({"op": "redaction_info"})
     assert resp["ok"] is True
     assert resp["redacted_value_count"] >= 1
+
+
+def test_complete_op_returns_host_path_candidates(cfg, workspace):
+    (workspace / "data.json").write_text("{}\n")
+    (workspace / "dataset").mkdir()
+
+    resp = Broker(cfg).handle(
+        {"op": "complete", "line": "echo dat", "cwd": str(workspace)}
+    )
+
+    assert resp["op"] == "complete"
+    assert resp["ok"] is True
+    assert resp["cwd"] == str(workspace)
+    assert resp["candidates"] == ["data.json", "dataset/"]
 
 
 def test_stream_exec_yields_chunks_and_final(cfg):

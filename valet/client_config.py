@@ -1,0 +1,124 @@
+"""Client-only configuration for selecting local or remote Valet hosts."""
+from __future__ import annotations
+
+import os
+import secrets
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from .errors import ConfigError
+
+DEFAULT_CLIENT_CONFIG_ENV = "VALET_CLIENT_CONFIG"
+DEFAULT_CLIENT_CONFIG_NAME = "client.toml"
+
+
+def _expand(path: str) -> str:
+    return os.path.expanduser(os.path.expandvars(path))
+
+
+@dataclass(frozen=True)
+class ClientHost:
+    name: str
+    url: str
+    client_id: str
+    key: str
+    host_id: str = ""
+    reconnect_max_retries: int = 5
+    reconnect_backoff_seconds: float = 0.25
+    reconnect_backoff_max_seconds: float = 3.0
+
+
+@dataclass(frozen=True)
+class ClientConfig:
+    path: Path
+    id: str
+    key: str
+    default_host: str
+    hosts: dict[str, ClientHost]
+
+
+def default_client_config_path() -> Path:
+    env = os.environ.get(DEFAULT_CLIENT_CONFIG_ENV)
+    if env:
+        return Path(_expand(env))
+    return Path(_expand(f"~/.valet/{DEFAULT_CLIENT_CONFIG_NAME}"))
+
+
+def load_client_config(
+    path: Optional[str | os.PathLike] = None,
+    *,
+    required: bool = False,
+) -> ClientConfig:
+    cfg_path = Path(path) if path is not None else default_client_config_path()
+    if not cfg_path.exists():
+        if required:
+            raise ConfigError(f"client config not found at {cfg_path}")
+        return ClientConfig(path=cfg_path, id="", key="", default_host="", hosts={})
+    try:
+        with open(cfg_path, "rb") as fh:
+            raw = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"client config is not valid TOML: {exc}") from exc
+
+    client = raw.get("client", {})
+    client_id = str(client.get("id", ""))
+    client_key = str(client.get("key", ""))
+    default_host = str(client.get("default_host", ""))
+    reconnect_max_retries = int(client.get("reconnect_max_retries", 5))
+    reconnect_backoff_seconds = float(client.get("reconnect_backoff_seconds", 0.25))
+    reconnect_backoff_max_seconds = float(client.get("reconnect_backoff_max_seconds", 3.0))
+    hosts: dict[str, ClientHost] = {}
+    for name, value in raw.get("hosts", {}).items():
+        if not isinstance(value, dict):
+            continue
+        url = str(value.get("url", ""))
+        if not url:
+            continue
+        host_client_id = str(value.get("client_id", client_id))
+        host_key = str(value.get("key", client_key))
+        hosts[str(name)] = ClientHost(
+            name=str(name),
+            url=url,
+            client_id=host_client_id,
+            key=host_key,
+            host_id=str(value.get("host_id", "")),
+            reconnect_max_retries=int(
+                value.get("reconnect_max_retries", reconnect_max_retries)
+            ),
+            reconnect_backoff_seconds=float(
+                value.get("reconnect_backoff_seconds", reconnect_backoff_seconds)
+            ),
+            reconnect_backoff_max_seconds=float(
+                value.get("reconnect_backoff_max_seconds", reconnect_backoff_max_seconds)
+            ),
+        )
+    return ClientConfig(
+        path=cfg_path,
+        id=client_id,
+        key=client_key,
+        default_host=default_host,
+        hosts=hosts,
+    )
+
+
+def write_new_client_config(path: Path, *, host_name: str, url: str) -> ClientConfig:
+    client_id = "client_" + secrets.token_hex(8)
+    key = secrets.token_urlsafe(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = (
+        "[client]\n"
+        f'id = "{client_id}"\n'
+        f'key = "{key}"\n'
+        f'default_host = "{host_name}"\n'
+        "reconnect_max_retries = 5\n"
+        "reconnect_backoff_seconds = 0.25\n"
+        "reconnect_backoff_max_seconds = 3.0\n"
+        "\n"
+        f"[hosts.{host_name}]\n"
+        f'url = "{url}"\n'
+        f'host_id = "{host_name}"\n'
+    )
+    path.write_text(text)
+    return load_client_config(path)
