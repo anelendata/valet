@@ -18,7 +18,7 @@ from valet.rpc import (
     _signature,
     legacy_request_from_rpc,
 )
-from valet.server_ws import make_server
+from valet.server_ws import auth_rejection_reason, make_server
 from valet.wsproto import accept_key, read_text, write_text
 
 
@@ -525,3 +525,45 @@ def test_websocket_rpc_cancel_stops_streamed_exec(ws_server):
         assert final["ok"] is False
     finally:
         sock.close()
+
+
+def _reason(**overrides):
+    identity = ClientIdentity(name="c", key="client-secret")
+    good_sig = _signature("client-secret", "host-1", "nonce-1", "client_a")
+    args = {
+        "response": {"type": "auth.response", "client_id": "client_a"},
+        "client_id": "client_a",
+        "identity": identity,
+        "signature": good_sig,
+        "host_id": "host-1",
+        "nonce": "nonce-1",
+    }
+    args.update(overrides)
+    return auth_rejection_reason(
+        args["response"],
+        args["client_id"],
+        args["identity"],
+        args["signature"],
+        args["host_id"],
+        args["nonce"],
+    )
+
+
+def test_auth_rejection_reason_accepts_valid_handshake():
+    assert _reason() is None
+
+
+def test_auth_rejection_reason_flags_wrong_message_type():
+    assert _reason(response={"type": "request"}) == "unexpected handshake message"
+
+
+def test_auth_rejection_reason_flags_missing_client_id():
+    assert _reason(client_id="", response={"type": "auth.response"}) == "missing client_id"
+
+
+def test_auth_rejection_reason_flags_unapproved_client():
+    assert _reason(identity=None) == "client identity is not approved"
+
+
+def test_auth_rejection_reason_flags_bad_signature():
+    assert _reason(signature="deadbeef") == "signature verification failed"

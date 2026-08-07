@@ -495,6 +495,43 @@ class Broker:
 
     # -- audit ----------------------------------------------------------------
 
+    def audit_security_rejection(
+        self,
+        *,
+        op: str,
+        caller: str,
+        transport: str,
+        detail: str,
+        error_class: str = "authentication_failed",
+        peer: Optional[str] = None,
+    ) -> None:
+        """Record a rejected handshake/authorization attempt.
+
+        Transports call this when a client fails to authenticate, so refused
+        connections leave a trail in the same audit sink as executed commands.
+        The event carries no secret material — only who was refused and why.
+        """
+        event = {
+            "timestamp": _utc_timestamp(),
+            "request_id": uuid.uuid4().hex,
+            "level": "WARNING",
+            "caller": caller or "unknown",
+            "transport": transport,
+            "broker_version": __version__,
+            "op": op,
+            "phase": "handshake",
+            "decision": "denied",
+            "approval": "not_required",
+            "ok": False,
+            "error_class": error_class,
+            "detail": detail,
+            "peer": peer,
+        }
+        try:
+            self.audit.record(event)
+        except Exception as exc:
+            print(f"valet: audit logging failed: {exc}", file=sys.stderr)
+
     def _audit(
         self,
         request: Any,

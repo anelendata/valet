@@ -23,6 +23,23 @@ def _parse_listen(value: str) -> tuple[str, int]:
     return host, int(port_text)
 
 
+def auth_rejection_reason(response, client_id, identity, signature, host_id, nonce):
+    """Why an auth handshake is refused, or None when it is accepted.
+
+    The reason is a fixed, non-sensitive label — never the signature or key —
+    so it is safe to write to the audit log.
+    """
+    if response.get("type") != "auth.response":
+        return "unexpected handshake message"
+    if not client_id:
+        return "missing client_id"
+    if identity is None:
+        return "client identity is not approved"
+    if not verify_signature(identity.key, host_id, nonce, client_id, signature):
+        return "signature verification failed"
+    return None
+
+
 class _Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         try:
@@ -74,12 +91,17 @@ class _Handler(socketserver.BaseRequestHandler):
         client_id = str(response.get("client_id", ""))
         signature = str(response.get("signature", ""))
         identity = self.cfg.identity.clients.get(client_id)
-        ok = (
-            response.get("type") == "auth.response"
-            and identity is not None
-            and verify_signature(identity.key, self.cfg.host.id, nonce, client_id, signature)
+        reason = auth_rejection_reason(
+            response, client_id, identity, signature, self.cfg.host.id, nonce
         )
-        if not ok:
+        if reason is not None:
+            self.broker.audit_security_rejection(
+                op="auth",
+                caller=client_id,
+                transport="websocket",
+                detail=reason,
+                peer=self._peer_label(),
+            )
             write_text(self.request, json.dumps({
                 "protocol": PROTOCOL,
                 "type": "auth.failed",
@@ -90,6 +112,12 @@ class _Handler(socketserver.BaseRequestHandler):
         write_text(self.request, json.dumps({"protocol": PROTOCOL, "type": "auth.ok"}),
                    mask=False)
         return client_id
+
+    def _peer_label(self) -> str:
+        addr = self.client_address
+        if isinstance(addr, tuple) and len(addr) >= 2:
+            return f"{addr[0]}:{addr[1]}"
+        return str(addr)
 
     def _serve_rpc(self, client_id: str) -> None:
         while True:

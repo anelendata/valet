@@ -71,6 +71,46 @@ def test_audit_log_records_policy_denial(cfg, tmp_path):
     assert event["command"] == "curl https://example.com"
 
 
+def test_audit_records_rejected_handshake(cfg, tmp_path):
+    audit_log = tmp_path / "audit.jsonl"
+    c = dataclasses.replace(cfg, audit=AuditConfig(log_path=str(audit_log)))
+
+    Broker(c).audit_security_rejection(
+        op="auth",
+        caller="client_x",
+        transport="websocket",
+        detail="signature verification failed",
+        peer="192.168.1.9:54321",
+    )
+
+    event = json.loads(audit_log.read_text().strip())
+    assert event["op"] == "auth"
+    assert event["phase"] == "handshake"
+    assert event["decision"] == "denied"
+    assert event["ok"] is False
+    assert event["error_class"] == "authentication_failed"
+    assert event["caller"] == "client_x"
+    assert event["transport"] == "websocket"
+    assert event["detail"] == "signature verification failed"
+    assert event["peer"] == "192.168.1.9:54321"
+
+
+def test_audit_rejected_handshake_defaults_caller(cfg, tmp_path):
+    audit_log = tmp_path / "audit.jsonl"
+    c = dataclasses.replace(cfg, audit=AuditConfig(log_path=str(audit_log)))
+
+    Broker(c).audit_security_rejection(
+        op="auth",
+        caller="",
+        transport="websocket",
+        detail="client identity is not approved",
+    )
+
+    event = json.loads(audit_log.read_text().strip())
+    assert event["caller"] == "unknown"
+    assert event["peer"] is None
+
+
 def test_audit_console_prints_summary_and_pretty_json(cfg, capsys):
     c = dataclasses.replace(cfg, audit=AuditConfig())
 
