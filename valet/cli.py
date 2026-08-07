@@ -217,7 +217,7 @@ def _connect(args: argparse.Namespace) -> tuple[ValetClient, object, object | No
     target, _client_cfg = resolve_target(
         host_name=args.host,
         force_local=args.local,
-        client_config_path=args.client_config,
+        client_config_path=args.config,
     )
     cfg = load_config(args.config) if not target.is_remote else None
     return ValetClient(target, cfg), target, cfg
@@ -388,7 +388,7 @@ def _cmd_ping(args: argparse.Namespace) -> int:
 
 
 def _cmd_hosts(args: argparse.Namespace) -> int:
-    cfg = load_client_config(args.client_config)
+    cfg = load_client_config(args.config)
     if not cfg.hosts:
         print(f"valet: no remote hosts configured in {cfg.path}")
         return 0
@@ -450,7 +450,7 @@ def _cmd_processes_kill(args: argparse.Namespace) -> int:
 
 
 def _cmd_client_init(args: argparse.Namespace) -> int:
-    path = Path(args.client_config) if args.client_config else default_client_config_path()
+    path = Path(args.config) if args.config else default_client_config_path()
     if path.exists() and not args.force:
         print(f"valet: {path} already exists. Use --force to replace it.", file=sys.stderr)
         return 2
@@ -555,9 +555,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="valet", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-c", "--config", default=None,
-                   help="path to config.toml (default: repo config.toml or $VALET_CONFIG)")
-    p.add_argument("--client-config", default=None,
-                   help="path to client-only config.toml (default: ~/.valet/client.toml)")
+                   help="path to config.toml — holds both server and "
+                        "[client]/[hosts] sections (default: repo config.toml "
+                        "or $VALET_CONFIG)")
     p.add_argument("--host", default=None,
                    help="configured remote host to use for client commands")
     p.add_argument("--local", action="store_true",

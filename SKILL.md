@@ -66,10 +66,10 @@ valet --host my-main-laptop processes list
 valet --host my-main-laptop repl
 ```
 
-Use a non-default client config when needed:
+Use a non-default config when needed:
 
 ```bash
-valet --client-config client.toml --host my-main-laptop ping
+valet -c /path/to/config.toml --host my-main-laptop ping
 ```
 
 ## Client Config
@@ -127,8 +127,8 @@ valet clients list
 valet clients remove local-ai-box
 ```
 
-Copy the printed client-only TOML to the client machine or pass it with
-`--client-config`.
+Copy the printed client TOML into the client machine's `config.toml` (the
+`[client]` and `[hosts.<name>]` sections), or point at another file with `-c`.
 
 The running `valet serve` process reloads changes to policy, redaction, audit
 settings, and approved LAN client identities from `config.toml`. Restart the

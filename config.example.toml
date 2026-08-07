@@ -38,14 +38,23 @@ id = "my-main-laptop"
 lan = false
 listen = "127.0.0.1:8766"
 
-# Client-only config.toml also supports reconnect tuning for WebSocket hosts:
+# Client config lives in this same file. Every command except `valet serve`
+# reads its [client] and [hosts.<name>] sections from this config.toml by
+# default (override with --client-config or $VALET_CLIENT_CONFIG). With no
+# [hosts], client commands talk to the local daemon over the Unix socket.
 #
 # [client]
+# id = "my-laptop"
+# key = "<shared key approved under [identity.clients] on the host>"
+# default_host = "lan-host"
 # reconnect_max_retries = 5
 # reconnect_backoff_seconds = 0.25
 # reconnect_backoff_max_seconds = 3.0
 #
-# The same keys can be set under [hosts.<name>] to override one host.
+# [hosts.lan-host]
+# url = "ws://192.168.1.25:8766/rpc"
+# host_id = "my-main-laptop"
+# The reconnect keys can also be set under [hosts.<name>] to override one host.
 
 [identity.clients]
 # Approved Level 1 clients go here. Let valet generate and update this section:

@@ -63,7 +63,6 @@ def test_run_global_cwd_attaches_to_exec_request(monkeypatch):
     monkeypatch.setattr("valet.cli._streaming_one_shot", fake_streaming_one_shot)
 
     rc = main([
-        "--client-config", "client.toml",
         "--cwd", "zendesk-jira",
         "run", "--", "ls",
     ])

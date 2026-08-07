@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .config import default_config_path
 from .errors import ConfigError
 
 DEFAULT_CLIENT_CONFIG_ENV = "VALET_CLIENT_CONFIG"
@@ -40,10 +41,17 @@ class ClientConfig:
 
 
 def default_client_config_path() -> Path:
+    """Where non-``serve`` commands look for client config.
+
+    Defaults to the same ``config.toml`` the server uses — a single file holds
+    both the ``[client]`` / ``[hosts]`` sections and the server sections, which
+    each loader reads independently. ``VALET_CLIENT_CONFIG`` overrides it when a
+    separate client-only file is wanted.
+    """
     env = os.environ.get(DEFAULT_CLIENT_CONFIG_ENV)
     if env:
         return Path(_expand(env))
-    return Path(_expand(f"~/.valet/{DEFAULT_CLIENT_CONFIG_NAME}"))
+    return default_config_path()
 
 
 def load_client_config(
