@@ -157,11 +157,21 @@ redact_high_entropy = false
 # inspect or stop subprocesses started by Valet.
 #
 # Everything below is additional local policy.
-# An empty allow list means "allow everything".
+#
+# Command-line policy is best-effort static analysis, not a real boundary: a
+# determined client can compute paths or use tools that read/write internally.
+# For a hard guarantee, run commands under an OS sandbox — see
+# contrib/sandbox-exec/ for a macOS prototype.
+#
+# An empty allow list means "allow everything not otherwise denied". Set a
+# non-empty list to switch to DEFAULT-DENY: only these command basenames may run
+# (cd/pushd/popd stay available for navigation). Strongest posture; opt in when
+# you know the exact tools the client needs, e.g. allow = ["python", "ls", "cat"].
 allow = []
 
-# Additional program-name deny list (matched on the command's basename). Use to
-# forbid a whole tool, e.g. deny = ["rm", "curl"].
+# Additional program-name deny list (matched on the command's basename), on top
+# of the built-in dangerous-command bans. Use to forbid a whole tool, e.g.
+# deny = ["rm", "npm"].
 deny = []
 
 # deny_read_paths: glob patterns of files a command may not reference — valet
@@ -182,12 +192,13 @@ deny_read_paths = [
     # "~/.aws/**",
 ]
 
-# When true, valet refuses a command whose existing file/directory arguments,
-# or requested cwd, resolve outside [exec].workspace. This includes ../ paths
-# and symlinks that point outside. It is best-effort command-line analysis, not
-# an OS sandbox: commands can still compute or open paths internally.
-enforce_workspace_reads = false
+# DEFAULT ON. Refuse a command whose existing file/directory arguments, or
+# requested cwd, resolve outside [exec].workspace — including ../ paths and
+# symlinks that point outside. Best-effort command-line analysis, not an OS
+# sandbox: a command can still compute or open a path internally.
+enforce_workspace_reads = true
 
-# When true (future), a write operation may not touch anything outside the
-# workspace. Not enforced yet.
-enforce_workspace_writes = false
+# DEFAULT ON. Refuse a command whose path-like argument (absolute, ~-rooted, or
+# containing a separator) resolves outside the workspace, even if it does not
+# exist yet — so a new file cannot be written outside. Same best-effort caveat.
+enforce_workspace_writes = true

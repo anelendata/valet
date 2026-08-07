@@ -1,0 +1,63 @@
+;; workspace.sb — macOS Seatbelt (sandbox-exec) profile confining a command to
+;; a single workspace directory.
+;;
+;; This is a PROTOTYPE and is intentionally NOT wired into valet. It shows the
+;; real boundary that command-line policy cannot provide: even if a command
+;; computes a path or opens a file internally, the kernel denies reads/writes
+;; outside the workspace and denies all network access.
+;;
+;; Launch with:  sandbox-exec -D WORKSPACE=/abs/workspace -f workspace.sb CMD...
+;; (use run-sandboxed.sh, which resolves WORKSPACE to an absolute path first.)
+;;
+;; SBPL is undocumented and version-sensitive; the system read paths below cover
+;; recent macOS but may need tuning. Apple deprecates sandbox-exec yet it still
+;; functions; treat this as a reference, not a supported product.
+
+(version 1)
+
+;; Default: deny everything, quietly. While tuning, change to
+;; (deny default (with report)) and watch the Console for what to allow.
+(deny default (with no-log))
+
+;; Let programs launch, fork, and signal themselves.
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+(allow sysctl-read)
+(allow mach-lookup)
+
+;; Allow stat()/metadata broadly so path resolution works; actual content reads
+;; stay restricted to the locations enumerated below.
+(allow file-read-metadata)
+
+;; Read-only access to the system locations needed to load and run executables
+;; and their shared libraries.
+(allow file-read*
+    (subpath "/usr")
+    (subpath "/bin")
+    (subpath "/sbin")
+    (subpath "/System")
+    (subpath "/Library")
+    (subpath "/private/var/db/dyld")
+    (subpath "/private/var/select")
+    (literal "/dev/null")
+    (literal "/dev/zero")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/dtracehelper")
+    (literal "/dev/tty")
+    (literal "/etc/localtime"))
+
+;; The workspace: full read + write. WORKSPACE is supplied at launch with -D.
+(allow file-read* file-write*
+    (subpath (param "WORKSPACE")))
+
+;; System temp dirs many tools expect. Comment these out for a stricter jail
+;; (some programs will then fail to run).
+(allow file-read* file-write*
+    (subpath "/private/tmp")
+    (subpath "/private/var/tmp")
+    (subpath "/private/var/folders"))
+
+;; No network at all — blocks curl/ssh/DNS exfiltration outright.
+(deny network*)

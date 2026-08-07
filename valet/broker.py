@@ -669,6 +669,9 @@ class Broker:
                 response.get("stdout") == _WITHHELD
                 or response.get("stderr") == _WITHHELD
             ),
+            # Visible even when the command was allowed, so probing outside the
+            # workspace is auditable rather than hidden behind a virtual cwd.
+            "referenced_outside_workspace": self._references_outside_workspace(request_dict),
         }
         event["request"] = {
             "op": event["op"],
@@ -699,6 +702,20 @@ class Broker:
 
     def _audit_cwd(self, request: dict) -> Optional[str]:
         return self._resolve_cwd(request.get("cwd"))
+
+    def _references_outside_workspace(self, request: dict) -> bool:
+        raw_cmd = request.get("cmd")
+        if raw_cmd is None:
+            return False
+        shell = bool(request.get("shell", self.cfg.exec.shell))
+        try:
+            cmd = self._normalize_cmd(raw_cmd, shell)
+        except ValetError:
+            cmd = raw_cmd
+        try:
+            return self.policy.references_outside_workspace(cmd, self._audit_cwd(request))
+        except Exception:
+            return False
 
     def _audit_command(self, request: dict, redactor: Redactor) -> Optional[str]:
         raw_cmd = request.get("cmd")

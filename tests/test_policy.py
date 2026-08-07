@@ -83,6 +83,89 @@ def test_explicit_shell_config_allows_shell_commands(cfg):
     assert resp["stdout"] == "ok\n"
 
 
+def test_recon_and_network_commands_are_denied_by_default(cfg):
+    for command in ("whoami", "uname", "hostname", "curl", "ssh", "security",
+                    "ifconfig", "crontab", "open", "pbpaste"):
+        resp = Broker(cfg).handle({"op": "exec", "cmd": [command], "shell": False})
+        assert resp["ok"] is False, command
+        assert resp["error_class"] == "PolicyDenied", command
+        assert resp["detail"] == "command is on the deny list", command
+
+
+# --- allow-list (default-deny when non-empty) --------------------------------
+
+def _allow_cfg(cfg, allow):
+    return dataclasses.replace(cfg, policy=PolicyConfig(allow=allow))
+
+
+def test_empty_allow_list_permits_any_non_denied_command(cfg):
+    resp = Broker(cfg).handle({"op": "exec", "cmd": "echo hi", "shell": True})
+    assert resp["ok"] is True
+
+
+def test_allow_list_permits_listed_command(cfg):
+    c = _allow_cfg(cfg, ("echo",))
+    resp = Broker(c).handle({"op": "exec", "cmd": "echo hi", "shell": True})
+    assert resp["ok"] is True
+    assert resp["stdout"] == "hi\n"
+
+
+def test_allow_list_blocks_unlisted_command(cfg):
+    c = _allow_cfg(cfg, ("echo",))
+    resp = Broker(c).handle({"op": "exec", "cmd": ["ls"], "shell": False})
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+    assert resp["detail"] == "command is not on the allow list"
+
+
+def test_allow_list_still_honors_builtin_deny(cfg):
+    # Allow-listing a dangerous name must not override the built-in deny.
+    c = _allow_cfg(cfg, ("kill",))
+    resp = Broker(c).handle({"op": "exec", "cmd": ["kill", "1"], "shell": False})
+    assert resp["ok"] is False
+    assert resp["detail"] == "command is on the deny list"
+
+
+def test_allow_list_exempts_navigation_builtins(cfg):
+    (Path(cfg.exec.workspace) / "sub").mkdir()
+    (Path(cfg.exec.workspace) / "sub" / "f.txt").write_text("hi\n")
+    c = _allow_cfg(cfg, ("cat",))
+    resp = Broker(c).handle(
+        {"op": "exec", "cmd": "cd sub && cat f.txt", "shell": True}
+    )
+    assert resp["ok"] is True
+    assert resp["stdout"] == "hi\n"
+
+
+# --- workspace write jail ----------------------------------------------------
+
+def test_write_jail_blocks_absolute_path_outside_workspace(cfg, tmp_path):
+    # A brand-new file outside the workspace (does not exist yet) is refused.
+    target = tmp_path / "escapee.txt"
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": ["touch", str(target)], "shell": False}
+    )
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+    assert resp["detail"] == "command targets a path outside the workspace"
+    assert not target.exists()
+
+
+def test_write_jail_allows_new_file_inside_workspace(cfg):
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": ["touch", "created.txt"], "shell": False}
+    )
+    assert resp["ok"] is True
+    assert (Path(cfg.exec.workspace) / "created.txt").exists()
+
+
+def test_write_jail_ignores_non_path_arguments(cfg):
+    # Bare words and flags must not be mistaken for escaping paths.
+    resp = Broker(cfg).handle({"op": "exec", "cmd": ["echo", "hello", "world"]})
+    assert resp["ok"] is True
+    assert "hello world" in resp["stdout"]
+
+
 def test_builtin_dangerous_commands_are_denied(cfg):
     resp = Broker(cfg).handle(
         {"op": "exec", "cmd": ["kill", "12345"], "shell": False}
@@ -159,7 +242,14 @@ def test_config_toml_protection_cannot_be_disabled_in_policy(cfg):
 # --- deny_read_paths (wildcard file bans) ------------------------------------
 
 def _deny_paths_cfg(cfg, patterns):
-    return dataclasses.replace(cfg, policy=PolicyConfig(deny_read_paths=patterns))
+    # These tests exercise deny_read_paths in a scratch dir outside the fixture
+    # workspace, so the (now default-on) workspace jail is disabled here to keep
+    # the two features under independent test.
+    return dataclasses.replace(cfg, policy=PolicyConfig(
+        deny_read_paths=patterns,
+        enforce_workspace_reads=False,
+        enforce_workspace_writes=False,
+    ))
 
 
 def _workspace_read_cfg(cfg):

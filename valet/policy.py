@@ -56,6 +56,26 @@ BUILTIN_DENY: tuple[str, ...] = (
     "sudo", "su", "doas", "login", "passwd",
     "shutdown", "reboot", "halt", "poweroff",
     "launchctl", "osascript",
+    # Host/identity/environment reconnaissance.
+    "whoami", "uname", "hostname", "id", "groups", "w", "who", "last",
+    "finger", "arch", "uptime",
+    "sw_vers", "system_profiler", "hostinfo", "dscl", "defaults", "scutil",
+    "networksetup", "ioreg", "profiles",
+    # Network reconnaissance.
+    "ifconfig", "ipconfig", "netstat", "ss", "arp", "route", "traceroute",
+    "dig", "nslookup", "host", "nmap", "tcpdump",
+    # Network access / data exfiltration.
+    "curl", "wget", "nc", "ncat", "netcat", "telnet",
+    "ssh", "scp", "sftp", "ftp", "rsync",
+    # Credential and keychain access.
+    "security", "ssh-add", "ssh-agent",
+    # Persistence / scheduling.
+    "crontab", "at", "systemctl", "service",
+    # Disk, mount, firmware, and destructive/system-state control.
+    "mount", "umount", "diskutil", "dd", "mkfs", "fdisk",
+    "nvram", "pmset", "kextload", "kextunload", "csrutil", "spctl",
+    # Clipboard / app launching (exfil and out-of-band execution).
+    "open", "pbcopy", "pbpaste",
 )
 
 SHELL_COMMANDS: tuple[str, ...] = (
@@ -120,8 +140,15 @@ class Policy:
                 raise PolicyError("config.toml is protected")
 
             command = _effective_command(sub)
+            is_navigation = command in ("cd", "pushd", "popd")
             if not self.allow_shell and command in SHELL_COMMANDS:
                 raise PolicyError("shell execution is disabled")
+
+            # A non-empty allow list flips to default-deny. Navigation builtins
+            # are exempt so `cd`/`pushd` still work inside an allowed session.
+            if self.allow and command and not is_navigation:
+                if command not in _casefold_names(self.allow):
+                    raise PolicyError("command is not on the allow list")
 
             if command in _casefold_names(BUILTIN_DENY + self.deny):
                 raise PolicyError("command is on the deny list")
@@ -129,6 +156,8 @@ class Policy:
             for tok in sub[1:]:
                 if self.enforce_workspace_reads and self._is_outside_workspace(tok, effective_cwd):
                     raise PolicyError("command references a path outside the workspace")
+                if self.enforce_workspace_writes and self._is_write_outside_workspace(tok, effective_cwd):
+                    raise PolicyError("command targets a path outside the workspace")
                 if self.deny_read_paths:
                     if self._is_denied_path(tok, effective_cwd):
                         raise PolicyError("command references a denied path")
@@ -179,9 +208,46 @@ class Policy:
         path = self._resolve(token, cwd)
         if not os.path.exists(path):
             return False
+        return self._escapes_workspace(path)
+
+    def _is_write_outside_workspace(self, token: Optional[str], cwd: Optional[str]) -> bool:
+        """Whether a path-like token would write outside the workspace.
+
+        Unlike the read check this does not require the path to exist — a new
+        file created outside the workspace is exactly what the write jail must
+        stop. To avoid flagging ordinary arguments, only tokens that look like a
+        path (absolute, ``~``-rooted, or containing a separator) are considered.
+        """
+        if not self.workspace or not token or not _looks_like_path(token):
+            return False
+        return self._escapes_workspace(self._resolve(token, cwd))
+
+    def _escapes_workspace(self, path: str) -> bool:
         workspace = os.path.realpath(os.path.expanduser(os.path.expandvars(self.workspace)))
         target = os.path.realpath(path)
         return target != workspace and not target.startswith(workspace + os.sep)
+
+    def references_outside_workspace(self, cmd: Command, cwd: Optional[str]) -> bool:
+        """Detection only (never raises): does the command touch an existing
+        path outside the workspace? Used to flag probing in the audit log even
+        when enforcement is disabled."""
+        if not self.workspace:
+            return False
+        if self._is_outside_workspace(cwd, None):
+            return True
+        effective_cwd = cwd
+        for sub in _split_subcommands(cmd):
+            for tok in sub[1:] if sub else ():
+                if self._is_outside_workspace(tok, effective_cwd):
+                    return True
+            if sub and sub[0] in ("cd", "pushd") and len(sub) >= 2:
+                effective_cwd = self._resolve(sub[1], effective_cwd)
+        return False
+
+
+def _looks_like_path(token: str) -> bool:
+    """A token that plausibly names a filesystem path (not a bare flag/word)."""
+    return token.startswith(("/", "~", "./", "../")) or "/" in token
 
 
 def _split_subcommands(cmd: Command) -> list[list[str]]:

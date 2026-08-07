@@ -307,7 +307,7 @@ def test_bare_single_string_secret_file_is_redacted(cfg, workspace, tmp_path):
     """A secret file that is just one raw token (no KEY=VALUE) is still masked."""
     import dataclasses
 
-    token_file = tmp_path / "auth_token.txt"
+    token_file = workspace / "auth_token.txt"
     token_file.write_text("aabbccdd-fake-token-value-xyz-9999\n")
     c = dataclasses.replace(
         cfg,
@@ -315,7 +315,7 @@ def test_bare_single_string_secret_file_is_redacted(cfg, workspace, tmp_path):
             cfg.redaction, secret_sources=(str(token_file),)),
     )
     resp = Broker(c).handle(
-        {"op": "exec", "cmd": f"cat {token_file}", "cwd": str(workspace)}
+        {"op": "exec", "cmd": "cat auth_token.txt", "cwd": str(workspace)}
     )
     assert "aabbccdd-fake-token-value-xyz-9999" not in resp["stdout"]
     assert "REDACTED" in resp["stdout"]
@@ -325,7 +325,7 @@ def test_whole_file_content_masked_as_one_blob(cfg, workspace, tmp_path):
     """cat of a declared secret file masks the entire content, not just values."""
     import dataclasses
 
-    creds = tmp_path / "credentials"
+    creds = workspace / "credentials"
     creds.write_text(
         "[default]\n"
         "aws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
@@ -337,7 +337,7 @@ def test_whole_file_content_masked_as_one_blob(cfg, workspace, tmp_path):
             cfg.redaction, secret_sources=(str(creds),)),
     )
     resp = Broker(c).handle(
-        {"op": "exec", "cmd": f"cat {creds}", "cwd": str(workspace)}
+        {"op": "exec", "cmd": "cat credentials", "cwd": str(workspace)}
     )
     out = resp["stdout"]
     assert "EXAMPLE" not in out                 # no key material

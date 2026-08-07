@@ -71,6 +71,31 @@ def test_audit_log_records_policy_denial(cfg, tmp_path):
     assert event["command"] == "curl https://example.com"
 
 
+def test_audit_flags_reference_to_path_outside_workspace(cfg, tmp_path):
+    audit_log = tmp_path / "audit.jsonl"
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    c = dataclasses.replace(cfg, audit=AuditConfig(log_path=str(audit_log)))
+
+    # The command is denied by the (default) read jail, but the audit event
+    # still records that it reached for a path outside the workspace.
+    resp = Broker(c).handle({"op": "exec", "cmd": ["ls", "-la", str(outside)]})
+
+    assert resp["ok"] is False
+    event = json.loads(audit_log.read_text().strip())
+    assert event["referenced_outside_workspace"] is True
+
+
+def test_audit_does_not_flag_workspace_local_command(cfg, tmp_path):
+    audit_log = tmp_path / "audit.jsonl"
+    c = dataclasses.replace(cfg, audit=AuditConfig(log_path=str(audit_log)))
+
+    Broker(c).handle({"op": "exec", "cmd": "pwd", "shell": True})
+
+    event = json.loads(audit_log.read_text().strip())
+    assert event["referenced_outside_workspace"] is False
+
+
 def test_audit_records_rejected_handshake(cfg, tmp_path):
     audit_log = tmp_path / "audit.jsonl"
     c = dataclasses.replace(cfg, audit=AuditConfig(log_path=str(audit_log)))

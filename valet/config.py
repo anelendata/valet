@@ -51,15 +51,16 @@ class RedactionConfig:
 
 @dataclass(frozen=True)
 class PolicyConfig:
-    # Empty allow == allow everything (permissive v1). Reserved for future use.
+    # Empty allow == allow everything not otherwise denied. Set a non-empty list
+    # to switch to default-deny: only these command names may run.
     allow: tuple[str, ...] = ()
     deny: tuple[str, ...] = ()
     # Glob patterns of files a command may not reference (supports ** / * / ?).
     deny_read_paths: tuple[str, ...] = ()
-    # When true, existing command-line paths must remain inside the workspace.
-    enforce_workspace_reads: bool = False
-    # When true (future), commands may not write outside the workspace.
-    enforce_workspace_writes: bool = False
+    # Confine command-line paths to the workspace. Both default on: reads reject
+    # existing paths outside it, writes reject path-like targets outside it.
+    enforce_workspace_reads: bool = True
+    enforce_workspace_writes: bool = True
 
 
 @dataclass(frozen=True)
@@ -167,8 +168,8 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             allow=tuple(pol.get("allow", ())),
             deny=tuple(pol.get("deny", ())),
             deny_read_paths=tuple(pol.get("deny_read_paths", ())),
-            enforce_workspace_reads=bool(pol.get("enforce_workspace_reads", False)),
-            enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", False)),
+            enforce_workspace_reads=bool(pol.get("enforce_workspace_reads", True)),
+            enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", True)),
         ),
         http=HttpConfig(
             host=str(http.get("host", "127.0.0.1")),

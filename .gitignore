@@ -23,3 +23,7 @@ build/
 .secrets
 .env
 *.pem
+
+# Copied-in audit logs (never commit real audit data)
+audit.jsonl
+*.jsonl
