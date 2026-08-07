@@ -7,10 +7,12 @@ Subcommands:
   valet serve-http      run the HTTP broker adapter with bearer auth
   valet serve-lan       run the Level 1 WebSocket RPC host adapter
   valet run CMD...      run an argv (no shell) and print redacted output
-  valet sh 'CMDLINE'    run a shell command line and print redacted output
+  valet sh 'CMDLINE'    run a shell command line when [exec].shell=true
   valet call --json ..  send a raw request object to the daemon
   valet ping            check the selected host
   valet hosts           list configured client hosts
+  valet processes list  list subprocesses started by valet
+  valet processes kill  terminate a subprocess started by valet
   valet client init     create a client-only config.toml
   valet clients add     generate and approve a host-side client key
   valet clients list    list host-approved client identities
@@ -30,7 +32,7 @@ from pathlib import Path
 
 from .client_config import default_client_config_path, load_client_config, write_new_client_config
 from .config import default_config_path, load_config
-from .errors import ValetError
+from .errors import ValetError, ValidationError
 from .host_config import (
     client_config_snippet,
     find_client_identity,
@@ -106,6 +108,7 @@ def _cmd_repl(args: argparse.Namespace) -> int:
         return 2
     try:
         session = Session(
+            shell=cfg.exec.shell if cfg else False,
             host_label=target.name if target.is_remote else None,
             completion_workspace=(cfg.exec.workspace
                                   if cfg and cfg.policy.enforce_workspace_reads else None),
@@ -182,6 +185,26 @@ def _print_response(resp: dict) -> int:
     return 0 if resp.get("ok") else 1
 
 
+def _parse_env_args(values: list[str] | None) -> dict[str, str] | None:
+    if not values:
+        return None
+    env: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            raise ValidationError("--env must be NAME=VALUE")
+        name, value = item.split("=", 1)
+        if not name:
+            raise ValidationError("--env name cannot be empty")
+        env[name] = value
+    return env
+
+
+def _attach_env(args: argparse.Namespace, req: dict) -> None:
+    env = _parse_env_args(getattr(args, "env", None))
+    if env:
+        req["env"] = env
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     command = list(args.command)
     if command and command[0] == "--":  # `valet run -- cmd ...`
@@ -193,6 +216,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
            "timeout": args.timeout}
     if args.cwd:
         req["cwd"] = args.cwd
+    _attach_env(args, req)
     return _streaming_one_shot(args, req)
 
 
@@ -201,6 +225,7 @@ def _cmd_sh(args: argparse.Namespace) -> int:
            "timeout": args.timeout}
     if args.cwd:
         req["cwd"] = args.cwd
+    _attach_env(args, req)
     return _streaming_one_shot(args, req)
 
 
@@ -225,6 +250,57 @@ def _cmd_hosts(args: argparse.Namespace) -> int:
     for name, host in sorted(cfg.hosts.items()):
         marker = "*" if name == cfg.default_host else " "
         print(f"{marker} {name}\t{host.url}\tclient_id={host.client_id or cfg.id}")
+    return 0
+
+
+def _cmd_processes_list(args: argparse.Namespace) -> int:
+    try:
+        conn, _target, _cfg = _connect(args)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request({"op": "processes.list"})
+    finally:
+        conn.close()
+    if not resp.get("ok"):
+        return _print_response(resp)
+    processes = resp.get("processes") or []
+    if not processes:
+        print("valet: no running subprocesses")
+        return 0
+    print("PID\tSECONDS\tSHELL\tCOMMAND")
+    for item in processes:
+        print(
+            f"{item.get('pid')}\t"
+            f"{item.get('runtime_seconds')}\t"
+            f"{str(bool(item.get('shell'))).lower()}\t"
+            f"{item.get('cmd') or ''}"
+        )
+    return 0
+
+
+def _cmd_processes_kill(args: argparse.Namespace) -> int:
+    try:
+        conn, _target, _cfg = _connect(args)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request({"op": "processes.kill", "pid": args.pid})
+    finally:
+        conn.close()
+    if not resp.get("ok"):
+        return _print_response(resp)
+    print(f"valet: killed subprocess {resp.get('pid')}")
     return 0
 
 
@@ -332,6 +408,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="configured remote host to use for client commands")
     p.add_argument("--local", action="store_true",
                    help="force the local Unix-domain socket transport")
+    p.add_argument("-e", "--env", "-env", action="append", default=[],
+                   metavar="NAME=VALUE",
+                   help="set an environment variable for run/sh without shell syntax")
     p.set_defaults(func=_cmd_repl)  # no subcommand => REPL
     sub = p.add_subparsers(dest="cmd")
 
@@ -345,6 +424,17 @@ def build_parser() -> argparse.ArgumentParser:
                    ).set_defaults(func=_cmd_repl)
     sub.add_parser("ping", help="check the selected host").set_defaults(func=_cmd_ping)
     sub.add_parser("hosts", help="list configured remote hosts").set_defaults(func=_cmd_hosts)
+
+    processes = sub.add_parser("processes", help="inspect or kill valet subprocesses")
+    processes_sub = processes.add_subparsers(dest="processes_cmd", required=True)
+    processes_sub.add_parser("list", help="list running valet subprocesses"
+                             ).set_defaults(func=_cmd_processes_list)
+    processes_kill = processes_sub.add_parser(
+        "kill",
+        help="terminate a running valet subprocess",
+    )
+    processes_kill.add_argument("pid", type=int)
+    processes_kill.set_defaults(func=_cmd_processes_kill)
 
     client = sub.add_parser("client", help="manage client-only configuration")
     client_sub = client.add_subparsers(dest="client_cmd", required=True)
@@ -385,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
     sh.set_defaults(func=_cmd_sh)
 
     call = sub.add_parser("call", help="send a raw JSON request to the daemon")
-    call.add_argument("--json", required=True, help='e.g. \'{"op":"exec","cmd":"env"}\'')
+    call.add_argument("--json", required=True, help='e.g. \'{"op":"ping"}\'')
     call.set_defaults(func=_cmd_call)
     return p
 

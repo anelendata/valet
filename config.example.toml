@@ -92,8 +92,10 @@ console = true
 # daemon's own working directory and impose no cd jail.
 workspace = "~"
 
-# Run commands through a shell by default (pipes, globs, redirection).
-shell = true
+# Shell execution is disabled by default. Leave this false unless you trust all
+# clients of this host and need shell syntax such as pipes, globs, redirects, or
+# `&&`. Prefer `valet --env NAME=value run ...` for per-command env vars.
+shell = false
 
 [redaction]
 # ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
@@ -143,12 +145,18 @@ redact_high_entropy = false
 [policy]
 # ==== FAMILY 2: block EXECUTION — decide whether the command runs at all ====
 #
-# PERMISSIVE by default — everything below is off unless you set it.
+# PERMISSIVE by default except for Valet's built-in dangerous command bans:
+# environment/process/system-control commands such as env/printenv/kill/pkill/
+# killall/ps/sudo/reboot, common shell executables when [exec].shell=false, and
+# valet itself. Use `valet processes list` and `valet processes kill <pid>` to
+# inspect or stop subprocesses started by Valet.
+#
+# Everything below is additional local policy.
 # An empty allow list means "allow everything".
 allow = []
 
-# Program-name deny list (matched on the command's basename). Use to forbid a
-# whole tool, e.g. deny = ["rm", "curl"].
+# Additional program-name deny list (matched on the command's basename). Use to
+# forbid a whole tool, e.g. deny = ["rm", "curl"].
 deny = []
 
 # deny_read_paths: glob patterns of files a command may not reference — valet

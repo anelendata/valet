@@ -29,7 +29,7 @@ from .errors import (
     ValetError,
     ValidationError,
 )
-from .executor import OutputChunk, RunResult, iter_run, run
+from .executor import OutputChunk, RunResult, iter_run, kill_process, list_processes, run
 from .policy import Policy
 from .sanitize import Redactor
 from .secrets import load_secret_values
@@ -50,6 +50,7 @@ class _ExecPlan:
     shell: bool
     cwd: Optional[str]
     timeout: int
+    extra_env: dict[str, str]
     redactor: Redactor
     echoed: str
 
@@ -113,7 +114,11 @@ class Broker:
         self._lock = threading.RLock()
         self.cfg = cfg
         self._audit_to_console = audit_to_console
-        self.policy = Policy.from_config(cfg.policy, cfg.exec.workspace)
+        self.policy = Policy.from_config(
+            cfg.policy,
+            cfg.exec.workspace,
+            allow_shell=cfg.exec.shell,
+        )
         self.audit = AuditLogger(
             log_path=cfg.audit.log_path,
             console=audit_to_console,
@@ -123,7 +128,11 @@ class Broker:
         """Replace mutable config-backed state for future requests."""
         with self._lock:
             self.cfg = cfg
-            self.policy = Policy.from_config(cfg.policy, cfg.exec.workspace)
+            self.policy = Policy.from_config(
+                cfg.policy,
+                cfg.exec.workspace,
+                allow_shell=cfg.exec.shell,
+            )
             self.audit = AuditLogger(
                 log_path=cfg.audit.log_path,
                 console=self._audit_to_console and cfg.audit.console,
@@ -160,6 +169,12 @@ class Broker:
             if op == "complete":
                 response = {**base, **self._complete(request)}
                 return response
+            if op == "processes.list":
+                response = {**base, **self._processes_list(request)}
+                return response
+            if op == "processes.kill":
+                response = {**base, **self._processes_kill(request)}
+                return response
             raise ValidationError(f"unknown op: {op!r}")
         except ValetError as exc:
             response = {
@@ -185,7 +200,13 @@ class Broker:
         plan = self._exec_plan(request)
 
         try:
-            result = run(plan.cmd, shell=plan.shell, cwd=plan.cwd, timeout=plan.timeout)
+            result = run(
+                plan.cmd,
+                shell=plan.shell,
+                cwd=plan.cwd,
+                timeout=plan.timeout,
+                extra_env=plan.extra_env,
+            )
         except (TimeoutError_, CommandError) as exc:
             return {
                 "op": "exec", "ok": False, "error_class": exc.error_class,
@@ -237,6 +258,7 @@ class Broker:
                 shell=plan.shell,
                 cwd=plan.cwd,
                 timeout=plan.timeout,
+                extra_env=plan.extra_env,
                 cancel_event=cancel_event,
             ):
                 if isinstance(item, OutputChunk):
@@ -338,6 +360,31 @@ class Broker:
         candidates = completion_candidates(line, cwd, workspace=workspace)
         return {"op": "complete", "ok": True, "cwd": cwd, "candidates": candidates}
 
+    def _processes_list(self, request: dict) -> dict:
+        processes = [
+            {
+                "pid": item.pid,
+                "cmd": item.cmd,
+                "shell": item.shell,
+                "cwd": item.cwd,
+                "started_at": item.started_at,
+                "runtime_seconds": round(item.runtime_seconds, 3),
+            }
+            for item in list_processes()
+        ]
+        return {"op": "processes.list", "ok": True, "processes": processes}
+
+    def _processes_kill(self, request: dict) -> dict:
+        try:
+            pid = int(request.get("pid"))
+        except (TypeError, ValueError):
+            raise ValidationError("pid must be an integer")
+        if pid <= 0:
+            raise ValidationError("pid must be positive")
+        if not kill_process(pid):
+            raise PolicyError("process is not a valet subprocess")
+        return {"op": "processes.kill", "ok": True, "pid": pid, "killed": True}
+
     # -- helpers ---------------------------------------------------------------
 
     def _exec_plan(self, request: dict) -> _ExecPlan:
@@ -346,7 +393,10 @@ class Broker:
             raise ValidationError("missing 'cmd'")
 
         shell = bool(request.get("shell", self.cfg.exec.shell))
+        if shell and not self.cfg.exec.shell:
+            raise PolicyError("shell execution is disabled")
         cmd = self._normalize_cmd(raw_cmd, shell)
+        extra_env = self._normalize_env(request.get("env"))
 
         cwd = request.get("cwd") or self.cfg.exec.workspace
         cwd = os.path.expanduser(cwd) if cwd else None
@@ -358,10 +408,10 @@ class Broker:
         # Policy gate (permissive in v0.2; see valet/policy.py).
         self.policy.check(cmd, cwd)
 
-        redactor = self._redactor_for(cwd)
+        redactor = self._redactor_for(cwd, extra_values=extra_env.values())
         echoed = cmd if isinstance(cmd, str) else shlex.join(cmd)
         return _ExecPlan(cmd=cmd, shell=shell, cwd=cwd, timeout=timeout,
-                         redactor=redactor, echoed=echoed)
+                         extra_env=extra_env, redactor=redactor, echoed=echoed)
 
     @staticmethod
     def _normalize_cmd(raw_cmd, shell: bool):
@@ -378,13 +428,33 @@ class Broker:
                 raise ValidationError(f"could not parse command: {exc}") from exc
         return [str(t) for t in raw_cmd]
 
-    def _redactor_for(self, cwd: Optional[str]) -> Redactor:
+    @staticmethod
+    def _normalize_env(raw_env: Any) -> dict[str, str]:
+        if raw_env in (None, {}):
+            return {}
+        if not isinstance(raw_env, dict):
+            raise ValidationError("env must be an object")
+        env: dict[str, str] = {}
+        for key, value in raw_env.items():
+            name = str(key)
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValidationError("env names must be valid shell identifiers")
+            env[name] = str(value)
+        return env
+
+    def _redactor_for(
+        self,
+        cwd: Optional[str],
+        *,
+        extra_values=(),
+    ) -> Redactor:
         sources = list(self.cfg.redaction.secret_sources)
         if cwd:
             for name in self.cfg.redaction.cwd_secret_files:
                 sources.append(os.path.join(cwd, name))
         values = load_secret_values(sources)
         values.extend(v for v in self.cfg.redaction.extra_values if v)
+        values.extend(v for v in extra_values if v)
         return Redactor.build(
             values, self.cfg.fingerprint_salt,
             suspected=self.cfg.redaction.redact_suspected,
@@ -495,7 +565,11 @@ class Broker:
         return event
 
     def _audit_redactor(self, request: dict) -> Redactor:
-        return self._redactor_for(self._audit_cwd(request))
+        try:
+            extra_env = self._normalize_env(request.get("env"))
+        except ValetError:
+            extra_env = {}
+        return self._redactor_for(self._audit_cwd(request), extra_values=extra_env.values())
 
     def _audit_cwd(self, request: dict) -> Optional[str]:
         cwd = request.get("cwd") or self.cfg.exec.workspace

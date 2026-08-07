@@ -37,7 +37,7 @@ Type any command to run it; output has secrets redacted.
 `cd <dir>` sticks for the session (jailed to the workspace). Meta-commands:
   :help, :?            this help
   :cwd [dir]           show or change the working directory (same as `cd`)
-  :shell [on|off]      show or toggle shell mode (default on)
+  :shell [on|off]      show or toggle shell mode (default off)
   :secrets             how many secret values are being redacted for the cwd
   :call <json>         send a raw request object to the daemon
   :quit, :exit         leave (Ctrl-D also works)
@@ -52,7 +52,7 @@ BANNER = (
 @dataclass
 class Session:
     cwd: Optional[str] = None      # None => daemon's configured workspace
-    shell: bool = True
+    shell: bool = False
     host_label: Optional[str] = None
     completion_send: Optional[Send] = None
     # Set by the CLI when policy.enforce_workspace_reads is enabled.

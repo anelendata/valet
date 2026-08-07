@@ -15,8 +15,14 @@ redacts known and suspected secret values, and returns only the sanitized result
   or other configured secret sources.
 - Prefer narrow, read-only diagnostic commands. Avoid using Valet as a generic
   secret printer or broad data tunnel.
-- Use `valet run -- ...` for exact argv execution. Use `valet sh '...'` only
-  when shell features such as pipes, globs, variables, or redirection are needed.
+- Use `valet run -- ...` for exact argv execution. Shell is disabled by default;
+  use `valet sh '...'` only when the trusted host explicitly enables
+  `[exec] shell = true`.
+- Use `valet --env NAME=value run -- ...` for per-command environment variables
+  instead of shell assignment syntax.
+- Do not use host process tools such as `ps`, `kill`, `pkill`, or `killall`.
+  Use `valet processes list` and `valet processes kill <pid>` for subprocesses
+  that Valet itself started.
 - For interactive work, use `valet repl` or bare `valet`.
 - If a WebSocket command fails after it was already sent, do not assume it was
   not executed. Valet reconnects for the next prompt but does not silently
@@ -30,7 +36,7 @@ machine. It is selected by default when no remote host is configured.
 ```bash
 valet ping
 valet run -- aws sts get-caller-identity --profile prod-readonly
-valet sh 'aws s3 ls | head'
+valet --env AWS_PROFILE=prod-readonly run -- aws sts get-caller-identity
 valet repl
 ```
 
@@ -47,7 +53,8 @@ LAN mode uses a client-only `client.toml` and WebSocket RPC to a trusted host:
 valet hosts
 valet --host my-main-laptop ping
 valet --host my-main-laptop run -- handoff status
-valet --host my-main-laptop sh 'aws s3 ls | head'
+valet --host my-main-laptop --env AWS_PROFILE=prod-readonly run -- aws s3 ls
+valet --host my-main-laptop processes list
 valet --host my-main-laptop repl
 ```
 
@@ -143,6 +150,10 @@ Useful meta-commands:
 Tab completion, history navigation, and command execution use the same client
 transport as one-shot commands. In LAN mode, completion candidates come from the
 host, not from the client sandbox.
+
+Shell mode starts off unless the selected local host config explicitly enables
+it. Built-in dangerous command bans apply in every transport, including local
+mode, LAN WebSocket mode, and future relays.
 
 ## Proxy And Reconnect
 

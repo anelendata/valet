@@ -53,6 +53,33 @@ def test_command_not_found_argv(cfg):
     assert resp["exit_code"] == 127
 
 
+def test_extra_env_is_passed_without_shell_and_redacted(cfg):
+    value = "tiny-profile-secret-value"
+    script = "import os; print(os.environ['AWS_PROFILE'])"
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", script],
+        "shell": False,
+        "env": {"AWS_PROFILE": value},
+    })
+
+    assert resp["ok"] is True
+    assert value not in resp["stdout"]
+    assert "REDACTED:secret:" in resp["stdout"]
+
+
+def test_bad_env_name_is_rejected(cfg):
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": ["echo", "ok"],
+        "shell": False,
+        "env": {"BAD-NAME": "x"},
+    })
+
+    assert resp["ok"] is False
+    assert resp["error_class"] == "ValidationError"
+
+
 def test_missing_cmd_rejected(cfg):
     resp = Broker(cfg).handle({"op": "exec"})
     assert resp["ok"] is False

@@ -28,8 +28,9 @@ def _expand(path: str) -> str:
 class ExecConfig:
     # Default working directory for commands, and the future write-jail root.
     workspace: Optional[str] = None
-    # Run through a shell by default (permissive shell-wrapper behavior).
-    shell: bool = True
+    # Shell execution is disabled by default. Set shell=true explicitly only for
+    # trusted hosts that need shell syntax.
+    shell: bool = False
 
 
 @dataclass(frozen=True)
@@ -154,7 +155,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
         fingerprint_salt=salt,
         exec=ExecConfig(
             workspace=_expand(workspace) if workspace else None,
-            shell=bool(exec_.get("shell", True)),
+            shell=bool(exec_.get("shell", False)),
         ),
         redaction=RedactionConfig(
             secret_sources=tuple(_expand(s) for s in red.get("secret_sources", ())),

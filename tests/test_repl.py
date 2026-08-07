@@ -48,7 +48,7 @@ def test_plain_line_runs_as_command():
     assert keep is True
     assert sent[0]["op"] == "exec"
     assert sent[0]["cmd"] == "echo hi"
-    assert sent[0]["shell"] is True
+    assert sent[0]["shell"] is False
     assert out == "hi"
 
 
@@ -84,7 +84,7 @@ def test_cd_sticks_for_session():
     assert sent[0]["op"] == "chdir"        # not an exec
     # a subsequent command runs in the new dir
     run_command("ls", sess, send)
-    assert sent[1] == {"op": "exec", "cmd": "ls", "shell": True, "cwd": "/ws/x-com"}
+    assert sent[1] == {"op": "exec", "cmd": "ls", "shell": False, "cwd": "/ws/x-com"}
 
 
 def test_bare_cd_returns_to_workspace_root():
@@ -112,10 +112,10 @@ def test_prompt_shows_last_dir_name():
 def test_meta_shell_toggle_changes_requests():
     send, sent = _recorder()
     sess = Session()
-    run_command(":shell off", sess, send)
-    assert sess.shell is False
+    run_command(":shell on", sess, send)
+    assert sess.shell is True
     run_command("echo hi", sess, send)
-    assert sent[0]["shell"] is False
+    assert sent[0]["shell"] is True
 
 
 def test_meta_help_does_not_send():

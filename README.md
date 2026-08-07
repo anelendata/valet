@@ -138,8 +138,8 @@ its hardened Codex or Claude Code sandbox, where it cannot read `.env`,
 result of an approved privileged command, it calls valet instead:
 
 ```bash
-sandbox$ valet run -- aws s3 ls s3://my-prod-bucket/releases/ --profile prod-readonly
-sandbox$ valet sh 'psql "$DATABASE_URL" --csv -c "select status, count(*) from jobs group by status"'
+sandbox$ valet --env AWS_PROFILE=prod-readonly run -- aws s3 ls s3://my-prod-bucket/releases/
+sandbox$ valet run -- psql --csv -c "select status, count(*) from jobs group by status"
 ```
 
 From the user's point of view, this gives the agent useful operational output
@@ -454,8 +454,9 @@ Then, from anywhere (including the agent):
 
 ```bash
 valet run -- aws s3 ls                   # argv, no shell (exact)
-valet sh 'aws s3 ls | grep prod'         # shell: pipes, globs, redirection
-valet call --json '{"op":"exec","cmd":"env"}'
+valet --env AWS_PROFILE=prod run -- aws s3 ls
+valet sh 'aws s3 ls | grep prod'         # requires [exec] shell = true
+valet call --json '{"op":"ping"}'
 ```
 
 `run`/`sh` print redacted stdout/stderr and exit with the command's code, so
@@ -579,6 +580,29 @@ The knobs split into two families that do fundamentally different things:
 | `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
 | `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
 | `audit.log_path` | Appends metadata-only JSON objects for requests; streamed execs get an immediate `started` event plus a final event | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
+
+By default, `[exec].shell` is `false`; `valet sh`, REPL shell mode, and direct
+shell executables such as `sh -c` are refused unless the host explicitly sets
+`shell = true`. Valet also starts with built-in dangerous command bans for
+environment/process/system-control commands such as `env`, `printenv`, `kill`,
+`pkill`, `killall`, `ps`, `sudo`, `reboot`, `halt`, `launchctl`, `osascript`,
+and `valet` itself.
+
+When a command launched by Valet needs to be inspected or stopped, use Valet's
+own process registry instead of host process tools:
+
+```bash
+valet processes list
+valet processes kill <pid>
+```
+
+Only subprocesses started and currently tracked by Valet can be killed this way.
+
+For per-command environment variables, prefer shell-free argv mode:
+
+```bash
+valet --env AWS_PROFILE=prod-readonly run -- aws s3 ls
+```
 
 **`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
 difference is only *how the file is located*. `secret_sources` is one fixed
