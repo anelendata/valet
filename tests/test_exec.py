@@ -595,3 +595,26 @@ def test_per_command_env_overrides_config_default(cfg, workspace):
     })
     assert resp["ok"] is True
     assert resp["stdout"].strip() == "xx"  # per-command wins over the config default
+
+
+def test_valet_workspace_expands_in_argv_args(cfg, workspace):
+    # No shell, but `$VALET_WORKSPACE` in an argument still resolves.
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", "import sys; print(sys.argv[1])", "$VALET_WORKSPACE"],
+        "shell": False,
+    })
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "./"  # workspace root, virtualized
+
+
+def test_valet_workspace_braced_expands_in_argv_args(cfg, workspace):
+    (workspace / "sub").mkdir()
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", "import sys; print(sys.argv[1])",
+                "${VALET_WORKSPACE}/sub"],
+        "shell": False,
+    })
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "./sub"

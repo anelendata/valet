@@ -369,3 +369,15 @@ def test_connection_lost_message_falls_back_without_detail():
         _connection_lost_message(ConnectionError())
         == "connection to daemon lost. Exiting."
     )
+
+
+def test_prompt_truncates_deep_virtual_path():
+    from valet.repl import prompt_for
+    deep = "./handoff_bos/operation/customers/etl_tasks/projects/zendesk-jira"
+    assert prompt_for(Session(cwd=deep)) == "./…/zendesk-jira valet> "
+
+
+def test_prompt_keeps_shallow_virtual_path():
+    from valet.repl import prompt_for
+    assert prompt_for(Session(cwd="./")) == "./ valet> "
+    assert prompt_for(Session(cwd="./a/b")) == "./a/b valet> "

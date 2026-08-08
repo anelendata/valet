@@ -492,6 +492,25 @@ scrubs whatever slips through another way.
 > `secret_sources` / `cwd_secret_files`. "no one should *see* this file" →
 > `deny_read_paths`. "this program shouldn't run" → `policy.deny`.
 
+### Default environment variables
+
+valet exports VALET_WORKSPACE=<real workspace root> into every command's
+environment (exactly like it already sets PWD and prepends <workspace>/bin).
+You can use it like:
+
+```
+# shell=true mode
+AWS_SHARED_CREDENTIALS_FILE=$VALET_WORKSPACE/.aws/credentials aws s3 ls
+```
+
+For the recurring case, set it once in config so you never retype it. Add an [exec].env table that valet applies to every command, expanding $VALET_WORKSPACE:
+
+```
+[exec.env]
+AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
+AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
+```
+
 ## Guardrails
 
 Valet also starts with built-in dangerous command bans for

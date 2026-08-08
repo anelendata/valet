@@ -472,6 +472,15 @@ class Broker:
         if config_env:
             extra_env = {**config_env, **extra_env}
 
+        # In argv mode there is no shell to expand $VALET_WORKSPACE, so valet
+        # substitutes that one variable itself — in the command's arguments and
+        # its env values — so `ls $VALET_WORKSPACE` works. (Shell mode leaves all
+        # expansion to the shell.)
+        if not shell and root:
+            if isinstance(cmd, list):
+                cmd = [_expand_workspace(token, root) for token in cmd]
+            extra_env = {k: _expand_workspace(v, root) for k, v in extra_env.items()}
+
         cwd = self._resolve_cwd(request.get("cwd"))
         if cwd is not None and not os.path.isdir(cwd):
             raise ValidationError("cwd does not exist")

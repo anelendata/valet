@@ -265,18 +265,30 @@ def format_exec(resp: dict) -> Optional[str]:
 
 
 def prompt_for(session: Session) -> str:
-    """`<cwd> valet> `, or plain `valet> ` if the cwd is unknown.
-
-    A virtual workspace path ("./...") is shown in full so it reads as
-    workspace-relative, never as the real filesystem root. A real absolute path
-    (no workspace jail) falls back to its basename to keep the prompt short.
-    """
+    """`<cwd> valet> `, or plain `valet> ` if the cwd is unknown."""
     prefix = f"{session.host_label}:" if session.host_label else ""
     cwd = session.cwd
     if cwd:
-        shown = cwd if cwd.startswith("./") else (os.path.basename(cwd.rstrip("/")) or cwd)
-        return f"{prefix}{shown} valet> "
+        return f"{prefix}{_short_cwd(cwd)} valet> "
     return f"{prefix}valet> "
+
+
+def _short_cwd(cwd: str) -> str:
+    """A compact prompt label for the cwd.
+
+    A virtual workspace path ("./...") keeps its "./" marker so it never reads
+    as the real filesystem root; deep paths collapse to "./…/<last>" to keep the
+    prompt short. A real absolute path (no workspace jail) shows its basename.
+    """
+    if not cwd.startswith("./"):
+        return os.path.basename(cwd.rstrip("/")) or cwd
+    rel = cwd[2:].strip("/")
+    if not rel:
+        return "./"
+    parts = rel.split("/")
+    if len(parts) <= 2:
+        return "./" + "/".join(parts)
+    return "./…/" + parts[-1]
 
 
 def _word_start(line: str) -> int:
