@@ -3,7 +3,8 @@
 #
 # Creates a throwaway workspace, then runs a handful of commands through
 # run-sandboxed.sh. Inside the workspace succeeds; reading the home directory,
-# reading ~/.aws, writing outside, and network access all fail at the kernel.
+# reading ~/.aws, and writing outside all fail at the kernel. Network is allowed
+# by default (cloud tools need it).
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -42,9 +43,11 @@ run_case "read AWS credentials (expect DENIED)" \
 run_case "write into the home directory (expect DENIED)" \
   sh -c 'echo escapee > "$HOME/valet-escapee-demo.txt" && echo wrote'
 
-run_case "reach the network (expect DENIED)" \
+# Network is allowed by default (cloud tools need it). Uncomment the
+# (deny network*) line in workspace.sb to block it, then this would fail.
+run_case "reach the network (expect ALLOWED by default)" \
   sh -c 'curl -sS --max-time 5 https://example.com >/dev/null && echo fetched'
 
 echo
-echo "Done. Inside the workspace worked; every escape was blocked by the kernel,"
-echo "not by command-line analysis."
+echo "Done. Inside the workspace worked; file-system escapes were blocked by the"
+echo "kernel, not by command-line analysis. (Network is allowed by default.)"

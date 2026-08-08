@@ -6,8 +6,9 @@
 ;; (run-sandboxed.sh resolves WORKSPACE to an absolute path first.)
 ;;
 ;; DESIGN: this uses (allow default) as the base, then carves out the sensitive
-;; reads, jails writes to the workspace, and denies the network. That is a
-;; deliberate trade-off. A hand-rolled (deny default) profile is stricter on
+;; reads and jails writes to the workspace (network is left allowed — see
+;; below). That is a deliberate trade-off. A hand-rolled (deny default) profile
+;; is stricter on
 ;; paper but reliably ABORTS ordinary programs at launch (exit -6 / SIGABRT)
 ;; because the dynamic linker and system libraries need many paths that are hard
 ;; to enumerate and that change between macOS versions. (allow default) launches
@@ -17,9 +18,14 @@
 ;; What this blocks:
 ;;   - reading home directories, the login keychain, and root's home
 ;;   - writing anywhere except the workspace and scratch temp dirs
-;;   - all network access (curl/ssh/DNS exfiltration)
 ;; What it still allows (weaker than a full jail): reading system locations such
-;; as /etc, /usr, /Library (minus keychains), /opt, /Applications.
+;; as /etc, /usr, /Library (minus keychains), /opt, /Applications, AND the
+;; network — because valet's job is running credentialed cloud commands (aws,
+;; handoff, psql over a network DB), which need it. sandbox-exec cannot filter
+;; network by hostname, so it is all-or-nothing: uncomment the (deny network*)
+;; line at the bottom for a stricter, offline-only profile (that also blocks a
+;; command from exfiltrating over the network, at the cost of breaking cloud
+;; tools).
 
 (version 1)
 
@@ -61,5 +67,6 @@
     (literal "/dev/stderr")
     (literal "/dev/dtracehelper"))
 
-;; --- Network: deny outright ------------------------------------------------
-(deny network*)
+;; --- Network: allowed (see the header). Uncomment to block it entirely —
+;; stops exfiltration over the network, but also breaks aws/handoff/psql. ------
+;; (deny network*)

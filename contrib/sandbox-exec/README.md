@@ -21,21 +21,24 @@ home directory with plain `ls -la /Users/<you>`.
 
 The only thing that stops a *determined* reader is an **OS-level boundary**. This
 prototype is that boundary on macOS: the kernel denies file reads/writes outside
-the workspace and denies all network access, regardless of what the command
-attempts internally.
+the workspace regardless of what the command attempts internally. Network is
+**allowed by default** (valet's job is running cloud tools like `aws`/`handoff`,
+which need it); a commented `(deny network*)` line blocks it for offline-only
+setups.
 
 ## Files
 
 - `workspace.sb` — the Seatbelt (SBPL) profile. Uses `(allow default)` as the
   base (so programs launch reliably), then **blocks reads** of home directories,
-  the login keychain, and root's home; **jails writes** to the workspace and
-  scratch temp; and **denies all network**. This trade-off is deliberate — see
-  "Caveats" for why a stricter `(deny default)` profile aborts programs.
+  the login keychain, and root's home; and **jails writes** to the workspace and
+  scratch temp. Network is left **allowed** (cloud tools need it) with a
+  commented `(deny network*)` line to block it. This trade-off is deliberate —
+  see "Caveats" for why a stricter `(deny default)` profile aborts programs.
 - `run-sandboxed.sh` — resolves the workspace to an absolute path and launches
   `sandbox-exec -D WORKSPACE=... -f workspace.sb <command>`.
 - `demo.sh` — creates a throwaway workspace and shows workspace access
-  succeeding while home-dir reads, `~/.aws` reads, outside writes, and network
-  all fail at the kernel.
+  succeeding while home-dir reads, `~/.aws` reads, and outside writes all fail
+  at the kernel (network is allowed by default).
 
 ## Try it
 
@@ -52,7 +55,7 @@ contrib/sandbox-exec/run-sandboxed.sh ~/work ls -la .
 
 # Denied by the kernel — escapes the workspace:
 contrib/sandbox-exec/run-sandboxed.sh ~/work sh -c 'cat ~/.aws/credentials'
-contrib/sandbox-exec/run-sandboxed.sh ~/work sh -c 'curl https://example.com'
+contrib/sandbox-exec/run-sandboxed.sh ~/work sh -c 'ls -la /Users/$(whoami)'
 ```
 
 ## Caveats (read before trusting it)
@@ -72,9 +75,12 @@ contrib/sandbox-exec/run-sandboxed.sh ~/work sh -c 'curl https://example.com'
   repeatedly, and add each path the Console reports as denied until programs
   launch. Add more `(deny file-read* ...)` carve-outs (e.g. `/opt`, extra
   `/Library` subpaths) to tighten the shipped profile without that risk.
-- **Not a full jail.** This confines file and network access. It does not
-  restrict CPU/memory, IPC, or every mach service, and scratch temp dirs are
-  writable. Treat it as a strong containment layer, not a VM.
+- **Network is allowed by default.** Cloud tools need it, and sandbox-exec
+  can't filter by hostname (it's all-or-nothing), so a command *can* exfiltrate
+  over the network. Uncomment `(deny network*)` for an offline-only jail.
+- **Not a full jail.** This confines file access. It does not restrict
+  CPU/memory, IPC, network (by default), or every mach service, and scratch
+  temp dirs are writable. Treat it as a strong containment layer, not a VM.
 
 ## Use it with `valet serve`
 

@@ -126,8 +126,9 @@ def _init_macos_sandbox(text: str, workspace_sb: Path) -> str:
     print()
     print("The OS sandbox (macOS sandbox-exec) confines every command to your")
     print("workspace: it blocks reads of your home, keychain, and other users,")
-    print("jails writes to the workspace, and denies network access — a real")
-    print("kernel boundary beyond command-line policy.")
+    print("and jails writes to the workspace — a real kernel boundary beyond")
+    print("command-line policy. Network stays allowed so cloud tools work; the")
+    print("profile has a commented (deny network*) line to block it if you want.")
     if not _confirm("Activate it now (recommended for maximum safety)?", default=True):
         return text
 
@@ -293,15 +294,20 @@ def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
     else:
         _doctor_line(" OK ", "home directory is blocked inside the sandbox")
 
-    # 4. The profile should deny the network (static check).
+    # 4. Network posture (informational). Allowing network is the default so
+    # cloud tools work; look for an *active* (non-commented) deny rule.
     try:
         profile_text = Path(profile_path).read_text()
     except OSError:
         profile_text = ""
-    if "deny network" in profile_text:
-        _doctor_line(" OK ", "profile denies network access")
+    denies_network = any(
+        line.lstrip().startswith("(deny network")
+        for line in profile_text.splitlines()
+    )
+    if denies_network:
+        _doctor_line(" OK ", "network is denied by the profile (offline commands only)")
     else:
-        _doctor_line("WARN", "profile has no `(deny network*)` rule")
+        _doctor_line(" OK ", "network is allowed (needed by cloud tools like aws/handoff)")
 
     return failed
 
