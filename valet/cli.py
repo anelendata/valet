@@ -17,7 +17,7 @@ Subcommands:
   valet clients add     generate and approve a host-side client key
   valet clients list    list host-approved client identities
   valet clients remove  remove a host-approved client identity
-  valet init            generate a fingerprint_salt in config.toml
+  valet init            create config.toml (+ macOS sandbox profile) and check it
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
 themselves; the daemon does the privileged work and redacts before replying.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets as _secrets
 import shutil
 import subprocess
@@ -51,36 +52,136 @@ from .server_ws import serve as serve_lan
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    path = Path(args.config) if args.config else default_config_path()
-    if not path.exists():
-        print(f"valet: {path} not found. Copy config.example.toml first:",
-              file=sys.stderr)
-        print(f"  cp config.example.toml {path}", file=sys.stderr)
+    config_path = _resolve_config_path(args)
+    valet_dir = config_path.parent
+    is_mac = sys.platform == "darwin"
+    workspace_sb = (valet_dir / "workspace.sb") if is_mac else None
+
+    # Never clobber: if a target already exists, stop and let the user decide.
+    existing = [p for p in (config_path, workspace_sb) if p is not None and p.exists()]
+    if existing:
+        print("valet: these files already exist:", file=sys.stderr)
+        for item in existing:
+            print(f"  {item}", file=sys.stderr)
+        print("Remove or rename them, then run `valet init` again.", file=sys.stderr)
         return 2
-    import re
-    text = path.read_text()
+
+    example = _example_config_path()
+    if not example.exists():
+        print(f"valet: cannot find config.example.toml (looked at {example}).",
+              file=sys.stderr)
+        return 2
+
+    if not valet_dir.exists():
+        if not _confirm(f"Create directory {valet_dir}?", default=True):
+            print("valet: nothing created.")
+            return 1
+        valet_dir.mkdir(parents=True, exist_ok=True)
+
+    if not _confirm(f"Create {config_path} from config.example.toml?", default=True):
+        print("valet: nothing created.")
+        return 1
+
+    text = example.read_text()
+    # Give the new config a stable, unique fingerprint salt up front.
     salt = _secrets.token_urlsafe(32)
-    new, n = re.subn(
+    text, _n = re.subn(
         r'(?m)^(\s*fingerprint_salt\s*=\s*).*$',
         lambda m: f'{m.group(1)}"{salt}"',
         text,
     )
-    if n == 0:
-        print("valet: no fingerprint_salt line found to update.", file=sys.stderr)
-        return 2
-    path.write_text(new)
-    print(f"valet: wrote a new fingerprint_salt to {path}")
+
+    if is_mac:
+        text = _init_macos_sandbox(text, workspace_sb)
+
+    config_path.write_text(text)
+    print(f"valet: wrote {config_path}")
+
+    # Health check at the end, mirroring `valet doctor`.
+    print()
+    try:
+        _doctor_report(config_path, load_config(config_path))
+    except ValetError as exc:
+        print(f"valet: could not run the health check: {exc}", file=sys.stderr)
+    print()
+    print("valet: setup complete. Edit the config as needed, then run "
+          "`valet doctor` to check config health again.")
     return 0
 
 
+def _init_macos_sandbox(text: str, workspace_sb: Path) -> str:
+    """Offer to install and activate the OS sandbox; return the (maybe edited) config."""
+    if _confirm(f"Copy the OS sandbox profile to {workspace_sb}?", default=True):
+        src = _workspace_sb_source()
+        if src.exists():
+            shutil.copyfile(src, workspace_sb)
+            print(f"valet: wrote {workspace_sb}")
+        else:
+            print(f"valet: warning: {src} not found; skipping sandbox profile.",
+                  file=sys.stderr)
+
+    if not workspace_sb.exists():
+        return text
+
+    print()
+    print("The OS sandbox (macOS sandbox-exec) confines every command to your")
+    print("workspace: it blocks reads of your home, keychain, and other users,")
+    print("jails writes to the workspace, and denies network access — a real")
+    print("kernel boundary beyond command-line policy.")
+    if not _confirm("Activate it now (recommended for maximum safety)?", default=True):
+        return text
+
+    activated, n = re.subn(
+        r"(?m)^#\s*sandbox_profile\s*=.*$",
+        f'sandbox_profile = "{_home_relative(workspace_sb)}"',
+        text,
+    )
+    if n == 0:
+        print("valet: warning: could not find the sandbox_profile line to activate; "
+              "set it by hand.", file=sys.stderr)
+        return text
+    print("valet: activated sandbox_profile in the config.")
+    return activated
+
+
+def _confirm(prompt: str, *, default: bool) -> bool:
+    suffix = " [Y/n] " if default else " [y/N] "
+    try:
+        answer = input(prompt + suffix).strip().lower()
+    except EOFError:
+        return default
+    if not answer:
+        return default
+    return answer in ("y", "yes")
+
+
+def _example_config_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "config.example.toml"
+
+
+def _workspace_sb_source() -> Path:
+    return Path(__file__).resolve().parent.parent / "contrib" / "sandbox-exec" / "workspace.sb"
+
+
+def _home_relative(path: Path) -> str:
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    path = Path(args.config) if args.config else default_config_path()
+    path = _resolve_config_path(args)
     try:
         cfg = load_config(path)
     except ValetError as exc:
         print(f"valet: could not load config: {exc}", file=sys.stderr)
         return 2
+    return 1 if _doctor_report(path, cfg) else 0
 
+
+def _doctor_report(path: Path, cfg) -> bool:
+    """Print the config summary and sandbox checks; return True if a check failed."""
     print("valet doctor\n")
     workspace = _resolve_workspace(cfg.exec.workspace)
     ws_note = "(unset)"
@@ -101,7 +202,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     failed = _doctor_sandbox_checks(cfg, workspace)
     print()
     print("result: " + ("FAILED — see above" if failed else "all checks passed"))
-    return 1 if failed else 0
+    return failed
 
 
 def _onoff(value: bool) -> str:
@@ -580,7 +681,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_repl)  # no subcommand => REPL
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("init", help="generate a fingerprint_salt").set_defaults(func=_cmd_init)
+    sub.add_parser("init", help="create config.toml (and, on macOS, the sandbox profile)"
+                   ).set_defaults(func=_cmd_init)
     sub.add_parser("doctor", help="check config and the OS sandbox setup"
                    ).set_defaults(func=_cmd_doctor)
     sub.add_parser("serve", help="run the configured host daemon").set_defaults(func=_cmd_serve)

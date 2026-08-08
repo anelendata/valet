@@ -207,3 +207,60 @@ def test_doctor_fails_when_sandbox_profile_missing(tmp_path, capsys, monkeypatch
     out = capsys.readouterr().out
     assert "profile not found" in out
     assert "FAILED" in out
+
+
+def _answers(*vals):
+    it = iter(vals)
+    return lambda prompt="": next(it)
+
+
+def test_init_creates_config_and_injects_salt(tmp_path, monkeypatch):
+    monkeypatch.setattr("valet.cli.sys.platform", "linux")  # skip macOS sandbox steps
+    monkeypatch.setattr("builtins.input", _answers("y", "y"))  # create dir, create config
+    monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
+    config = tmp_path / "valet" / "config.toml"
+
+    rc = main(["-c", str(config), "init"])
+
+    assert rc == 0
+    assert config.exists()
+    text = config.read_text()
+    assert "[broker]" in text
+    salt_line = next(l for l in text.splitlines() if l.strip().startswith("fingerprint_salt"))
+    assert "CHANGE_ME" not in salt_line  # the salt value was replaced
+
+
+def test_init_refuses_when_config_exists(tmp_path, capsys):
+    config = tmp_path / "config.toml"
+    config.write_text("[broker]\n")
+
+    rc = main(["-c", str(config), "init"])
+
+    assert rc == 2
+    assert "already exist" in capsys.readouterr().err
+
+
+def test_init_declining_creates_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr("valet.cli.sys.platform", "linux")
+    monkeypatch.setattr("builtins.input", _answers("n"))  # decline config creation
+    config = tmp_path / "config.toml"
+
+    rc = main(["-c", str(config), "init"])
+
+    assert rc == 1
+    assert not config.exists()
+
+
+def test_init_activates_sandbox_on_macos(tmp_path, monkeypatch):
+    monkeypatch.setattr("valet.cli.sys.platform", "darwin")
+    # parent exists -> no dir prompt; then: create config, copy sb, activate
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "y"))
+    monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
+    config = tmp_path / "config.toml"
+
+    rc = main(["-c", str(config), "init"])
+
+    assert rc == 0
+    assert (tmp_path / "workspace.sb").exists()
+    text = config.read_text()
+    assert any(line.strip().startswith("sandbox_profile =") for line in text.splitlines())

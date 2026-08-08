@@ -302,12 +302,18 @@ pip install -e .
 
 In the host,
 ```
-cp config.example.toml config.toml     # config.toml is git-ignored
-$EDITOR config.toml                     # set workspace + secret_sources
-valet init                              # optional: stable redaction tags
+valet init                              # create ~/.valet/config.toml (macOS: + OS sandbox),
+                                        # then run a health check. Answers y/n prompts.
+$EDITOR ~/.valet/config.toml            # set workspace + secret_sources
 
 valet serve                             # start the daemon (keep this shell open)
+valet doctor                            # re-check config health anytime
 ```
+
+`valet init` copies `config.example.toml` into `~/.valet/config.toml` for you
+(no manual copy), gives it a stable redaction salt, and on macOS offers to
+install and activate the OS sandbox profile. It refuses to overwrite an
+existing `config.toml`/`workspace.sb` — remove or rename them to re-run.
 
 From a sandbox running in the same machine,
 
