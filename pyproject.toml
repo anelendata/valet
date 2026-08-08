@@ -9,14 +9,10 @@ description = "A local secret-redacting command runner: run a command, get outpu
 requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-# Zero required third-party deps — only the standard library. YAML value
-# extraction is an optional extra (see [project.optional-dependencies].yaml);
-# without it, YAML secret files are still redacted whole-file.
-dependencies = []
+dependencies = ["pyyaml>=6"]
 
 [project.optional-dependencies]
-yaml = ["pyyaml>=6"]
-test = ["pytest>=7", "pyyaml>=6"]
+test = ["pytest>=7"]
 
 [project.scripts]
 valet = "valet.cli:main"

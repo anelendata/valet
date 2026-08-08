@@ -9,9 +9,8 @@ Supported source formats, detected by extension/content:
   - AWS credentials/config ini  (``[profile]`` sections, ``key = value``)
   - dotenv / .secrets           (``KEY=VALUE``, optional ``export``, quotes)
   - JSON                        (all string/number leaf values)
-  - YAML (``.yaml``/``.yml``,   (all scalar leaf values; requires PyYAML —
-    and ``.secrets``)            ``pip install 'valet[yaml]'``. Without it, YAML
-                                 files are still redacted whole-file.)
+  - YAML (``.yaml``/``.yml``    (all scalar leaf values)
+    and ``.secrets``)
 
 Parsing is deliberately lenient and never raises on a malformed source: a
 source we cannot read simply contributes no redaction values, and the generic
@@ -24,6 +23,8 @@ import json
 import re
 from pathlib import Path
 from typing import Iterable
+
+import yaml
 
 from . import MIN_REDACT_LEN
 
@@ -103,14 +104,9 @@ def _from_json(text: str) -> Iterable[str]:
 def _from_yaml(text: str) -> Iterable[str]:
     """Scalar leaf values from a YAML source.
 
-    YAML support is optional: without PyYAML installed this returns nothing (the
-    whole-file blob still masks the file). Uses ``safe_load`` only — never the
-    object-constructing loader — and never raises.
+    Uses ``safe_load`` only — never the object-constructing loader — and never
+    raises on a malformed source.
     """
-    try:
-        import yaml
-    except ImportError:
-        return []
     try:
         docs = list(yaml.safe_load_all(text))
     except Exception:

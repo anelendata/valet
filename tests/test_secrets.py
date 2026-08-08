@@ -1,13 +1,5 @@
-"""Secret-value extraction, including optional YAML support."""
-import builtins
-
-import pytest
-
+"""Secret-value extraction, including YAML sources."""
 from valet.secrets import _from_yaml, _parse_text, load_secret_values
-
-# Skip the parsing tests when PyYAML is not installed; the graceful-degradation
-# test below runs regardless.
-yaml = pytest.importorskip("yaml")
 
 
 def test_yaml_suffix_extracts_scalar_leaves():
@@ -58,16 +50,3 @@ def test_load_secret_values_masks_yaml_value(tmp_path):
     src.write_text("api_token: yaml-loaded-secret-value\n")
     values = load_secret_values([str(src)])
     assert "yaml-loaded-secret-value" in values
-
-
-def test_yaml_disabled_without_pyyaml(monkeypatch):
-    # Simulate PyYAML not installed: _from_yaml degrades to no values.
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "yaml":
-            raise ImportError("no yaml")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    assert list(_from_yaml("token: whatever-secret\n")) == []
