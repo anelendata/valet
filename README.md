@@ -52,6 +52,7 @@ Benefits:
 More...
 - [Roadmap](./docs/ROADMAP.md)
 - [Technical deep dive](./docs/TECHNICAL_DEEP_DIVE.md)
+- [Google Workspace CLI (`gws`) through valet](./docs/google-workspace-cli.md)
 
 
 ## Motivating examples
