@@ -108,10 +108,22 @@ class BrokerConfig:
 
 
 def default_config_path() -> Path:
+    """Resolve the config path when ``-c`` is not given.
+
+    ``$VALET_CONFIG`` wins if set. Otherwise the first existing of
+    ``~/.valet/config.toml`` (the canonical install location) then
+    ``<repo>/config.toml`` (a dev checkout) is used; if neither exists,
+    ``~/.valet/config.toml`` is returned so the not-found message names it.
+    """
     env = os.environ.get(DEFAULT_CONFIG_ENV)
     if env:
         return Path(_expand(env))
-    return Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_NAME
+    user = Path(_expand(f"~/.valet/{DEFAULT_CONFIG_NAME}"))
+    repo = Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_NAME
+    for candidate in (user, repo):
+        if candidate.exists():
+            return candidate
+    return user
 
 
 def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:

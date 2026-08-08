@@ -202,14 +202,24 @@ def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
     return failed
 
 
+def _resolve_config_path(args: argparse.Namespace) -> Path:
+    """The config file to use: an explicit ``-c`` path, else the default search."""
+    return Path(args.config) if args.config else default_config_path()
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
-    path = Path(args.config) if args.config else default_config_path()
-    serve_host(load_config(path), config_path=path)
+    path = _resolve_config_path(args)
+    cfg = load_config(path)  # raises ConfigError (exit 2) if -c names a missing file
+    print(f"valet: config path: {path.resolve()}")
+    serve_host(cfg, config_path=path)
     return 0
 
 
 def _cmd_serve_lan(args: argparse.Namespace) -> int:
-    serve_lan(load_config(args.config))
+    path = _resolve_config_path(args)
+    cfg = load_config(path)
+    print(f"valet: config path: {path.resolve()}")
+    serve_lan(cfg)
     return 0
 
 
@@ -556,8 +566,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-c", "--config", default=None,
                    help="path to config.toml — holds both server and "
-                        "[client]/[hosts] sections (default: repo config.toml "
-                        "or $VALET_CONFIG)")
+                        "[client]/[hosts] sections (default: $VALET_CONFIG, "
+                        "else ~/.valet/config.toml, else the repo config.toml)")
     p.add_argument("--host", default=None,
                    help="configured remote host to use for client commands")
     p.add_argument("--local", action="store_true",
