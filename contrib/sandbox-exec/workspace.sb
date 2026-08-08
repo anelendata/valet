@@ -39,6 +39,14 @@
 ;; and must be an absolute, symlink-free path.
 (allow file-read* (subpath (param "WORKSPACE")))
 
+;; Allow *traversal into* the workspace even though an ancestor (e.g. /Users, or
+;; the whole home when WORKSPACE is ~) is read-denied above. path-ancestors
+;; grants metadata + existence on the ancestor chain only — enough for path
+;; resolution and realpath(3) to walk in, but NOT enough to list a denied dir's
+;; contents (so `ls /Users` still cannot enumerate other homes). Without this,
+;; realpath on anything under the workspace fails with "Operation not permitted".
+(allow file-read-metadata file-test-existence (path-ancestors (param "WORKSPACE")))
+
 ;; --- Writes: confine to the workspace and scratch temp ---------------------
 (deny file-write* (subpath "/"))
 (allow file-write*
