@@ -68,6 +68,7 @@ def _child_env(
     extra_env: Optional[dict[str, str]],
     cwd: Optional[str],
     path_prepend: Optional[str] = None,
+    workspace_root: Optional[str] = None,
 ) -> Optional[dict[str, str]]:
     """Environment for the child, or None to inherit unchanged.
 
@@ -79,14 +80,19 @@ def _child_env(
     ``path_prepend`` is put at the front of ``PATH`` so a workspace-local ``bin``
     is searched before the rest of ``PATH`` (subprocess resolves an argv[0] via
     the child env's PATH, so this applies to argv, shell, and sandboxed runs).
+
+    ``workspace_root`` is exported as ``VALET_WORKSPACE`` (authoritative — set
+    after ``extra_env``) so commands can reference the workspace root by name.
     """
-    if not extra_env and not cwd and not path_prepend:
+    if not extra_env and not cwd and not path_prepend and not workspace_root:
         return None
     env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
     if cwd:
         env["PWD"] = cwd
+    if workspace_root:
+        env["VALET_WORKSPACE"] = workspace_root
     if path_prepend:
         current = env.get("PATH", "")
         env["PATH"] = path_prepend + (os.pathsep + current if current else "")
@@ -102,6 +108,7 @@ def run(
     extra_env: Optional[dict[str, str]] = None,
     allow_script_fallback: bool = False,
     path_prepend: Optional[str] = None,
+    workspace_root: Optional[str] = None,
 ) -> RunResult:
     if shell:
         if not isinstance(cmd, str):
@@ -112,7 +119,7 @@ def run(
             raise CommandError("non-shell mode requires a non-empty argv list")
         popen_arg = list(cmd)
 
-    env = _child_env(extra_env, cwd, path_prepend)
+    env = _child_env(extra_env, cwd, path_prepend, workspace_root)
 
     try:
         proc, tracked_cmd = _popen(
@@ -162,6 +169,7 @@ def iter_run(
     cancel_event: Optional[threading.Event] = None,
     allow_script_fallback: bool = False,
     path_prepend: Optional[str] = None,
+    workspace_root: Optional[str] = None,
 ) -> Iterator[StreamItem]:
     if shell:
         if not isinstance(cmd, str):
@@ -172,7 +180,7 @@ def iter_run(
             raise CommandError("non-shell mode requires a non-empty argv list")
         popen_arg = list(cmd)
 
-    env = _child_env(extra_env, cwd, path_prepend)
+    env = _child_env(extra_env, cwd, path_prepend, workspace_root)
 
     try:
         proc, tracked_cmd = _popen(

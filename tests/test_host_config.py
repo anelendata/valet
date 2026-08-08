@@ -1,6 +1,8 @@
 import dataclasses
 import json
 
+import pytest
+
 from valet.broker import Broker
 from valet.cli import main
 from valet.config import AuditConfig, ClientIdentity, IdentityConfig, load_config
@@ -49,6 +51,33 @@ def test_host_lan_can_be_enabled_in_config(tmp_path):
     cfg = load_config(path)
 
     assert cfg.host.lan is True
+
+
+def test_exec_env_table_loads(tmp_path):
+    path = tmp_path / "config.toml"
+    _config(path)
+    path.write_text(
+        path.read_text()
+        + '\n[exec.env]\n'
+        'AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"\n'
+    )
+
+    cfg = load_config(path)
+
+    assert cfg.exec.env == {
+        "AWS_SHARED_CREDENTIALS_FILE": "$VALET_WORKSPACE/.aws/credentials"
+    }
+
+
+def test_exec_env_invalid_name_is_rejected(tmp_path):
+    from valet.errors import ConfigError
+
+    path = tmp_path / "config.toml"
+    _config(path)
+    path.write_text(path.read_text() + '\n[exec.env]\n"BAD NAME" = "x"\n')
+
+    with pytest.raises(ConfigError):
+        load_config(path)
 
 
 def test_serve_uses_configured_host_daemon(tmp_path, monkeypatch):

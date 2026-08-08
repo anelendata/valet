@@ -111,6 +111,18 @@ shell = false
 # Leave unset to run commands without an OS sandbox.
 #   sandbox_profile = "~/.valet/workspace.sb"
 
+# Every command's environment includes VALET_WORKSPACE = the workspace root, so
+# you can reference files inside the workspace from any subdirectory without a
+# fragile ../../.. path. Useful under the sandbox, where ~/.aws is unreadable:
+# copy credentials into the workspace and point the AWS CLI at them.
+#
+# [exec.env] sets default env vars for EVERY command ($VALET_WORKSPACE expands
+# to the workspace root); per-command env (inline `NAME=value` or --env) wins.
+# Example — then just run `AWS_PROFILE=tiny handoff ...`, no path needed:
+#   [exec.env]
+#   AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
+#   AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
+
 [redaction]
 # ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
 #

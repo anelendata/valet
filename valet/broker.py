@@ -44,6 +44,14 @@ _STRUCTURED_LINE_RE = re.compile(
 )
 _PEM_LINE_RE = re.compile(r"-----BEGIN [^-]+-----")
 _ENV_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_WORKSPACE_VAR_RE = re.compile(r"\$\{VALET_WORKSPACE\}|\$VALET_WORKSPACE(?![A-Za-z0-9_])")
+
+
+def _expand_workspace(value: str, root: Optional[str]) -> str:
+    """Substitute ``$VALET_WORKSPACE`` / ``${VALET_WORKSPACE}`` with the root."""
+    if not root:
+        return value
+    return _WORKSPACE_VAR_RE.sub(lambda _m: root, value)
 
 
 def _split_leading_env(argv: list[str]) -> tuple[dict[str, str], list[str]]:
@@ -75,6 +83,7 @@ class _ExecPlan:
     run_shell: bool = False  # how the executor actually runs it (a sandbox
                              # wrapper makes this an argv even for shell mode)
     path_prepend: Optional[str] = None  # a workspace-local bin to search first
+    workspace_root: Optional[str] = None  # exported to the child as VALET_WORKSPACE
 
 
 class _StreamRedactor:
@@ -235,6 +244,7 @@ class Broker:
                 extra_env=plan.extra_env,
                 allow_script_fallback=self.cfg.exec.shell,
                 path_prepend=plan.path_prepend,
+                workspace_root=plan.workspace_root,
             )
         except (TimeoutError_, CommandError) as exc:
             return {
@@ -293,6 +303,7 @@ class Broker:
                 cancel_event=cancel_event,
                 allow_script_fallback=self.cfg.exec.shell,
                 path_prepend=plan.path_prepend,
+                workspace_root=plan.workspace_root,
             ):
                 if isinstance(item, OutputChunk):
                     for text in buffers[item.stream].feed(item.text):
@@ -451,6 +462,16 @@ class Broker:
                 cmd = rest
                 extra_env = {**prefix_env, **extra_env}  # explicit env wins
 
+        # Config default env (with $VALET_WORKSPACE expanded) is the base layer;
+        # per-command env (above) overrides it.
+        root = self._workspace_root()
+        config_env = {
+            name: _expand_workspace(value, root)
+            for name, value in self.cfg.exec.env.items()
+        }
+        if config_env:
+            extra_env = {**config_env, **extra_env}
+
         cwd = self._resolve_cwd(request.get("cwd"))
         if cwd is not None and not os.path.isdir(cwd):
             raise ValidationError("cwd does not exist")
@@ -465,7 +486,8 @@ class Broker:
         run_cmd, run_shell = self._maybe_sandbox(cmd, shell)
         return _ExecPlan(cmd=run_cmd, shell=shell, cwd=cwd, timeout=timeout,
                          extra_env=extra_env, redactor=redactor, echoed=echoed,
-                         run_shell=run_shell, path_prepend=self._workspace_bin())
+                         run_shell=run_shell, path_prepend=self._workspace_bin(),
+                         workspace_root=root)
 
     def _workspace_bin(self) -> Optional[str]:
         """A ``bin`` directory at the workspace root, to search before PATH."""

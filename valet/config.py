@@ -8,6 +8,7 @@ usable out of the box.
 from __future__ import annotations
 
 import os
+import re
 import secrets as _secrets
 import tomllib
 from dataclasses import dataclass, field
@@ -35,6 +36,10 @@ class ExecConfig:
     # every command is wrapped with `sandbox-exec -D WORKSPACE=<workspace> -f
     # <profile>`, giving a real kernel boundary. Requires [exec].workspace.
     sandbox_profile: Optional[str] = None
+    # Default environment variables applied to every command (per-command env
+    # overrides these). `$VALET_WORKSPACE` in a value expands to the workspace
+    # root, so e.g. AWS_SHARED_CREDENTIALS_FILE can point inside the workspace.
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -165,6 +170,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
                 _expand(exec_["sandbox_profile"])
                 if exec_.get("sandbox_profile") else None
             ),
+            env=_load_exec_env(exec_.get("env", {})),
         ),
         redaction=RedactionConfig(
             secret_sources=tuple(_expand(s) for s in red.get("secret_sources", ())),
@@ -193,6 +199,20 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             clients=_load_client_identities(identity.get("clients", {})),
         ),
     )
+
+
+def _load_exec_env(raw: object) -> dict[str, str]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError("[exec].env must be a table of NAME = \"value\" pairs")
+    env: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ConfigError(f"[exec].env: {name!r} is not a valid variable name")
+        env[name] = str(value)
+    return env
 
 
 def _load_client_identities(raw: object) -> dict[str, ClientIdentity]:

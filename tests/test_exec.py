@@ -555,3 +555,43 @@ def test_env_prefix_without_a_command_is_rejected(cfg):
 def test_assignment_after_command_stays_an_argument(cfg):
     resp = Broker(cfg).handle({"op": "exec", "cmd": ["echo", "KEY=val"], "shell": False})
     assert resp["stdout"].strip() == "KEY=val"
+
+
+def test_valet_workspace_env_var_is_set(cfg, workspace):
+    (workspace / "sub").mkdir()
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", "import os; print(os.environ.get('VALET_WORKSPACE'))"],
+        "shell": False,
+        "cwd": "sub",
+    })
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "./"  # workspace root, virtualized
+
+
+def test_config_exec_env_expands_valet_workspace(cfg, workspace):
+    c = dataclasses.replace(
+        cfg, exec=dataclasses.replace(cfg.exec, env={"CREDS": "$VALET_WORKSPACE/.aws/creds"})
+    )
+    (workspace / "deep").mkdir()
+    resp = Broker(c).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", "import os; print(os.environ['CREDS'])"],
+        "shell": False,
+        "cwd": "deep",  # stable regardless of the subdirectory
+    })
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "./.aws/creds"
+
+
+def test_per_command_env_overrides_config_default(cfg, workspace):
+    c = dataclasses.replace(
+        cfg, exec=dataclasses.replace(cfg.exec, env={"FOO": "$VALET_WORKSPACE/base"})
+    )
+    resp = Broker(c).handle({
+        "op": "exec",
+        "cmd": ["FOO=xx", sys.executable, "-c", "import os; print(os.environ['FOO'])"],
+        "shell": False,
+    })
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "xx"  # per-command wins over the config default
