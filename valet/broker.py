@@ -32,6 +32,7 @@ from .errors import (
 from .executor import OutputChunk, RunResult, iter_run, kill_process, list_processes, run
 from .policy import Policy
 from .sanitize import Redactor
+from .secrets import _keep as _worth_redacting
 from .secrets import load_secret_values
 
 _WITHHELD = "[REDACTED: output withheld — residual secret detected]"
@@ -42,6 +43,24 @@ _STRUCTURED_LINE_RE = re.compile(
     r"^\s*\"(?:[^\"\\]|\\.)*\"\s*:\s*"
 )
 _PEM_LINE_RE = re.compile(r"-----BEGIN [^-]+-----")
+_ENV_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _split_leading_env(argv: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Split leading ``NAME=value`` tokens from an argv into (env, remainder).
+
+    Mirrors the shell: only assignments *before* the first real word count; a
+    ``NAME=value`` after the command stays an ordinary argument.
+    """
+    env: dict[str, str] = {}
+    index = 0
+    for token in argv:
+        if not _ENV_ASSIGN_RE.match(token):
+            break
+        name, _, value = token.partition("=")
+        env[name] = value
+        index += 1
+    return env, argv[index:]
 
 
 @dataclass
@@ -418,6 +437,20 @@ class Broker:
         cmd = self._normalize_cmd(raw_cmd, shell)
         extra_env = self._normalize_env(request.get("env"))
 
+        # Support `NAME=value cmd ...` env-assignment prefixes in argv mode, the
+        # way `env NAME=value cmd` does, so this common shell-ism works without
+        # enabling a full shell. (Note: `$VAR` expansion still needs a shell.)
+        if not shell and isinstance(cmd, list):
+            prefix_env, rest = _split_leading_env(cmd)
+            if prefix_env:
+                if not rest:
+                    raise ValidationError(
+                        "no command to run (only environment assignments, which "
+                        "do not persist across commands)"
+                    )
+                cmd = rest
+                extra_env = {**prefix_env, **extra_env}  # explicit env wins
+
         cwd = self._resolve_cwd(request.get("cwd"))
         if cwd is not None and not os.path.isdir(cwd):
             raise ValidationError("cwd does not exist")
@@ -579,8 +612,11 @@ class Broker:
             for name in self.cfg.redaction.cwd_secret_files:
                 sources.append(os.path.join(cwd, name))
         values = load_secret_values(sources)
+        # Config-listed literals are always masked; env values (e.g. an inline
+        # `NAME=value` prefix or --env) are masked only if long enough to look
+        # secret, so trivial ones like `1` or `tiny` don't over-redact output.
         values.extend(v for v in self.cfg.redaction.extra_values if v)
-        values.extend(v for v in extra_values if v)
+        values.extend(v for v in extra_values if _worth_redacting(v))
         workspace_root = self._workspace_root() or ""
         # Only rewrite the home prefix when confined to a workspace: that is the
         # mode where leaking the real host layout (a sibling of the workspace,

@@ -520,3 +520,38 @@ def test_workspace_bin_is_first_on_path(cfg, workspace):
 def test_no_workspace_bin_means_no_path_prepend(cfg, workspace):
     plan = Broker(cfg)._exec_plan({"op": "exec", "cmd": "echo hi", "shell": True})
     assert plan.path_prepend is None
+
+
+def test_env_assignment_prefix_in_argv_mode(cfg):
+    # `NAME=value cmd ...` works without a shell (like `env NAME=value cmd`).
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": ["HELLO=1", sys.executable, "-c",
+                "import os; print('set' if os.environ.get('HELLO') == '1' else 'unset')"],
+        "shell": False,
+    })
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "set"
+
+
+def test_multiple_env_prefixes_and_short_value_not_over_redacted(cfg):
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": ["A=1", "B=two", sys.executable, "-c",
+                "import os; print(os.environ['A'], os.environ['B'])"],
+        "shell": False,
+    })
+    assert resp["ok"] is True
+    # Trivial values pass the length threshold and are not masked.
+    assert resp["stdout"].strip() == "1 two"
+
+
+def test_env_prefix_without_a_command_is_rejected(cfg):
+    resp = Broker(cfg).handle({"op": "exec", "cmd": ["HELLO=1"], "shell": False})
+    assert resp["ok"] is False
+    assert resp["error_class"] == "ValidationError"
+
+
+def test_assignment_after_command_stays_an_argument(cfg):
+    resp = Broker(cfg).handle({"op": "exec", "cmd": ["echo", "KEY=val"], "shell": False})
+    assert resp["stdout"].strip() == "KEY=val"
