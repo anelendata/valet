@@ -538,10 +538,6 @@ def tab_completion_binding(readline_doc: Optional[str]) -> str:
     return "tab: complete"
 
 
-def _uses_libedit(readline_doc: Optional[str]) -> bool:
-    return "libedit" in (readline_doc or "").lower()
-
-
 def _configure_completion(readline, session: Session) -> None:
     """Install a readline completer that follows the REPL's current directory."""
     matches: list[str] = []
@@ -562,149 +558,6 @@ def _configure_completion(readline, session: Session) -> None:
     readline.parse_and_bind(tab_completion_binding(readline.__doc__))
 
 
-def _redraw_line(prompt: str, buffer: list[str], cursor: int) -> None:
-    """Redraw a raw-mode input line and put the cursor back in place."""
-    line = "".join(buffer)
-    sys.stdout.write("\r\033[2K" + prompt + line)
-    if cursor < len(buffer):
-        sys.stdout.write(f"\033[{len(buffer) - cursor}D")
-    sys.stdout.flush()
-
-
-def _replace_current_word(buffer: list[str], cursor: int, completion: str) -> tuple[list[str], int]:
-    before = "".join(buffer[:cursor])
-    start = _word_start(before)
-    updated = buffer[:start] + list(completion) + buffer[cursor:]
-    return updated, start + len(completion)
-
-
-def _libedit_input(prompt: str, session: Session, readline) -> str:
-    """A tiny line editor for libedit, whose Python display hook is ignored.
-
-    It deliberately covers the familiar editing keys needed at the prompt while
-    owning Tab so completion lists are consistently two columns.
-    """
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno()
-    original = termios.tcgetattr(fd)
-    history = [readline.get_history_item(index)
-               for index in range(1, readline.get_current_history_length() + 1)]
-    history = [item for item in history if item is not None]
-    history_index = len(history)
-    buffer: list[str] = []
-    cursor = 0
-
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
-    tty.setraw(fd)
-    try:
-        while True:
-            char = sys.stdin.read(1)
-            if char in ("\r", "\n"):
-                line = "".join(buffer)
-                sys.stdout.write("\r\n")
-                sys.stdout.flush()
-                if line:
-                    readline.add_history(line)
-                return line
-            if char == "\x03":  # Ctrl-C
-                sys.stdout.write("\r\n")
-                sys.stdout.flush()
-                raise KeyboardInterrupt
-            if char == "\x04":  # Ctrl-D
-                if not buffer:
-                    sys.stdout.write("\r\n")
-                    sys.stdout.flush()
-                    raise EOFError
-                if cursor < len(buffer):
-                    del buffer[cursor]
-                    _redraw_line(prompt, buffer, cursor)
-                continue
-            if char in ("\x7f", "\b"):
-                if cursor:
-                    del buffer[cursor - 1]
-                    cursor -= 1
-                    _redraw_line(prompt, buffer, cursor)
-                continue
-            if char == "\x01":  # Ctrl-A
-                cursor = 0
-                _redraw_line(prompt, buffer, cursor)
-                continue
-            if char == "\x05":  # Ctrl-E
-                cursor = len(buffer)
-                _redraw_line(prompt, buffer, cursor)
-                continue
-            if char == "\x15":  # Ctrl-U
-                del buffer[:cursor]
-                cursor = 0
-                _redraw_line(prompt, buffer, cursor)
-                continue
-            if char == "\x10" and history_index:  # Ctrl-P
-                history_index -= 1
-                buffer = list(history[history_index])
-                cursor = len(buffer)
-                _redraw_line(prompt, buffer, cursor)
-                continue
-            if char == "\x0e":  # Ctrl-N
-                if history_index < len(history) - 1:
-                    history_index += 1
-                    buffer = list(history[history_index])
-                else:
-                    history_index = len(history)
-                    buffer = []
-                cursor = len(buffer)
-                _redraw_line(prompt, buffer, cursor)
-                continue
-            if char == "\t":
-                before = "".join(buffer[:cursor])
-                candidates = session_completion_candidates(before, session)
-                if len(candidates) == 1:
-                    buffer, cursor = _replace_current_word(buffer, cursor, candidates[0])
-                elif candidates:
-                    common = os.path.commonprefix(candidates)
-                    start = _word_start(before)
-                    if len(common) > len(before[start:]):
-                        buffer, cursor = _replace_current_word(buffer, cursor, common)
-
-                    # Restore cooked mode while `more` owns terminal input.
-                    termios.tcsetattr(fd, termios.TCSADRAIN, original)
-                    _display_matches(candidates)
-                    tty.setraw(fd)
-                else:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
-                _redraw_line(prompt, buffer, cursor)
-                continue
-            if char == "\x1b":  # Arrow-key sequences.
-                sequence = sys.stdin.read(2)
-                if sequence == "[D" and cursor:
-                    cursor -= 1
-                elif sequence == "[C" and cursor < len(buffer):
-                    cursor += 1
-                elif sequence == "[A" and history_index:
-                    history_index -= 1
-                    buffer = list(history[history_index])
-                    cursor = len(buffer)
-                elif sequence == "[B":
-                    if history_index < len(history) - 1:
-                        history_index += 1
-                        buffer = list(history[history_index])
-                    else:
-                        history_index = len(history)
-                        buffer = []
-                    cursor = len(buffer)
-                _redraw_line(prompt, buffer, cursor)
-                continue
-            if char.isprintable():
-                buffer.insert(cursor, char)
-                cursor += 1
-                _redraw_line(prompt, buffer, cursor)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, original)
-
-
 def interact(send: Send, *, session: Optional[Session] = None,
              input_fn: Callable[[str], str] = input) -> int:
     """Run the prompt loop. ``send`` performs one request/response."""
@@ -723,10 +576,11 @@ def interact(send: Send, *, session: Optional[Session] = None,
     try:  # arrow-key history/editing and tab completion if available
         import readline
         if input_fn is input:
-            if _uses_libedit(readline.__doc__) and sys.stdin.isatty() and sys.stdout.isatty():
-                line_input = lambda prompt: _libedit_input(prompt, session, readline)
-            else:
-                _configure_completion(readline, session)
+            # Use the native line editor (GNU readline or macOS libedit). It
+            # handles wrapping, resize, and cursor movement correctly; a
+            # hand-rolled raw-mode editor did not and duplicated the prompt once
+            # the line wrapped past the screen width.
+            _configure_completion(readline, session)
     except Exception:
         pass
 
