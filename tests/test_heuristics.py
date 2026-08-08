@@ -139,3 +139,13 @@ def test_high_entropy_leaves_paths_alone():
     # Paths contain '/', excluded from the candidate alphabet.
     text = "/usr/local/lib/python3.11/site-packages/somepackage/module.py"
     assert redact_high_entropy(text) == text
+
+
+def test_pwd_command_output_is_not_treated_as_password():
+    from valet.heuristics import key_is_sensitive, redact_suspected
+    assert key_is_sensitive("pwd") is False
+    assert redact_suspected("pwd: could not determine directory") == \
+        "pwd: could not determine directory"
+    assert redact_suspected("PWD=/Users/x/anelen/projects") == "PWD=/Users/x/anelen/projects"
+    # A real password key still masks.
+    assert "[REDACTED:suspected]" in redact_suspected("password: hunter2secret")

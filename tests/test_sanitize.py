@@ -88,3 +88,30 @@ def test_workspace_root_virtualization_respects_boundaries():
 def test_workspace_root_absent_leaves_paths_untouched():
     red = Redactor.build([], salt="s")
     assert red.redact("/Users/x/projects/a") == "/Users/x/projects/a"
+
+
+def test_home_prefix_outside_workspace_becomes_tilde():
+    red = Redactor.build(
+        [], salt="s",
+        workspace_root="/Users/x/anelen/projects",
+        home_dir="/Users/x",
+    )
+    # A sibling of the workspace, under home but not under the workspace root.
+    out = red.redact("/usr/local/bin/handoff: /Users/x/projects/app/.venv/bin/handoff: nope")
+    assert "/Users/x" not in out
+    assert "~/projects/app/.venv/bin/handoff" in out
+
+
+def test_home_prefix_bare_becomes_tilde():
+    red = Redactor.build([], salt="s", workspace_root="/Users/x/ws", home_dir="/Users/x")
+    assert red.redact("home is /Users/x here") == "home is ~ here"
+
+
+def test_workspace_still_virtualized_when_home_redaction_on():
+    red = Redactor.build([], salt="s", workspace_root="/Users/x/ws", home_dir="/Users/x")
+    assert red.redact("/Users/x/ws/sub") == "./sub"
+
+
+def test_home_redaction_off_without_home_dir():
+    red = Redactor.build([], salt="s", workspace_root="/Users/x/ws")
+    assert red.redact("/Users/x/projects/app") == "/Users/x/projects/app"

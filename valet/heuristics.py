@@ -31,8 +31,12 @@ _ENTROPY_MIN_LEN = 20
 _ENTROPY_MIN_BITS = 3.0  # Shannon bits/char; random tokens are ~4+
 
 # Words that, when they appear in a key name, mark its value as sensitive.
+# NB: "pwd" is deliberately excluded — it collides with the `pwd` command and
+# the standard $PWD working-directory variable, causing false positives like
+# `pwd: <error>` or `PWD=/path` being masked. Real password keys use
+# password/passwd/passphrase, which stay covered.
 _SENSITIVE_WORDS = {
-    "password", "passwd", "pwd", "passphrase", "secret", "token", "apikey",
+    "password", "passwd", "passphrase", "secret", "token", "apikey",
     "credential", "credentials", "authorization", "privatekey", "seckey",
 }
 # Sensitive two-word combinations (e.g. API_KEY -> api + key).

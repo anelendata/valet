@@ -570,11 +570,17 @@ class Broker:
         values = load_secret_values(sources)
         values.extend(v for v in self.cfg.redaction.extra_values if v)
         values.extend(v for v in extra_values if v)
+        workspace_root = self._workspace_root() or ""
+        # Only rewrite the home prefix when confined to a workspace: that is the
+        # mode where leaking the real host layout (a sibling of the workspace,
+        # the username) matters. Without a workspace, output is left verbatim.
+        home_dir = os.path.expanduser("~") if workspace_root else ""
         return Redactor.build(
             values, self.cfg.fingerprint_salt,
             suspected=self.cfg.redaction.redact_suspected,
             high_entropy=self.cfg.redaction.redact_high_entropy,
-            workspace_root=self._workspace_root() or "",
+            workspace_root=workspace_root,
+            home_dir=home_dir,
         )
 
     @staticmethod

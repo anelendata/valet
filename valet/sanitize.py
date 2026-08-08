@@ -61,16 +61,18 @@ class Redactor:
     suspected: bool = True
     high_entropy: bool = False
     workspace_root: str = ""
+    home_dir: str = ""
 
     @classmethod
     def build(cls, secret_values: Iterable[str], salt: str,
               suspected: bool = True, high_entropy: bool = False,
-              workspace_root: str = "") -> "Redactor":
+              workspace_root: str = "", home_dir: str = "") -> "Redactor":
         # Longest first so a value that is a substring of another is not
         # partially masked by the shorter one.
         vals = tuple(sorted({v for v in secret_values if v}, key=len, reverse=True))
         return cls(secret_values=vals, salt=salt, suspected=suspected,
-                   high_entropy=high_entropy, workspace_root=workspace_root)
+                   high_entropy=high_entropy, workspace_root=workspace_root,
+                   home_dir=home_dir)
 
     def __post_init__(self) -> None:
         # Precompile the workspace-root rewrite. The lookbehind/lookahead keep it
@@ -83,6 +85,17 @@ class Redactor:
             )
         else:
             self._root_re = None
+        # A home-directory prefix outside the workspace (a sibling of it, say) is
+        # rewritten to "~" so output does not leak the real absolute path or the
+        # username. The workspace itself is already handled above, so skip when
+        # home == workspace.
+        home = self.home_dir
+        if home and home not in ("/", self.workspace_root):
+            self._home_re = re.compile(
+                r"(?<![\w./-])" + re.escape(home) + r"(?:/|(?![\w./-]))"
+            )
+        else:
+            self._home_re = None
 
     def redact(self, text: str) -> str:
         if not text:
@@ -108,6 +121,14 @@ class Redactor:
         # Layer 3: generic backstop
         for pattern, replacement in _PATTERNS:
             text = pattern.sub(replacement, text)
+        # Layer 4: rewrite a remaining home-directory prefix to "~". Runs last so
+        # the more specific backstop paths (~/.aws/**, etc.) match the real path
+        # first; whatever real home path is left (e.g. a sibling of the
+        # workspace) then loses its absolute form and username.
+        if self._home_re is not None:
+            text = self._home_re.sub(
+                lambda m: "~/" if m.group(0).endswith("/") else "~", text
+            )
         return text
 
     def is_clean(self, text: str) -> bool:
