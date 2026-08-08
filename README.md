@@ -459,26 +459,7 @@ The knobs split into two families that do fundamentally different things:
 
 By default, `[exec].shell` is `false`; `valet sh`, REPL shell mode, and direct
 shell executables such as `sh -c` are refused unless the host explicitly sets
-`shell = true`. Valet also starts with built-in dangerous command bans for
-environment/process/system-control commands such as `env`, `printenv`, `kill`,
-`pkill`, `killall`, `ps`, `sudo`, `reboot`, `halt`, `launchctl`, `osascript`,
-and `valet` itself.
-
-When a command launched by Valet needs to be inspected or stopped, use Valet's
-own process registry instead of host process tools:
-
-```bash
-valet processes list
-valet processes kill <pid>
-```
-
-Only subprocesses started and currently tracked by Valet can be killed this way.
-
-For per-command environment variables, prefer shell-free argv mode:
-
-```bash
-valet --env AWS_PROFILE=prod-readonly run -- aws s3 ls
-```
+`shell = true`.
 
 **`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
 difference is only *how the file is located*. `secret_sources` is one fixed
@@ -503,6 +484,29 @@ scrubs whatever slips through another way.
 > **Rule of thumb:** "a command should be able to *use* this file" →
 > `secret_sources` / `cwd_secret_files`. "no one should *see* this file" →
 > `deny_read_paths`. "this program shouldn't run" → `policy.deny`.
+
+## Guardrails
+
+Valet also starts with built-in dangerous command bans for
+environment/process/system-control commands such as `env`, `printenv`, `kill`,
+`pkill`, `killall`, `ps`, `sudo`, `reboot`, `halt`, `launchctl`, `osascript`,
+and `valet` itself.
+
+When a command launched by Valet needs to be inspected or stopped, use Valet's
+own process registry instead of host process tools:
+
+```bash
+valet processes list
+valet processes kill <pid>
+```
+
+Only subprocesses started and currently tracked by Valet can be killed this way.
+
+For per-command environment variables, prefer shell-free argv mode:
+
+```bash
+valet --env AWS_PROFILE=prod-readonly run -- aws s3 ls
+```
 
 ## Development
 
