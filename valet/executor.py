@@ -64,6 +64,26 @@ _PROCESSES: dict[int, _TrackedProcess] = {}
 _PROCESSES_LOCK = threading.RLock()
 
 
+def _child_env(
+    extra_env: Optional[dict[str, str]], cwd: Optional[str]
+) -> Optional[dict[str, str]]:
+    """Environment for the child, or None to inherit unchanged.
+
+    When a cwd is set, ``PWD`` is set to it so shells and ``/bin/pwd`` report the
+    right directory via their logical (``$PWD``) path — and, under an OS sandbox
+    that hides the workspace's ancestors, avoid the ``getcwd()`` call that would
+    otherwise fail with "Operation not permitted".
+    """
+    if not extra_env and not cwd:
+        return None
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    if cwd:
+        env["PWD"] = cwd
+    return env
+
+
 def run(
     cmd: Command,
     *,
@@ -82,10 +102,7 @@ def run(
             raise CommandError("non-shell mode requires a non-empty argv list")
         popen_arg = list(cmd)
 
-    env = None
-    if extra_env:
-        env = dict(os.environ)
-        env.update(extra_env)
+    env = _child_env(extra_env, cwd)
 
     try:
         proc, tracked_cmd = _popen(
@@ -144,10 +161,7 @@ def iter_run(
             raise CommandError("non-shell mode requires a non-empty argv list")
         popen_arg = list(cmd)
 
-    env = None
-    if extra_env:
-        env = dict(os.environ)
-        env.update(extra_env)
+    env = _child_env(extra_env, cwd)
 
     try:
         proc, tracked_cmd = _popen(

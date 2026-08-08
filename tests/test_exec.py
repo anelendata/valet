@@ -139,7 +139,8 @@ def test_stream_shebangless_path_script_runs_when_shell_enabled(cfg, workspace):
 
     assert resp["ok"] is True
     assert "env-ok args=-p . -w workspace cloud schedule list" in output
-    assert f"cwd={cwd}" in output
+    # $PWD is the real cwd, virtualized to "./" in the redacted output.
+    assert "cwd=./zendesk-jira" in output
 
 
 def test_shebangless_path_script_requires_shell_fallback_enabled(cfg, workspace):
@@ -477,3 +478,16 @@ def test_chdir_nonexistent_rejected(cfg, workspace):
     resp = Broker(cfg).handle({"op": "chdir", "target": "no_such_dir_xyz"})
     assert resp["ok"] is False
     assert resp["error_class"] == "ValidationError"
+
+
+def test_pwd_env_var_is_set_to_the_cwd(cfg, workspace):
+    (workspace / "sub").mkdir()
+    resp = Broker(cfg).handle({
+        "op": "exec",
+        "cmd": [sys.executable, "-c", "import os; print(os.environ.get('PWD'))"],
+        "shell": False,
+        "cwd": "sub",
+    })
+    assert resp["ok"] is True
+    # PWD holds the real cwd so shells/pwd work; the output is virtualized.
+    assert resp["stdout"].strip() == "./sub"
