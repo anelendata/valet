@@ -287,6 +287,9 @@ def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
     if hasattr(res, "returncode") and res.returncode == 0:
         _doctor_line("WARN", "home directory IS readable inside the sandbox "
                              "(reads are not confined)")
+        print("         → [exec].workspace is your home (or an ancestor of it). Set it")
+        print("           to a dedicated subdirectory (e.g. ~/valet-workspace) so only")
+        print("           that subtree is readable, not the whole home.")
     else:
         _doctor_line(" OK ", "home directory is blocked inside the sandbox")
 
