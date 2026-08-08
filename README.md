@@ -45,6 +45,7 @@ Benefits:
   - [Interactive mode — a redacting shell](#interactive-mode--a-redacting-shell)
 - [Config](#config)
   - [Choosing what to configure](#choosing-what-to-configure)
+- [Guardrails](#guardrails)
 - [Development](#development)
   - [Tests](#tests)
 
