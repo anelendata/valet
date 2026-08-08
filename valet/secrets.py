@@ -9,6 +9,9 @@ Supported source formats, detected by extension/content:
   - AWS credentials/config ini  (``[profile]`` sections, ``key = value``)
   - dotenv / .secrets           (``KEY=VALUE``, optional ``export``, quotes)
   - JSON                        (all string/number leaf values)
+  - YAML (``.yaml``/``.yml``,   (all scalar leaf values; requires PyYAML —
+    and ``.secrets``)            ``pip install 'valet[yaml]'``. Without it, YAML
+                                 files are still redacted whole-file.)
 
 Parsing is deliberately lenient and never raises on a malformed source: a
 source we cannot read simply contributes no redaction values, and the generic
@@ -97,6 +100,41 @@ def _from_json(text: str) -> Iterable[str]:
     return out
 
 
+def _from_yaml(text: str) -> Iterable[str]:
+    """Scalar leaf values from a YAML source.
+
+    YAML support is optional: without PyYAML installed this returns nothing (the
+    whole-file blob still masks the file). Uses ``safe_load`` only — never the
+    object-constructing loader — and never raises.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return []
+    try:
+        docs = list(yaml.safe_load_all(text))
+    except Exception:
+        # PyYAML raises YAMLError, but be defensive: this must never propagate.
+        return []
+    out: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, (list, tuple)):
+            for v in node:
+                walk(v)
+        elif isinstance(node, bool):
+            return  # bool is an int subclass; a flag is not a secret value
+        elif isinstance(node, (str, int, float)):
+            out.append(str(node))
+
+    for doc in docs:
+        walk(doc)
+    return out
+
+
 # A secret file larger than this is not loaded as a single whole-content blob
 # (it is still parsed for structured values). Secret files are small; this only
 # guards against someone pointing a source at a huge file.
@@ -104,15 +142,21 @@ MAX_WHOLE_FILE_BYTES = 1_000_000
 
 
 def _parse_text(name: str, suffix: str, text: str) -> list[str]:
-    """Extract structured values (KEY=VALUE / ini / json) from file text."""
+    """Extract structured values (KEY=VALUE / ini / json / yaml) from file text."""
     if suffix == ".json":
         return list(_from_json(text))
+    if suffix in (".yaml", ".yml"):
+        return list(_from_yaml(text))
     if suffix in (".env",) or name in (".secrets", ".env") or "credentials" in name or name == "config":
         # AWS credentials/config are ini; .env/.secrets are dotenv. Try both
         # and keep whatever each yields — they don't overlap destructively.
-        return list(_from_ini(text)) + list(_from_dotenv(text))
-    # Unknown: best-effort dotenv, then ini.
-    return list(_from_dotenv(text)) + list(_from_ini(text))
+        values = list(_from_ini(text)) + list(_from_dotenv(text))
+        # .secrets has no fixed format and is frequently YAML.
+        if name == ".secrets":
+            values += list(_from_yaml(text))
+        return values
+    # Unknown: best-effort dotenv, then ini, then yaml.
+    return list(_from_dotenv(text)) + list(_from_ini(text)) + list(_from_yaml(text))
 
 
 def _load_one(path: Path) -> list[str]:
