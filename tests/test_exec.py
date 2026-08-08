@@ -491,3 +491,32 @@ def test_pwd_env_var_is_set_to_the_cwd(cfg, workspace):
     assert resp["ok"] is True
     # PWD holds the real cwd so shells/pwd work; the output is virtualized.
     assert resp["stdout"].strip() == "./sub"
+
+
+def test_workspace_bin_is_searched_first(cfg, workspace):
+    (workspace / "bin").mkdir()
+    tool = workspace / "bin" / "mytool"
+    tool.write_text("#!/bin/sh\necho from-workspace-bin\n")
+    tool.chmod(0o755)
+    (workspace / "sub").mkdir()
+
+    # argv mode, bare name, run from a subdirectory of the workspace
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": ["mytool"], "shell": False, "cwd": "sub"}
+    )
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "from-workspace-bin"
+
+
+def test_workspace_bin_is_first_on_path(cfg, workspace):
+    (workspace / "bin").mkdir()
+    resp = Broker(cfg).handle(
+        {"op": "exec", "cmd": 'printf "%s\\n" "$PATH"', "shell": True}
+    )
+    # Virtualized to ./bin in the redacted output; it comes first.
+    assert resp["stdout"].split(os.pathsep)[0] == "./bin"
+
+
+def test_no_workspace_bin_means_no_path_prepend(cfg, workspace):
+    plan = Broker(cfg)._exec_plan({"op": "exec", "cmd": "echo hi", "shell": True})
+    assert plan.path_prepend is None

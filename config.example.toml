@@ -92,6 +92,10 @@ console = true
 # during redaction, so `pwd` and any command that prints an absolute path under
 # the workspace never disclose the directories above it. The "./" prefix marks
 # the path as workspace-relative so it is not mistaken for the real "/".
+#
+# If the workspace root has a `bin/` directory, it is prepended to PATH, so
+# project-local tools there are found before anything else (with or without the
+# OS sandbox).
 workspace = "~"
 
 # Shell execution is disabled by default. Leave this false unless you trust all

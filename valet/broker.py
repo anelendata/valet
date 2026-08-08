@@ -55,6 +55,7 @@ class _ExecPlan:
     echoed: str
     run_shell: bool = False  # how the executor actually runs it (a sandbox
                              # wrapper makes this an argv even for shell mode)
+    path_prepend: Optional[str] = None  # a workspace-local bin to search first
 
 
 class _StreamRedactor:
@@ -214,6 +215,7 @@ class Broker:
                 timeout=plan.timeout,
                 extra_env=plan.extra_env,
                 allow_script_fallback=self.cfg.exec.shell,
+                path_prepend=plan.path_prepend,
             )
         except (TimeoutError_, CommandError) as exc:
             return {
@@ -271,6 +273,7 @@ class Broker:
                 extra_env=plan.extra_env,
                 cancel_event=cancel_event,
                 allow_script_fallback=self.cfg.exec.shell,
+                path_prepend=plan.path_prepend,
             ):
                 if isinstance(item, OutputChunk):
                     for text in buffers[item.stream].feed(item.text):
@@ -429,7 +432,15 @@ class Broker:
         run_cmd, run_shell = self._maybe_sandbox(cmd, shell)
         return _ExecPlan(cmd=run_cmd, shell=shell, cwd=cwd, timeout=timeout,
                          extra_env=extra_env, redactor=redactor, echoed=echoed,
-                         run_shell=run_shell)
+                         run_shell=run_shell, path_prepend=self._workspace_bin())
+
+    def _workspace_bin(self) -> Optional[str]:
+        """A ``bin`` directory at the workspace root, to search before PATH."""
+        root = self._workspace_root()
+        if not root:
+            return None
+        bin_dir = os.path.join(root, "bin")
+        return bin_dir if os.path.isdir(bin_dir) else None
 
     def _maybe_sandbox(self, cmd: Any, shell: bool) -> tuple[Any, bool]:
         """Wrap a command in the configured OS sandbox, if any.
