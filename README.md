@@ -347,12 +347,12 @@ Client config:
 [client]
 id = "my-ai-box"
 key = "xxxxxxxxxxxxxxxxxxxxxxxx"
-default_host = "my-laptop"
+default_host = "my-main-laptop"
 reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
 
-[hosts.my-laptop]
+[hosts.my-main-laptop]
 url = "ws://<host-lan-ip>:8766/rpc"
 ```
 
@@ -375,7 +375,7 @@ valet repl
 
 You can select host with `--host` option:
 ```bash
-valet --host my-laptop -- run ls
+valet --host my-main-laptop -- run ls
 ```
 
 To revoke a LAN client, remove it from the trusted host config:
@@ -401,7 +401,7 @@ reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
 
-[hosts.my-laptop]
+[hosts.my-main-laptop]
 # Optional per-host overrides use the same keys.
 ```
 

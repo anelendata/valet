@@ -44,7 +44,7 @@ listen = "127.0.0.1:8766"
 # no [hosts], client commands talk to the local daemon over the Unix socket.
 #
 # [client]
-# id = "my-laptop"
+# id = "my-main-laptop"
 # key = "<shared key approved under [identity.clients] on the host>"
 # default_host = "my-main-laptop"
 # reconnect_max_retries = 5
