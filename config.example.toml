@@ -192,9 +192,14 @@ deny = []
 #   "**/.secrets/**"   ban anything under any .secrets directory
 #   "~/.aws/**"        ban anything under ~/.aws
 deny_read_paths = [
-    # "**/.env",
-    # "**/.secrets/**",
-    # "~/.aws/**",
+  "**/.env",
+  "**/.config/**",
+  "**/.secrets/**",
+  "**/secrets/**",
+  "**/.passwords/**",
+  "**/passwords/**",
+  "~/.ssh/**",
+  "~/.aws/**",
 ]
 
 # DEFAULT ON. Refuse a command whose existing file/directory arguments, or
