@@ -38,6 +38,7 @@ Benefits:
   - [Valet serve](#valet-serve)
   - [REPL mode](#repl-mode)
   - [Audit logging](#audit-logging)
+  - [Multi-transport: one host, many agents](#multi-transport-one-host-many-agents)
 - [Valet is not...](#valet-is-not)
 - [Before getting started](#before-getting-started)
   - [Recommended architecture](#recommended-architecture)
@@ -234,6 +235,32 @@ command referenced `**/.env` and was refused before execution. The point is
 accountability: redaction protects model context, policy controls execution,
 and audit logging lets an operator reconstruct what happened without exposing
 the secrets valet was built to protect.
+
+### Multi-transport: one host, many agents
+
+valet speaks two transports behind the same request/response contract, so the
+same `valet run` / `valet sh` / REPL commands work whether the agent is on the
+host or on another machine:
+
+- **Unix domain socket** (default) — `valet serve`. The socket file is `0600`,
+  owned by the user who started the daemon, so the OS is the access-control
+  layer: no port, no token, no network surface.
+- **Trusted-LAN WebSocket RPC** — `valet serve-lan`. A client on a second
+  computer on the same trusted network reaches the host over WebSocket, with
+  challenge-response authentication against approved client identities. It stays
+  off unless `[host].lan = true`; setup is in
+  [Running from a node in the local network](#running-from-a-node-in-the-local-network).
+
+The payoff is **one credentialed host, many agents**. Point every agent — the
+REPL on your laptop, a coding agent in a hardened sandbox, a second workstation
+running another model — at the same valet host, and they all get the same
+policy-gated, redacted tool access. You install and configure the credentials,
+cloud CLIs, and secret sources **once, on the host**, instead of standing up and
+securing a separate stack of MCP servers and application installs inside every
+agent. Agents stay lightweight and hold no secrets; the host is the single place
+where privileged tools live and where policy and audit are enforced. Each
+request's transport (`uds` or `lan`) is recorded in the audit log, so a shared
+host stays accountable.
 
 ## Valet is not...
 
