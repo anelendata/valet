@@ -288,6 +288,110 @@ def test_cli_workspace_flag_attaches_to_exec(monkeypatch):
     assert captured["workspace"] == "personal"
 
 
+def test_cli_client_default_workspace_attaches_to_exec(tmp_path, monkeypatch):
+    client_cfg = tmp_path / "client.toml"
+    client_cfg.write_text('[client]\ndefault_workspace = "clientws"\n')
+    captured = {}
+    monkeypatch.setattr("valet.cli._streaming_one_shot",
+                        lambda _args, request: captured.update(request) or 0)
+    # No -w: the client's default_workspace is used.
+    assert main(["-c", str(client_cfg), "run", "--", "echo", "hi"]) == 0
+    assert captured["workspace"] == "clientws"
+
+
+def test_cli_workspace_flag_overrides_client_default(tmp_path, monkeypatch):
+    client_cfg = tmp_path / "client.toml"
+    client_cfg.write_text('[client]\ndefault_workspace = "clientws"\n')
+    captured = {}
+    monkeypatch.setattr("valet.cli._streaming_one_shot",
+                        lambda _args, request: captured.update(request) or 0)
+    assert main(["-c", str(client_cfg), "-w", "flag", "run", "--", "echo", "hi"]) == 0
+    assert captured["workspace"] == "flag"
+
+
+def test_cli_run_stale_client_default_exits_gracefully(tmp_path, monkeypatch, capsys):
+    # The host rejects an unknown workspace; run/sh should translate that into a
+    # clear message pointing at the client default, not a raw ValidationError.
+    client_cfg = tmp_path / "client.toml"
+    client_cfg.write_text('[client]\ndefault_workspace = "gone"\n')
+
+    class _Conn:
+        def request_stream(self, req, on_event):
+            return {"op": "exec", "ok": False, "error_class": "ValidationError",
+                    "detail": "unknown workspace: 'gone'"}
+        def close(self):
+            pass
+
+    monkeypatch.setattr("valet.cli._connect",
+                        lambda _args: (_Conn(), object(), None))
+    rc = main(["-c", str(client_cfg), "run", "--", "echo", "hi"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "gone" in err and "client default" in err
+    assert "default_workspace unset" in err
+
+
+def test_cli_repl_stale_client_default_exits(tmp_path, monkeypatch, capsys):
+    # REPL must not enter the loop when the client default is unavailable.
+    a = tmp_path / "a"; a.mkdir()
+    host_cfg = _write_config(tmp_path / "config.toml", {"work": {"path": str(a)}},
+                             default="work")
+    client_cfg = tmp_path / "client.toml"
+    client_cfg.write_text('[client]\ndefault_workspace = "gone"\n')
+
+    class _Conn:
+        def request(self, req):
+            return {"ok": True}
+        def close(self):
+            pass
+
+    from valet.rpc import Target
+    monkeypatch.setattr("valet.cli._connect",
+                        lambda _args: (_Conn(), Target(kind="uds", name="local"),
+                                       load_config(host_cfg)))
+    entered = []
+    monkeypatch.setattr("valet.cli.interact", lambda *a, **k: entered.append(True) or 0)
+
+    rc = main(["-c", str(client_cfg), "repl"])
+
+    assert rc == 2
+    assert entered == []  # never entered the prompt loop
+    err = capsys.readouterr().err
+    assert "gone" in err and "work" in err  # names the stale ws and what's available
+
+
+def test_cli_client_default_workspace_unset(tmp_path, capsys):
+    from valet.client_config import load_client_config
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[client]\ndefault_workspace = "clientws"\n\n'
+        '[exec]\ndefault_workspace = "hostws"\n'
+    )
+    rc = main(["-c", str(cfg), "client", "default_workspace", "unset"])
+    assert rc == 0
+    assert load_client_config(cfg).default_workspace == ""     # client cleared
+    assert load_config(cfg).default_workspace == "hostws"      # host untouched
+    assert "cleared" in capsys.readouterr().out
+
+
+def test_cli_client_default_workspace_set(tmp_path, capsys):
+    from valet.client_config import load_client_config
+    # A combined config: setting the client default must not touch the host's.
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[client]\nid = "x"\ndefault_host = "h"\n\n'
+        '[exec]\ndefault_workspace = "hostws"\n\n'
+        f'[workspaces.hostws]\npath = "{tmp_path}"\n\n'
+        '[hosts.h]\nurl = "ws://127.0.0.1:8766/rpc"\n'
+    )
+    rc = main(["-c", str(cfg), "client", "default_workspace", "set", "Team Box"])
+    assert rc == 0
+    assert load_client_config(cfg).default_workspace == "team-box"   # id normalized
+    assert load_config(cfg).default_workspace == "hostws"            # host untouched
+    assert "team-box" in capsys.readouterr().out
+
+
 def test_cli_workspace_list(tmp_path, capsys):
     a = tmp_path / "a"; a.mkdir()
     cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})

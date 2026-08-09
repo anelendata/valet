@@ -14,6 +14,7 @@ Subcommands:
   valet processes list  list subprocesses started by valet
   valet processes kill  terminate a subprocess started by valet
   valet client init     create a client-only config.toml
+  valet client default_workspace set <id>   set the client's default workspace
   valet clients add     generate and approve a host-side client key
   valet clients list    list host-approved client identities
   valet clients remove  remove a host-approved client identity
@@ -36,7 +37,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .client_config import default_client_config_path, load_client_config, write_new_client_config
+from .client_config import (
+    default_client_config_path,
+    load_client_config,
+    set_client_default_workspace,
+    unset_client_default_workspace,
+    write_new_client_config,
+)
 from .config import default_config_path, load_config, resolve_workspaces
 from .errors import ValetError, ValidationError
 from .host_config import (
@@ -453,21 +460,36 @@ def _cmd_repl(args: argparse.Namespace) -> int:
         # config; a remote target has no access to it, so ask the host for its
         # defaults. Without this the REPL would default remote sessions to
         # shell=off and run argv mode even when the host allows a shell.
+        # -w wins, then [client].default_workspace, then the host's own default.
+        # If the requested workspace is not available on the host (e.g. a stale
+        # client default), exit gracefully instead of dropping into a REPL where
+        # every command fails.
+        requested_ws, ws_source = _workspace_selection(args)
         if cfg:
             wsmap = resolve_workspaces(cfg)
-            active_ws = args.workspace or cfg.default_workspace
-            wcfg = (wsmap.get(active_ws) or wsmap.get(cfg.default_workspace)
-                    or next(iter(wsmap.values())))
-            if args.workspace and args.workspace not in wsmap:
-                print(f"valet: unknown workspace {args.workspace!r}; using "
-                      f"{wcfg.id!r} instead.", file=sys.stderr)
-            active_ws = wcfg.id
+            if not wsmap:
+                print("valet: no workspace configured on this host. "
+                      "Add one with `valet workspaces add <id> <dir>`.",
+                      file=sys.stderr)
+                return 2
+            if requested_ws and requested_ws not in wsmap:
+                print(_unknown_workspace_message(
+                    requested_ws, ws_source, target.name, sorted(wsmap)),
+                    file=sys.stderr)
+                return 2
+            active_ws = requested_ws or cfg.default_workspace
+            wcfg = wsmap[active_ws]
             shell_default = wcfg.exec.shell
             completion_ws = (wcfg.exec.workspace
                              if wcfg.policy.enforce_workspace_reads else None)
         else:
-            shell_default, remote_default = _remote_defaults(conn)
-            active_ws = args.workspace or remote_default
+            shell_default, remote_default, remote_list = _remote_defaults(conn)
+            if requested_ws and remote_list and requested_ws not in remote_list:
+                print(_unknown_workspace_message(
+                    requested_ws, ws_source, target.name, sorted(remote_list)),
+                    file=sys.stderr)
+                return 2
+            active_ws = requested_ws or remote_default
             completion_ws = None
         session = Session(
             shell=shell_default,
@@ -488,18 +510,23 @@ def _cmd_repl(args: argparse.Namespace) -> int:
         conn.close()
 
 
-def _remote_defaults(conn: ValetClient) -> tuple[bool, str | None]:
-    """Ask a remote host for its default shell mode and default workspace.
+def _remote_defaults(conn: ValetClient) -> tuple[bool, str | None, list[str]]:
+    """Ask a remote host for its default shell mode, default workspace, and
+    the list of workspace ids it offers.
 
-    Falls back to ``(False, None)`` if the host is old enough not to report
+    Falls back to ``(False, None, [])`` if the host is old enough not to report
     them or the ping fails; the host still rejects shell requests it does not
     allow and resolves the workspace itself.
     """
     try:
         resp = conn.request({"op": "ping"})
     except (ConnectionError, RpcError, OSError):
-        return False, None
-    return bool(resp.get("shell_default", False)), resp.get("default_workspace")
+        return False, None, []
+    return (
+        bool(resp.get("shell_default", False)),
+        resp.get("default_workspace"),
+        list(resp.get("workspaces") or []),
+    )
 
 
 def _one_shot(args: argparse.Namespace, request: dict) -> int:
@@ -535,6 +562,9 @@ def _streaming_one_shot(args: argparse.Namespace, request: dict) -> int:
         resp = conn.request_stream(request, _print_stream_event)
     finally:
         conn.close()
+    handled = _maybe_unknown_workspace_exit(args, resp)
+    if handled is not None:
+        return handled
     return _print_response(resp)
 
 
@@ -575,11 +605,70 @@ def _parse_env_args(values: list[str] | None) -> dict[str, str] | None:
     return env
 
 
+def _workspace_selection(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """The requested workspace and where it came from.
+
+    Priority: an explicit ``-w/--workspace`` ("flag") wins; otherwise the client
+    config's ``[client].default_workspace`` ("client-default"); otherwise
+    ``(None, None)`` — the host picks its own default.
+    """
+    flag = getattr(args, "workspace", None)
+    if flag:
+        return flag, "flag"
+    try:
+        client_default = load_client_config(getattr(args, "config", None)).default_workspace
+    except ValetError:
+        client_default = ""
+    if client_default:
+        return client_default, "client-default"
+    return None, None
+
+
+def _effective_workspace(args: argparse.Namespace) -> str | None:
+    return _workspace_selection(args)[0]
+
+
+def _unknown_workspace_message(
+    workspace: str, source: str | None, host_label: str | None,
+    available: list[str] | None,
+) -> str:
+    where = f" on {host_label}" if host_label and host_label != "local" else ""
+    parts = [f"valet: workspace {workspace!r} is not available{where}."]
+    if available:
+        parts.append("Available: " + ", ".join(available) + ".")
+    if source == "client-default":
+        parts.append("It is your client default — update it with "
+                     "`valet client default_workspace set <id>` or clear it with "
+                     "`valet client default_workspace unset`.")
+    else:
+        parts.append("List the host's workspaces with `valet workspaces list`.")
+    return " ".join(parts)
+
+
+def _maybe_unknown_workspace_exit(args: argparse.Namespace, resp: dict) -> int | None:
+    """Translate a host 'unknown workspace' rejection into a graceful message.
+
+    Returns an exit code when it handled the response, else None. Used by run/sh
+    so a stale client ``default_workspace`` fails clearly instead of leaking a
+    raw ValidationError.
+    """
+    if not (isinstance(resp, dict) and resp.get("ok") is False):
+        return None
+    detail = str(resp.get("detail") or "")
+    if resp.get("error_class") != "ValidationError" or not detail.startswith("unknown workspace"):
+        return None
+    workspace, source = _workspace_selection(args)
+    if not workspace:
+        return None
+    print(_unknown_workspace_message(workspace, source, None, None), file=sys.stderr)
+    return 2
+
+
 def _attach_env(args: argparse.Namespace, req: dict) -> None:
     env = _parse_env_args(getattr(args, "env", None))
     if env:
         req["env"] = env
-    workspace = getattr(args, "workspace", None)
+    workspace = _effective_workspace(args)
     if workspace:
         req["workspace"] = workspace
 
@@ -695,6 +784,55 @@ def _cmd_client_init(args: argparse.Namespace) -> int:
     print("[identity.clients.%s]" % host.client_id)
     print('name = "%s"' % host.client_id)
     print('key = "%s"' % host.key)
+    return 0
+
+
+def _cmd_client_default_workspace_set(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_client_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Run `valet client init` first.",
+              file=sys.stderr)
+        return 2
+    raw_id = args.workspace_id.strip()
+    if not raw_id:
+        print("valet client default_workspace set: workspace id cannot be empty",
+              file=sys.stderr)
+        return 2
+    try:
+        workspace_id = normalize_workspace_id(raw_id)
+    except ValueError as exc:
+        print(f"valet client default_workspace set: {exc}", file=sys.stderr)
+        return 2
+    set_client_default_workspace(path, workspace_id)
+    load_client_config(path)  # surface any TOML error from the edit
+    print(f"valet: set [client].default_workspace = {workspace_id!r} in {path}")
+    print("Commands now run in this workspace unless -w/--workspace overrides it.")
+    return 0
+
+
+def _cmd_client_default_workspace_show(args: argparse.Namespace) -> int:
+    cfg = load_client_config(args.config)
+    current = cfg.default_workspace
+    if current:
+        print(current)
+    else:
+        print("valet: no [client].default_workspace set (using the host default)")
+    return 0
+
+
+def _cmd_client_default_workspace_unset(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_client_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Run `valet client init` first.",
+              file=sys.stderr)
+        return 2
+    removed = unset_client_default_workspace(path)
+    load_client_config(path)  # surface any TOML error from the edit
+    if removed:
+        print(f"valet: cleared [client].default_workspace in {path}")
+        print("Commands now use the host's default workspace.")
+    else:
+        print(f"valet: no [client].default_workspace was set in {path}")
     return 0
 
 
@@ -1024,6 +1162,17 @@ def build_parser() -> argparse.ArgumentParser:
     client_init.add_argument("--url", required=True, help="ws://HOST:PORT/rpc")
     client_init.add_argument("--force", action="store_true")
     client_init.set_defaults(func=_cmd_client_init)
+    client_dw = client_sub.add_parser(
+        "default_workspace", help="the client's default workspace ([client].default_workspace)")
+    client_dw_sub = client_dw.add_subparsers(dest="client_dw_cmd", required=True)
+    client_dw_show = client_dw_sub.add_parser("show", help="show the client's default workspace")
+    client_dw_show.set_defaults(func=_cmd_client_default_workspace_show)
+    client_dw_set = client_dw_sub.add_parser("set", help="set the client's default workspace")
+    client_dw_set.add_argument("workspace_id", metavar="id",
+                               help="workspace id to run in by default")
+    client_dw_set.set_defaults(func=_cmd_client_default_workspace_set)
+    client_dw_sub.add_parser("unset", help="clear the client's default workspace"
+                             ).set_defaults(func=_cmd_client_default_workspace_unset)
 
     clients = sub.add_parser("clients", help="manage host-approved client identities")
     clients_sub = clients.add_subparsers(dest="clients_cmd", required=True)

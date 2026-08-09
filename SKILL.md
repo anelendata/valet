@@ -86,6 +86,7 @@ policy.
 id = "local-ai-box"
 key = "client-shared-key"
 default_host = "my-computer"
+default_workspace = "work"   # optional; run in this workspace by default
 reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
@@ -96,6 +97,14 @@ url = "ws://192.168.1.25:8766/rpc"
 
 Per-host reconnect overrides can be placed under `[hosts.<name>]` with the same
 three reconnect keys.
+
+`[client].default_workspace` sets which workspace this client runs commands in
+when none is named. It takes priority over the host's own default workspace; an
+explicit `valet -w <id> ...` still overrides it. Manage it with
+`valet client default_workspace set <id>` / `show` / `unset`. If it names a
+workspace the host no longer offers, valet fails with a clear message (and the
+REPL declines to start) instead of erroring on every command — update or `unset`
+it, or see `valet workspaces list`.
 
 ## Host Prerequisites
 

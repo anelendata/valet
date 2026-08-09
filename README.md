@@ -453,6 +453,7 @@ Client config:
 id = "my-ai-box"
 key = "xxxxxxxxxxxxxxxxxxxxxxxx"
 default_host = "my-computer"
+# default_workspace = "<id>"  # optional; overrides the host default
 reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
@@ -460,6 +461,13 @@ reconnect_backoff_max_seconds = 3.0
 [hosts.my-computer]
 url = "ws://<host-lan-ip>:8766/rpc"
 ```
+
+`[client].default_workspace` (optional) sets which workspace this client runs in
+when a command names none. It takes priority over the host's own default; an
+explicit `valet -w <id> ...` still overrides it. Manage it with `valet client
+default_workspace set <id>` / `show` / `unset`. If it points at a workspace the
+host no longer offers, `valet run`/`sh` fail with a clear message and the REPL
+declines to start — update or `unset` it (or run `valet workspaces list`).
 
 This writes a new `[identity.clients.<id>]` entry to the host's `config.toml`
 and prints a client-only TOML snippet. (If the id already exists, valet asks

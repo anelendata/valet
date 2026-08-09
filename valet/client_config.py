@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import tomllib
 from dataclasses import dataclass
@@ -38,6 +39,10 @@ class ClientConfig:
     key: str
     default_host: str
     hosts: dict[str, ClientHost]
+    # Workspace this client runs commands in when none is given on the command
+    # line. Takes priority over the host's own default workspace; an explicit
+    # ``-w/--workspace`` still overrides it. Empty means "use the host default".
+    default_workspace: str = ""
 
 
 def default_client_config_path() -> Path:
@@ -63,7 +68,8 @@ def load_client_config(
     if not cfg_path.exists():
         if required:
             raise ConfigError(f"client config not found at {cfg_path}")
-        return ClientConfig(path=cfg_path, id="", key="", default_host="", hosts={})
+        return ClientConfig(path=cfg_path, id="", key="", default_host="",
+                            hosts={}, default_workspace="")
     try:
         with open(cfg_path, "rb") as fh:
             raw = tomllib.load(fh)
@@ -74,6 +80,7 @@ def load_client_config(
     client_id = str(client.get("id", ""))
     client_key = str(client.get("key", ""))
     default_host = str(client.get("default_host", ""))
+    default_workspace = str(client.get("default_workspace", ""))
     reconnect_max_retries = int(client.get("reconnect_max_retries", 5))
     reconnect_backoff_seconds = float(client.get("reconnect_backoff_seconds", 0.25))
     reconnect_backoff_max_seconds = float(client.get("reconnect_backoff_max_seconds", 3.0))
@@ -112,6 +119,7 @@ def load_client_config(
         key=client_key,
         default_host=default_host,
         hosts=hosts,
+        default_workspace=default_workspace,
     )
 
 
@@ -134,3 +142,62 @@ def write_new_client_config(path: Path, *, host_name: str, url: str) -> ClientCo
     )
     path.write_text(text)
     return load_client_config(path)
+
+
+def set_client_default_workspace(path: Path, workspace_id: str) -> None:
+    """Set ``default_workspace`` inside the ``[client]`` section of the config.
+
+    The edit is scoped to the ``[client]`` section so a combined config (one file
+    holding both ``[client]`` and the host's ``[exec]``) never has its host-side
+    ``[exec].default_workspace`` touched. Replaces an existing value or inserts
+    the key, creating a ``[client]`` section if there is none.
+    """
+    text = path.read_text()
+    line = f'default_workspace = "{_toml_escape(workspace_id)}"'
+    header = re.search(r"(?m)^\[client\]\s*$", text)
+    if header is None:
+        separator = "" if text == "" or text.endswith("\n") else "\n"
+        path.write_text(f"{text}{separator}\n[client]\n{line}\n")
+        return
+    body_start = header.end()
+    nxt = re.search(r"(?m)^\[[^\]]+\]\s*$", text[body_start:])
+    body_end = body_start + nxt.start() if nxt else len(text)
+    body = text[body_start:body_end]
+    new_body, replaced = re.subn(
+        r"(?m)^\s*default_workspace\s*=.*$", lambda _m: line, body, count=1
+    )
+    if replaced:
+        text = text[:body_start] + new_body + text[body_end:]
+    else:
+        insert_at = body_start
+        if insert_at < len(text) and text[insert_at] == "\n":
+            insert_at += 1
+        text = text[:insert_at] + line + "\n" + text[insert_at:]
+    path.write_text(text)
+
+
+def unset_client_default_workspace(path: Path) -> bool:
+    """Remove ``default_workspace`` from the ``[client]`` section.
+
+    Returns True if a value was removed, False if none was set. Scoped to the
+    ``[client]`` section so a combined config's host-side ``[exec]`` is untouched.
+    """
+    text = path.read_text()
+    header = re.search(r"(?m)^\[client\]\s*$", text)
+    if header is None:
+        return False
+    body_start = header.end()
+    nxt = re.search(r"(?m)^\[[^\]]+\]\s*$", text[body_start:])
+    body_end = body_start + nxt.start() if nxt else len(text)
+    body = text[body_start:body_end]
+    new_body, removed = re.subn(
+        r"(?m)^[ \t]*default_workspace[ \t]*=.*\n?", "", body, count=1
+    )
+    if not removed:
+        return False
+    path.write_text(text[:body_start] + new_body + text[body_end:])
+    return True
+
+
+def _toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')

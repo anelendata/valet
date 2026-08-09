@@ -114,6 +114,7 @@ def client_config_snippet(
         f'id = "{_toml_escape(update.client_id)}"\n'
         f'key = "{_toml_escape(update.key)}"\n'
         f'default_host = "{_toml_escape(host_name)}"\n'
+        '# default_workspace = "<id>"  # optional; overrides the host default\n'
         "reconnect_max_retries = 5\n"
         "reconnect_backoff_seconds = 0.25\n"
         "reconnect_backoff_max_seconds = 3.0\n"
