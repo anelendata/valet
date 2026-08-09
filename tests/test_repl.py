@@ -10,6 +10,7 @@ from valet.repl import (
     format_candidate_columns,
     format_exec,
     interact,
+    meta_command_candidates,
     path_candidates,
     prompt_for,
     run_command,
@@ -131,6 +132,33 @@ def test_unknown_meta_reported():
     _, out = run_command(":bogus", Session(), send)
     assert "unknown meta-command" in out
     assert sent == []
+
+
+def test_meta_command_candidates_lists_and_filters():
+    all_meta = meta_command_candidates(":")
+    assert ":help" in all_meta and ":workspaces" in all_meta and ":quit" in all_meta
+    assert all(c.startswith(":") for c in all_meta)
+    assert meta_command_candidates(":c") == [":call", ":cwd"]
+    assert meta_command_candidates(":w") == [":workspaces"]
+    assert meta_command_candidates(":zzz") == []
+
+
+def test_meta_completion_never_queries_daemon():
+    def boom(_req):
+        raise AssertionError("daemon must not be queried for meta completion")
+    session = Session(completion_send=boom)
+    # Bare colon lists every meta-command; a prefix filters.
+    assert ":shell" in session_completion_candidates(":", session)
+    assert session_completion_candidates(":sh", session) == [":shell"]
+
+
+def test_meta_argument_completion():
+    session = Session(completion_send=lambda _req: {"ok": False})
+    assert session_completion_candidates(":shell o", session) == ["on", "off"]
+    assert session_completion_candidates(":workspaces ", session) == ["list", "set"]
+    assert session_completion_candidates(":processes k", session) == ["kill"]
+    # A deeper argument (e.g. a workspace id) offers no keyword suggestions.
+    assert session_completion_candidates(":workspaces set foo", session) == []
 
 
 def test_meta_call_passes_json_through():

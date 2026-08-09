@@ -45,6 +45,7 @@ Type any command to run it; output has secrets redacted.
   :processes kill PID  terminate a valet subprocess (:kill PID also works)
   :call <json>         send a raw request object to the daemon
   :quit, :exit         leave (Ctrl-D also works)
+Type ':' and press Tab to list meta-commands.
 """
 
 BANNER = (
@@ -572,8 +573,58 @@ def completion_candidates(line: str, cwd: Optional[str], path: Optional[str] = N
     return path_candidates(prefix, cwd, workspace)
 
 
+# Meta-commands offered by Tab-completion after a leading ":". The primary,
+# documented names (aliases like :ws / :jobs / :? are left out to keep the Tab
+# list short and discoverable); all aliases still work when typed in full.
+_META_COMMANDS = (
+    "help", "cwd", "shell", "workspaces", "secrets", "processes", "call",
+    "quit", "exit",
+)
+
+# First-argument completions for the meta-commands that take a fixed keyword.
+_META_SUBCOMMANDS = {
+    "shell": ("on", "off"),
+    "workspace": ("list", "set"),
+    "workspaces": ("list", "set"),
+    "ws": ("list", "set"),
+    "processes": ("list", "kill"),
+    "procs": ("list", "kill"),
+    "jobs": ("list", "kill"),
+}
+
+
+def meta_command_candidates(prefix: str) -> list[str]:
+    """Complete a ``:meta`` command name from a leading-colon ``prefix``."""
+    return sorted(f":{name}" for name in _META_COMMANDS if f":{name}".startswith(prefix))
+
+
+def _meta_completion(line: str) -> list[str]:
+    """Complete a ``:meta`` command name, or its first keyword argument.
+
+    Kept fully local (no daemon round-trip) and self-contained so typing ``:``
+    and pressing Tab reveals the meta-commands, and their file-less arguments
+    complete instead of falling through to filename completion.
+    """
+    start = _word_start(line)
+    word = line[start:]
+    if word.startswith(":"):
+        return meta_command_candidates(word)
+    # An argument to a ":command". Only complete the first argument (the keyword);
+    # deeper args (e.g. a workspace id) fall back to no suggestions.
+    head = line[:start]
+    tokens = head.split()
+    if len(tokens) != 1:
+        return []
+    name = tokens[0][1:]  # ":shell" -> "shell"
+    return [sub for sub in _META_SUBCOMMANDS.get(name, ()) if sub.startswith(word)]
+
+
 def session_completion_candidates(line: str, session: Session) -> list[str]:
     """Return completion candidates, using the daemon when configured."""
+    # A leading ":" starts a meta-command — complete it locally and never ask
+    # the daemon (which only knows shell commands and paths).
+    if line.lstrip().startswith(":"):
+        return _meta_completion(line)
     if session.completion_send is not None:
         req = {"op": "complete", "line": line}
         if session.cwd:
