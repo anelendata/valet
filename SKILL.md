@@ -26,7 +26,7 @@ redacts known and suspected secret values, and returns only the sanitized result
   instead of shell assignment syntax.
 - A host may define several workspaces (separate directory jails, each with its
   own settings). Target one with `valet -w <id> run -- ...` / `valet -w <id> sh
-  '...'`; omit it to use the host's default. `valet workspace list` shows them.
+  '...'`; omit it to use the host's default. `valet workspaces list` shows them.
 - Do not use host process tools such as `ps`, `kill`, `pkill`, or `killall`.
   Use `valet processes list` and `valet processes kill <pid>` for subprocesses
   that Valet itself started.
@@ -166,8 +166,8 @@ Useful meta-commands:
 :cwd path
 :shell on
 :shell off
-:workspace
-:workspace set <id>
+:workspaces
+:workspaces set <id>
 :secrets
 :processes list
 :processes kill <pid>

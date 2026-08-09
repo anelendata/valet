@@ -85,12 +85,12 @@ console = true
 
 [exec]
 # Everything under [exec], [policy], and [redaction] is the DEFAULT for every
-# workspace. Each [workspace.<id>] section below can override exec/policy/
+# workspace. Each [workspaces.<id>] section below can override exec/policy/
 # redaction per key; anything it does not set falls back to these defaults.
 
 # Which workspace a command runs in when none is named. Select another with
-# `valet -w <id> run ...` / `valet -w <id> sh ...`, or `:workspace set <id>` in
-# the REPL. Must match a [workspace.<id>] section below.
+# `valet -w <id> run ...` / `valet -w <id> sh ...`, or `:workspaces set <id>` in
+# the REPL. Must match a [workspaces.<id>] section below.
 default_workspace = "default"
 
 # Shell execution is disabled by default. Leave this false unless you trust all
@@ -129,23 +129,23 @@ shell = false
 #
 # Point each workspace at a dedicated project directory, NOT your home: the
 # workspace is the blast radius commands are confined to, so "~" would expose
-# your whole home. Add more with `valet workspace add <id> <dir>`; list them
-# with `valet workspace list`. `valet init <dir>` fills in the default below.
-[workspace.default]
+# your whole home. Add more with `valet workspaces add <id> <dir>`; list them
+# with `valet workspaces list`. `valet init <dir>` fills in the default below.
+[workspaces.default]
 path = "CHANGE_ME_TO_WORKSPACE_DIR"
 
 # A second workspace with its own path and optional per-key overrides of the
 # [exec] / [policy] / [redaction] defaults above:
-#   [workspace.personal]
+#   [workspaces.personal]
 #   path = "~/personal"
 #
-#   [workspace.personal.exec]
+#   [workspaces.personal.exec]
 #   shell = true
 #
-#   [workspace.personal.policy]
+#   [workspaces.personal.policy]
 #   deny = ["rm"]
 #
-#   [workspace.personal.redaction]
+#   [workspaces.personal.redaction]
 #   extra_values = ["a-token-only-this-workspace-uses"]
 
 [redaction]

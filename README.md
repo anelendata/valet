@@ -364,7 +364,7 @@ high risk — the agent's blast radius would be your whole home.
 
 A host can serve several workspaces, each a separate directory jail with its own
 settings. `[exec]`, `[policy]`, and `[redaction]` are the **defaults** for every
-workspace; each `[workspace.<id>]` names a `path` and may override those defaults
+workspace; each `[workspaces.<id>]` names a `path` and may override those defaults
 per key. `[exec].default_workspace` picks the one used when a command names none.
 
 ```toml
@@ -375,26 +375,26 @@ shell = false                      # default for all workspaces
 [policy]
 deny = ["curl"]                    # denied in every workspace
 
-[workspace.default]
+[workspaces.default]
 path = "~/work/project"
 
-[workspace.personal]
+[workspaces.personal]
 path = "~/personal"
-[workspace.personal.exec]
+[workspaces.personal.exec]
 shell = true                       # overrides the [exec] default, personal only
-[workspace.personal.policy]
+[workspaces.personal.policy]
 deny = ["rm"]                      # replaces the shared deny list for personal
 ```
 
 Manage them from the host:
 
 ```bash
-valet workspace add personal ~/personal   # add a [workspace.personal] section
-valet workspace list                      # list workspaces (* marks the default)
+valet workspaces add personal ~/personal   # add a [workspaces.personal] section
+valet workspaces list                      # list workspaces (* marks the default)
 ```
 
 Select a workspace per command with `-w/--workspace`, or switch inside the REPL
-with `:workspace set <id>` (see below). `valet serve` reloads workspace changes
+with `:workspaces set <id>` (see below). `valet serve` reloads workspace changes
 automatically.
 
 ```bash
@@ -509,7 +509,7 @@ API_TOKEN=[REDACTED:secret:h:3bc13a30]
 (default) ws valet> cd projects/x-com       # cd sticks for the session
 (default) x-com valet> aws s3 ls | head     # runs in projects/x-com
 (default) x-com valet> cd ../../..          # cd: cannot cd above the workspace
-(default) x-com valet> :workspace set personal   # switch workspace (resets cwd)
+(default) x-com valet> :workspaces set personal   # switch workspace (resets cwd)
 (personal) personal valet> :shell off       # run following lines as argv, not shell
 (personal) personal valet> :quit
 ```
@@ -519,8 +519,8 @@ and is **jailed to the workspace** — `..` and symlinks can't climb above
 the workspace path (a bare `cd` returns to the workspace root). A compound line
 (`cd x && y`) is not intercepted: the `cd` there applies only to that
 subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
-`:shell`, `:workspace`, `:secrets`, `:processes`, `:call`, `:quit`); everything
-else runs. `:workspace` (or `:ws`) lists workspaces; `:workspace set <id>`
+`:shell`, `:workspaces`, `:secrets`, `:processes`, `:call`, `:quit`); everything
+else runs. `:workspaces` (or `:ws`) lists workspaces; `:workspaces set <id>`
 switches to another, resetting the cwd to its root and adopting its shell
 default.
 Use `:processes list` (or `:jobs`) to list subprocesses started by Valet, and

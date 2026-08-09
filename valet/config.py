@@ -105,7 +105,7 @@ class WorkspaceConfig:
 
     A workspace is a named directory the agent's commands are confined to.
     ``exec.workspace`` holds its resolved ``path``. The exec/redaction/policy
-    here are the top-level defaults with any ``[workspace.<id>.*]`` overrides
+    here are the top-level defaults with any ``[workspaces.<id>.*]`` overrides
     already merged in, so the broker can use them directly.
     """
     id: str
@@ -141,7 +141,7 @@ def resolve_workspaces(cfg: BrokerConfig) -> dict[str, WorkspaceConfig]:
 
     Uses ``cfg.workspaces`` when populated; otherwise synthesises one default
     workspace from the top-level exec/redaction/policy defaults so a config (or
-    a directly-built ``BrokerConfig``) with no ``[workspace.*]`` sections still
+    a directly-built ``BrokerConfig``) with no ``[workspaces.*]`` sections still
     works as a single-workspace host.
     """
     if cfg.workspaces:
@@ -191,17 +191,23 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     host = raw.get("host", {})
     identity = raw.get("identity", {})
 
-    # `[exec].workspace` was replaced by per-workspace `[workspace.<id>].path`.
+    # `[exec].workspace` was replaced by per-workspace `[workspaces.<id>].path`.
     # Reject the old key rather than silently synthesising a workspace from it,
     # so a legacy config fails loudly (in `valet doctor` and every other command)
     # instead of appearing healthy.
     if "workspace" in exec_:
         raise ConfigError(
             "[exec].workspace is no longer supported. Define a workspace instead:\n"
-            "  [workspace.default]\n"
+            "  [workspaces.default]\n"
             '  path = "<your workspace dir>"\n'
             'and set [exec].default_workspace = "default". '
-            "Run `valet workspace add <id> <dir>` or see config.example.toml."
+            "Run `valet workspaces add <id> <dir>` or see config.example.toml."
+        )
+    # The workspace table is plural (`[workspaces.<id>]`, like `[identity.clients]`).
+    # A singular `[workspace.*]` would be silently ignored, so flag it.
+    if "workspace" in raw:
+        raise ConfigError(
+            "use [workspaces.<id>] (plural), not [workspace.<id>]"
         )
 
     # A stable salt keeps redaction tags comparable across runs; if unset we
@@ -211,18 +217,18 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
         salt = _secrets.token_urlsafe(24)
 
     # Top-level [exec]/[redaction]/[policy] are the shared defaults for every
-    # workspace; each [workspace.<id>.*] section overrides them per key.
+    # workspace; each [workspaces.<id>.*] section overrides them per key.
     default_exec = _parse_exec_table(exec_, ExecConfig(), path=None)
     default_redaction = _parse_redaction_table(red, RedactionConfig())
     default_policy = _parse_policy_table(pol, PolicyConfig())
 
     default_workspace = str(exec_.get("default_workspace", DEFAULT_WORKSPACE_ID))
     workspaces = _load_workspaces(
-        raw.get("workspace", {}),
+        raw.get("workspaces", {}),
         default_exec, default_redaction, default_policy,
     )
     if not workspaces:
-        # No [workspace.*] sections at all: a single, path-less default workspace
+        # No [workspaces.*] sections at all: a single, path-less default workspace
         # (no directory jail) built from the shared defaults. This is the valid
         # "run anywhere" config; a legacy [exec].workspace was already rejected.
         workspaces = {
@@ -234,7 +240,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     if default_workspace not in workspaces:
         raise ConfigError(
             f"[exec].default_workspace = {default_workspace!r} but no "
-            f"[workspace.{default_workspace}] section is defined"
+            f"[workspaces.{default_workspace}] section is defined"
         )
 
     return BrokerConfig(
@@ -262,7 +268,7 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
 
 
 def _parse_exec_table(table: dict, base: ExecConfig, *, path: object) -> ExecConfig:
-    """Parse an [exec] (or [workspace.<id>.exec]) table over ``base`` defaults.
+    """Parse an [exec] (or [workspaces.<id>.exec]) table over ``base`` defaults.
 
     ``path`` (a workspace's ``path``) wins for the workspace directory; env
     tables merge over the base env per-key.
@@ -328,10 +334,10 @@ def _load_workspaces(
     default_redaction: RedactionConfig,
     default_policy: PolicyConfig,
 ) -> dict[str, WorkspaceConfig]:
-    """Build the workspace map from [workspace.<id>] sections.
+    """Build the workspace map from [workspaces.<id>] sections.
 
     Each section's ``path`` sets the workspace directory; its optional
-    ``[workspace.<id>.exec]`` / ``.policy`` / ``.redaction`` sub-tables override
+    ``[workspaces.<id>.exec]`` / ``.policy`` / ``.redaction`` sub-tables override
     the shared defaults per key.
     """
     if not isinstance(raw, dict):
@@ -342,7 +348,7 @@ def _load_workspaces(
             continue
         path = table.get("path")
         if not path:
-            raise ConfigError(f"[workspace.{wid}] must set a 'path'")
+            raise ConfigError(f"[workspaces.{wid}] must set a 'path'")
         workspaces[str(wid)] = WorkspaceConfig(
             id=str(wid),
             exec=_parse_exec_table(table.get("exec", {}), default_exec, path=path),

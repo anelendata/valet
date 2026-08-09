@@ -38,8 +38,8 @@ Type any command to run it; output has secrets redacted.
   :help, :?            this help
   :cwd [dir]           show or change the working directory (same as `cd`)
   :shell [on|off]      show or toggle shell mode (default off)
-  :workspace [list]    list workspaces (active marked *); :ws also works
-  :workspace set <id>  switch to another workspace (resets cwd to its root)
+  :workspaces [list]   list workspaces (active marked *); :ws also works
+  :workspaces set <id> switch to another workspace (resets cwd to its root)
   :secrets             how many secret values are being redacted for the cwd
   :processes [list]    list subprocesses started by valet (:jobs also works)
   :processes kill PID  terminate a valet subprocess (:kill PID also works)
@@ -248,10 +248,10 @@ def _meta_workspace(body: str, session: Session, send: Send) -> tuple[bool, Opti
 
     if action == "set":
         if len(parts) != 2:
-            return True, "usage: :workspace set <id>"
+            return True, "usage: :workspaces set <id>"
         return _switch_workspace(parts[1], session, send)
 
-    return True, "usage: :workspace [list] | :workspace set <id>"
+    return True, "usage: :workspaces [list] | :workspaces set <id>"
 
 
 def _switch_workspace(target: str, session: Session, send: Send) -> tuple[bool, Optional[str]]:

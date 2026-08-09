@@ -173,11 +173,11 @@ def test_processes_kill_sends_broker_process_kill(monkeypatch, capsys):
 
 
 def _doctor_config(ws, *, exec_extra="", extra=""):
-    """A single-workspace config for the doctor tests (new [workspace.*] schema)."""
+    """A single-workspace config for the doctor tests (new [workspaces.*] schema)."""
     return (
         "[broker]\nfingerprint_salt = 'x'\n\n"
         f"[exec]\ndefault_workspace = 'default'\n{exec_extra}\n"
-        f"[workspace.default]\npath = '{ws}'\n"
+        f"[workspaces.default]\npath = '{ws}'\n"
         f"{extra}"
     )
 

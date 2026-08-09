@@ -17,8 +17,8 @@ Subcommands:
   valet clients add     generate and approve a host-side client key
   valet clients list    list host-approved client identities
   valet clients remove  remove a host-approved client identity
-  valet workspace add   add a [workspace.<id>] section to config.toml
-  valet workspace list  list configured workspaces
+  valet workspaces add  add a [workspaces.<id>] section to config.toml
+  valet workspaces list list configured workspaces
   valet init <dir>      create config.toml for workspace <dir> (+ macOS sandbox) and check it
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
@@ -122,7 +122,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     )
     # Point the default workspace at the directory the user just named,
     # replacing the CHANGE_ME placeholder so no one ships home (~) as the blast
-    # radius. The placeholder is the `path` under [workspace.default].
+    # radius. The placeholder is the `path` under [workspaces.default].
     text, n_ws = re.subn(
         re.escape('"CHANGE_ME_TO_WORKSPACE_DIR"'),
         f'"{workspace_dir}"',
@@ -131,7 +131,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     )
     if n_ws == 0:
         print("valet: warning: could not find the workspace path placeholder to "
-              "set; edit [workspace.default].path by hand.", file=sys.stderr)
+              "set; edit [workspaces.default].path by hand.", file=sys.stderr)
 
     if is_mac:
         text = _init_macos_sandbox(text, workspace_sb)
@@ -248,7 +248,7 @@ def _doctor_workspace(path: Path, cfg, wid: str, wcfg) -> bool:
         ws_note = f"{workspace}  [{'exists' if os.path.isdir(workspace) else 'MISSING'}]"
     default_mark = " (default)" if wid == cfg.default_workspace else ""
     print()
-    print(f"[workspace.{wid}]{default_mark}")
+    print(f"[workspaces.{wid}]{default_mark}")
     print(f"  path:         {ws_note}")
     print(f"  shell:        {'on' if wcfg.exec.shell else 'off'}")
     print(
@@ -798,12 +798,12 @@ def _cmd_workspace_add(args: argparse.Namespace) -> int:
 
     raw_id = args.workspace_id.strip()
     if not raw_id:
-        print("valet workspace add: workspace id cannot be empty", file=sys.stderr)
+        print("valet workspaces add: workspace id cannot be empty", file=sys.stderr)
         return 2
     try:
         workspace_id = normalize_workspace_id(raw_id)
     except ValueError as exc:
-        print(f"valet workspace add: {exc}", file=sys.stderr)
+        print(f"valet workspaces add: {exc}", file=sys.stderr)
         return 2
 
     if find_workspace(path, workspace_id) and not args.yes:
@@ -932,11 +932,12 @@ def build_parser() -> argparse.ArgumentParser:
     clients_remove.add_argument("client_id", metavar="id", help="client id to remove")
     clients_remove.set_defaults(func=_cmd_clients_remove)
 
-    workspace = sub.add_parser("workspace", help="manage workspaces (host-side)")
-    workspace_sub = workspace.add_subparsers(dest="workspace_cmd", required=True)
-    workspace_sub.add_parser("list", help="list configured workspaces"
-                             ).set_defaults(func=_cmd_workspace_list)
-    ws_add = workspace_sub.add_parser("add", help="add a [workspace.<id>] section")
+    workspaces_p = sub.add_parser("workspaces", aliases=["workspace"],
+                                  help="manage workspaces (host-side)")
+    workspaces_sub = workspaces_p.add_subparsers(dest="workspaces_cmd", required=True)
+    workspaces_sub.add_parser("list", help="list configured workspaces"
+                              ).set_defaults(func=_cmd_workspace_list)
+    ws_add = workspaces_sub.add_parser("add", help="add a [workspaces.<id>] section")
     ws_add.add_argument("workspace_id", metavar="id",
                         help="workspace id (spaces become hyphens)")
     ws_add.add_argument("path", help="directory the workspace confines commands to")

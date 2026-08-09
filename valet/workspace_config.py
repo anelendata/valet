@@ -1,7 +1,7 @@
-"""Edit host-side ``[workspace.<id>]`` sections in config.toml.
+"""Edit host-side ``[workspaces.<id>]`` sections in config.toml.
 
 A workspace is a named directory the agent's commands are confined to. The host
-admin manages them with ``valet workspace add`` / ``valet workspace list``,
+admin manages them with ``valet workspaces add`` / ``valet workspaces list``,
 which read and rewrite the config text directly so comments and unrelated
 sections are preserved.
 """
@@ -66,7 +66,7 @@ def add_workspace(
     workspace_id: str,
     workspace_path: str,
 ) -> WorkspaceAdd:
-    """Add (or replace) a ``[workspace.<id>]`` section.
+    """Add (or replace) a ``[workspaces.<id>]`` section.
 
     When the config names no ``default_workspace`` yet, the newly added
     workspace becomes the default so a fresh single-workspace config keeps
@@ -99,18 +99,18 @@ def add_workspace(
 
 def _workspace_section(workspace_id: str, workspace_path: str) -> str:
     return (
-        f"[workspace.{_toml_key(workspace_id)}]\n"
+        f"[workspaces.{_toml_key(workspace_id)}]\n"
         f'path = "{_toml_escape(workspace_path)}"\n'
     )
 
 
 def _workspace_sections(text: str) -> list[tuple[str, int, int]]:
-    header_re = re.compile(r"(?m)^\[workspace\.([^\].]+)\]\s*$")
+    header_re = re.compile(r"(?m)^\[workspaces\.([^\].]+)\]\s*$")
     any_header_re = re.compile(r"(?m)^\[[^\]]+\]\s*$")
     sections = []
     for match in header_re.finditer(text):
         # The section body ends at the next section header that is NOT one of
-        # this workspace's own sub-tables ([workspace.<id>.exec], .policy, ...).
+        # this workspace's own sub-tables ([workspaces.<id>.exec], .policy, ...).
         wid = _unquote_toml_key(match.group(1).strip())
         pos = match.end()
         while True:
@@ -119,7 +119,7 @@ def _workspace_sections(text: str) -> list[tuple[str, int, int]]:
                 end = len(text)
                 break
             header = nxt.group(0).strip()
-            if header.startswith(f"[workspace.{wid}."):
+            if header.startswith(f"[workspaces.{wid}."):
                 pos = nxt.end()
                 continue
             end = nxt.start()
@@ -160,10 +160,15 @@ def _section_body(text: str, name: str) -> str | None:
 
 
 def _read_string_value(text: str, key: str) -> str | None:
-    match = re.search(rf'(?m)^\s*{re.escape(key)}\s*=\s*"((?:[^"\\]|\\.)*)"\s*$', text)
-    if not match:
-        return None
-    return bytes(match.group(1), "utf-8").decode("unicode_escape")
+    # Accept both TOML string forms: "basic" (escapes processed) and 'literal'
+    # (verbatim), so a hand-edited single-quoted value is still detected.
+    basic = re.search(rf'(?m)^\s*{re.escape(key)}\s*=\s*"((?:[^"\\]|\\.)*)"\s*$', text)
+    if basic:
+        return bytes(basic.group(1), "utf-8").decode("unicode_escape")
+    literal = re.search(rf"(?m)^\s*{re.escape(key)}\s*=\s*'([^']*)'\s*$", text)
+    if literal:
+        return literal.group(1)
+    return None
 
 
 def _toml_key(value: str) -> str:

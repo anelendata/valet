@@ -24,7 +24,7 @@ def _write_config(path, workspaces, *, default="default", extra=""):
         extra,
     ]
     for wid, section in workspaces.items():
-        body.append(f"[workspace.{wid}]")
+        body.append(f"[workspaces.{wid}]")
         body.append(f'path = "{section["path"]}"')
         body.extend(section.get("lines", []))
         body.append("")
@@ -40,8 +40,8 @@ def test_defaults_apply_and_overrides_win(tmp_path):
     cfg_path = _write_config(tmp_path / "config.toml", {
         "default": {"path": str(a)},
         "personal": {"path": str(b), "lines": [
-            "[workspace.personal.exec]", "shell = true",
-            "[workspace.personal.policy]", 'deny = ["rm"]',
+            "[workspaces.personal.exec]", "shell = true",
+            "[workspaces.personal.policy]", 'deny = ["rm"]',
         ]},
     })
 
@@ -67,8 +67,8 @@ def test_exec_env_merges_over_default(tmp_path):
         "[exec.env]\n"
         'GLOBAL = "1"\n'
         'SHARED = "base"\n\n'
-        f'[workspace.default]\npath = "{a}"\n\n'
-        "[workspace.default.exec.env]\n"
+        f'[workspaces.default]\npath = "{a}"\n\n'
+        "[workspaces.default.exec.env]\n"
         'SHARED = "override"\n'
         'LOCAL = "2"\n'
     )
@@ -93,7 +93,7 @@ def test_workspace_without_path_is_rejected(tmp_path):
         'fingerprint_salt = "salt"\n\n'
         "[exec]\n"
         'default_workspace = "default"\n\n'
-        "[workspace.default]\n"
+        "[workspaces.default]\n"
         'shell = true\n'  # no path
     )
     with pytest.raises(ConfigError):
@@ -115,7 +115,7 @@ def test_legacy_exec_workspace_key_is_rejected(tmp_path):
 
 
 def test_no_workspace_configured_is_valid(tmp_path):
-    # A config with neither [exec].workspace nor [workspace.*] is the valid
+    # A config with neither [exec].workspace nor [workspaces.*] is the valid
     # "run anywhere, no jail" case: one path-less default workspace.
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text('[broker]\nfingerprint_salt = "salt"\n')
@@ -134,8 +134,8 @@ def two_ws_broker(tmp_path):
     cfg_path = _write_config(tmp_path / "config.toml", {
         "default": {"path": str(a)},
         "personal": {"path": str(b), "lines": [
-            "[workspace.personal.exec]", "shell = true",
-            "[workspace.personal.policy]", 'deny = ["rm"]',
+            "[workspaces.personal.exec]", "shell = true",
+            "[workspaces.personal.policy]", 'deny = ["rm"]',
         ]},
     })
     return Broker(load_config(cfg_path)), a, b
@@ -207,6 +207,23 @@ def test_add_and_list_workspaces(tmp_path):
     assert "personal-box" in load_config(cfg_path).workspaces
 
 
+def test_add_workspace_detects_single_quoted_default(tmp_path):
+    # A hand-edited single-quoted default_workspace must be detected so `add`
+    # does not write a duplicate key (which would break TOML parsing).
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "[broker]\nfingerprint_salt = 'x'\n\n"
+        "[exec]\ndefault_workspace = 'default'\n\n"
+        f"[workspaces.default]\npath = '{a}'\n"
+    )
+    result = add_workspace(cfg_path, workspace_id="extra", workspace_path=str(a))
+    assert result.made_default is False
+    text = cfg_path.read_text()
+    assert text.count("default_workspace") == 1
+    load_config(cfg_path)  # still valid TOML / config
+
+
 def test_add_first_workspace_sets_default(tmp_path):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text('[broker]\nfingerprint_salt = "s"\n')
@@ -229,7 +246,7 @@ def test_cli_workspace_flag_attaches_to_exec(monkeypatch):
 def test_cli_workspace_list(tmp_path, capsys):
     a = tmp_path / "a"; a.mkdir()
     cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
-    assert main(["-c", str(cfg_path), "workspace", "list"]) == 0
+    assert main(["-c", str(cfg_path), "workspaces", "list"]) == 0
     out = capsys.readouterr().out
     assert "* default" in out and str(a) in out
 
@@ -263,7 +280,7 @@ def test_repl_workspace_set_switches_and_adopts_shell():
         return responses.get(req.get("op"), {"ok": True})
 
     session = Session()
-    keep, out = run_command(":workspace set personal", session, send)
+    keep, out = run_command(":workspaces set personal", session, send)
 
     assert keep is True
     assert session.workspace == "personal"
@@ -279,7 +296,7 @@ def test_repl_workspace_list_marks_active():
             {"id": "default", "default": True, "shell": False},
             {"id": "personal", "default": False, "shell": True},
         ]}
-    keep, out = run_command(":workspace list", Session(workspace="personal"), send)
+    keep, out = run_command(":workspaces list", Session(workspace="personal"), send)
     assert keep is True
     lines = out.splitlines()
     assert any(line.startswith("* personal") for line in lines)
