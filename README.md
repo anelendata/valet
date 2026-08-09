@@ -55,6 +55,7 @@ More...
 - [Roadmap](./docs/ROADMAP.md)
 - [Threat model](./docs/THREAT_MODEL.md)
 - [Google Workspace CLI (`gws`) through valet](./docs/google-workspace-cli.md)
+- [Set up a workspace-wide Python venv](./docs/workspace-python-venv.md)
 
 
 ## Motivating examples
