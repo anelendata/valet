@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 from . import __version__
 from .audit import AuditContext, AuditLogger
-from .config import BrokerConfig
+from .config import BrokerConfig, resolve_workspaces
 from .errors import (
     CommandError,
     PolicyError,
@@ -140,34 +140,217 @@ class _StreamRedactor:
         return Broker._safe(self.redactor, text)
 
 
+class Workspace:
+    """Runtime for one workspace: its path jail, redaction, and policy.
+
+    All workspace-scoped logic (root resolution, virtual<->real path mapping,
+    redactor construction, sandbox wrapping, the policy gate) lives here so the
+    broker can serve many workspaces from one daemon by selecting the right one
+    per request. Instances are immutable after construction and safe to share
+    across the daemon's request threads.
+    """
+
+    def __init__(
+        self,
+        workspace_id: str,
+        exec_cfg,
+        redaction_cfg,
+        policy: Policy,
+        fingerprint_salt: str,
+    ) -> None:
+        self.id = workspace_id
+        self.exec = exec_cfg
+        self.redaction = redaction_cfg
+        self.policy = policy
+        self.fingerprint_salt = fingerprint_salt
+
+    def root(self) -> Optional[str]:
+        """The real, canonical workspace root, or None when unconfigured."""
+        workspace = self.exec.workspace
+        if not workspace:
+            return None
+        return os.path.realpath(os.path.expanduser(os.path.expandvars(workspace)))
+
+    def workspace_bin(self) -> Optional[str]:
+        """A ``bin`` directory at the workspace root, to search before PATH."""
+        root = self.root()
+        if not root:
+            return None
+        bin_dir = os.path.join(root, "bin")
+        return bin_dir if os.path.isdir(bin_dir) else None
+
+    def maybe_sandbox(self, cmd: Any, shell: bool) -> tuple[Any, bool]:
+        """Wrap a command in this workspace's OS sandbox, if any.
+
+        Returns ``(command, run_shell)``. Without a sandbox the command runs as
+        given. With one, it becomes an argv prefixed by ``sandbox-exec`` (a real
+        binary), so a shell command is executed as ``sandbox-exec ... /bin/sh -c
+        <line>`` and ``run_shell`` is False even though the caller asked for a
+        shell.
+        """
+        profile = self.exec.sandbox_profile
+        if not profile:
+            return cmd, shell
+        root = self.root()
+        if root is None:
+            raise PolicyError("sandbox requires the workspace path to be set")
+        prefix = [
+            "sandbox-exec",
+            "-D", f"WORKSPACE={root}",
+            "-f", os.path.expanduser(os.path.expandvars(profile)),
+        ]
+        if shell:
+            return prefix + ["/bin/sh", "-c", cmd], False
+        return prefix + list(cmd), False
+
+    def to_virtual(self, real: Optional[str]) -> Optional[str]:
+        """Present a real path as a workspace-relative virtual path.
+
+        The workspace root becomes "./", a child becomes "./child", and anything
+        outside the workspace (which should not normally occur) is returned as
+        is so we never invent a misleading mapping. The "./" prefix (rather than
+        a bare "/") signals a workspace-relative path so it is not mistaken for
+        the real filesystem root.
+        """
+        if real is None:
+            return None
+        root = self.root()
+        if not root or root == os.sep:
+            return real
+        real = os.path.realpath(real)
+        if real == root:
+            return "./"
+        if real.startswith(root + os.sep):
+            return "./" + real[len(root) + 1:]
+        return real
+
+    def real_from_virtual(self, path: Any, base_real: Optional[str]) -> str:
+        """Resolve a client path (virtual absolute or relative) to a real path.
+
+        With a workspace set, an absolute path is virtual (rooted at the
+        workspace), a bare/`~` path is the workspace root, and a relative path is
+        joined onto ``base_real``. Callers jail the result where needed.
+        """
+        root = self.root()
+        assert root is not None
+        target = os.path.expandvars(str(path or ""))
+        if target in ("", "~"):
+            return root
+        if target.startswith("~/"):
+            target = "/" + target[2:]
+        if target.startswith("/"):
+            # Disambiguate a real absolute path from a virtual one:
+            #   1. already inside the workspace  -> real, as-is
+            #   2. names an existing workspace child ("/sub") -> virtual
+            #   3. otherwise -> real, as-is (legacy callers, outside paths)
+            real = os.path.realpath(target)
+            if real == root or real.startswith(root + os.sep):
+                return real
+            virtual = os.path.realpath(os.path.join(root, target.lstrip("/")))
+            if os.path.isdir(virtual):
+                return virtual
+            return real
+        base = base_real or root
+        return os.path.realpath(os.path.join(base, target))
+
+    def resolve_cwd(self, raw_cwd: Any) -> Optional[str]:
+        root = self.root()
+        if root is None:
+            cwd = raw_cwd
+            if cwd is None:
+                return None
+            cwd = os.path.expanduser(os.path.expandvars(str(cwd)))
+            if not os.path.isabs(cwd):
+                cwd = os.path.abspath(cwd)
+            return os.path.realpath(cwd)
+        if not raw_cwd:
+            return root
+        return self.real_from_virtual(raw_cwd, root)
+
+    def redactor_for(self, cwd: Optional[str], *, extra_values=()) -> Redactor:
+        sources = list(self.redaction.secret_sources)
+        if cwd:
+            for name in self.redaction.cwd_secret_files:
+                sources.append(os.path.join(cwd, name))
+        values = load_secret_values(sources)
+        # Config-listed literals are always masked; env values (e.g. an inline
+        # `NAME=value` prefix or --env) are masked only if long enough to look
+        # secret, so trivial ones like `1` or `tiny` don't over-redact output.
+        values.extend(v for v in self.redaction.extra_values if v)
+        values.extend(v for v in extra_values if _worth_redacting(v))
+        workspace_root = self.root() or ""
+        # Only rewrite the home prefix when confined to a workspace: that is the
+        # mode where leaking the real host layout (a sibling of the workspace,
+        # the username) matters. Without a workspace, output is left verbatim.
+        home_dir = os.path.expanduser("~") if workspace_root else ""
+        return Redactor.build(
+            values, self.fingerprint_salt,
+            suspected=self.redaction.redact_suspected,
+            high_entropy=self.redaction.redact_high_entropy,
+            workspace_root=workspace_root,
+            home_dir=home_dir,
+        )
+
+
 class Broker:
     def __init__(self, cfg: BrokerConfig, *, audit_to_console: bool = False):
         self._lock = threading.RLock()
-        self.cfg = cfg
         self._audit_to_console = audit_to_console
-        self.policy = Policy.from_config(
-            cfg.policy,
-            cfg.exec.workspace,
-            allow_shell=cfg.exec.shell,
-        )
-        self.audit = AuditLogger(
-            log_path=cfg.audit.log_path,
-            console=audit_to_console,
-        )
+        self._install_config(cfg, console=audit_to_console)
 
     def reload(self, cfg: BrokerConfig) -> None:
         """Replace mutable config-backed state for future requests."""
         with self._lock:
-            self.cfg = cfg
-            self.policy = Policy.from_config(
-                cfg.policy,
-                cfg.exec.workspace,
-                allow_shell=cfg.exec.shell,
+            self._install_config(
+                cfg, console=self._audit_to_console and cfg.audit.console
             )
-            self.audit = AuditLogger(
-                log_path=cfg.audit.log_path,
-                console=self._audit_to_console and cfg.audit.console,
+
+    def _install_config(self, cfg: BrokerConfig, *, console: bool) -> None:
+        self.cfg = cfg
+        self.workspaces = self._build_workspaces(cfg)
+        self.default_workspace = (
+            cfg.default_workspace if cfg.default_workspace in self.workspaces
+            else next(iter(self.workspaces))
+        )
+        # Kept for callers/tests that reach for a single policy: the default
+        # workspace's gate.
+        self.policy = self.workspaces[self.default_workspace].policy
+        self.audit = AuditLogger(log_path=cfg.audit.log_path, console=console)
+
+    @staticmethod
+    def _build_workspaces(cfg: BrokerConfig) -> dict[str, "Workspace"]:
+        result: dict[str, Workspace] = {}
+        for wid, wcfg in resolve_workspaces(cfg).items():
+            result[wid] = Workspace(
+                wid,
+                wcfg.exec,
+                wcfg.redaction,
+                Policy.from_config(
+                    wcfg.policy, wcfg.exec.workspace, allow_shell=wcfg.exec.shell
+                ),
+                cfg.fingerprint_salt,
             )
+        return result
+
+    def _workspace(self, request: Any) -> "Workspace":
+        """The workspace a request targets, raising if it names an unknown one."""
+        wid = None
+        if isinstance(request, dict):
+            wid = request.get("workspace")
+        wid = wid or self.default_workspace
+        ws = self.workspaces.get(wid)
+        if ws is None:
+            raise ValidationError(f"unknown workspace: {wid!r}")
+        return ws
+
+    def _workspace_or_default(self, request: Any) -> "Workspace":
+        """Like ``_workspace`` but never raises — for audit, where an unknown
+        workspace must still produce a (default) redactor rather than blow up."""
+        wid = None
+        if isinstance(request, dict):
+            wid = request.get("workspace")
+        return self.workspaces.get(wid or self.default_workspace) or \
+            self.workspaces[self.default_workspace]
 
     # -- public entrypoint -----------------------------------------------------
 
@@ -192,12 +375,18 @@ class Broker:
                 response = {**base, **self._chdir(request)}
                 return response
             if op == "ping":
+                default_ws = self.workspaces[self.default_workspace]
                 response = {
                     **base,
                     "ok": True,
                     "pong": True,
-                    "shell_default": self.cfg.exec.shell,
+                    "shell_default": default_ws.exec.shell,
+                    "default_workspace": self.default_workspace,
+                    "workspaces": sorted(self.workspaces),
                 }
+                return response
+            if op == "workspaces":
+                response = {**base, **self._workspaces_list()}
                 return response
             if op == "redaction_info":
                 response = {**base, **self._redaction_info(request)}
@@ -233,7 +422,8 @@ class Broker:
     # -- operations ------------------------------------------------------------
 
     def _exec(self, request: dict) -> dict:
-        plan = self._exec_plan(request)
+        ws = self._workspace(request)
+        plan = self._exec_plan(request, ws)
 
         try:
             result = run(
@@ -242,14 +432,14 @@ class Broker:
                 cwd=plan.cwd,
                 timeout=plan.timeout,
                 extra_env=plan.extra_env,
-                allow_script_fallback=self.cfg.exec.shell,
+                allow_script_fallback=ws.exec.shell,
                 path_prepend=plan.path_prepend,
                 workspace_root=plan.workspace_root,
             )
         except (TimeoutError_, CommandError) as exc:
             return {
                 "op": "exec", "ok": False, "error_class": exc.error_class,
-                "detail": str(exc), "cwd": self._to_virtual(plan.cwd),
+                "detail": str(exc), "cwd": ws.to_virtual(plan.cwd),
                 "shell": plan.shell,
             }
 
@@ -257,7 +447,7 @@ class Broker:
             "op": "exec",
             "ok": result.exit_code == 0,
             "exit_code": result.exit_code,
-            "cwd": self._to_virtual(plan.cwd),
+            "cwd": ws.to_virtual(plan.cwd),
             "shell": plan.shell,
             "cmd": self._safe(plan.redactor, plan.echoed),
             "stdout": self._safe(plan.redactor, result.stdout),
@@ -285,7 +475,8 @@ class Broker:
                 yield response
                 return
 
-            plan = self._exec_plan(request)
+            ws = self._workspace(request)
+            plan = self._exec_plan(request, ws)
             self._audit_exec_started(request, plan, context)
             buffers = {
                 "stdout": _StreamRedactor(plan.redactor),
@@ -301,7 +492,7 @@ class Broker:
                 timeout=plan.timeout,
                 extra_env=plan.extra_env,
                 cancel_event=cancel_event,
-                allow_script_fallback=self.cfg.exec.shell,
+                allow_script_fallback=ws.exec.shell,
                 path_prepend=plan.path_prepend,
                 workspace_root=plan.workspace_root,
             ):
@@ -326,7 +517,7 @@ class Broker:
                 "op": "exec",
                 "ok": result.exit_code == 0,
                 "exit_code": result.exit_code,
-                "cwd": self._to_virtual(plan.cwd),
+                "cwd": ws.to_virtual(plan.cwd),
                 "shell": plan.shell,
                 "cmd": self._safe(plan.redactor, plan.echoed),
                 "stdout": (
@@ -373,7 +564,8 @@ class Broker:
         neither can be used to climb above the root, and the reply is virtual so
         the real parent path is never disclosed.
         """
-        root = self._workspace_root()
+        ws = self._workspace(request)
+        root = ws.root()
         target = str(request.get("target", "") or "")
 
         if root is None:
@@ -385,38 +577,59 @@ class Broker:
                 raise ValidationError("no such directory")
             return {"op": "chdir", "ok": True, "cwd": newpath}
 
-        base_real = self._real_from_virtual(request.get("cwd") or "/", None)
-        newpath = self._real_from_virtual(target, base_real)
+        base_real = ws.real_from_virtual(request.get("cwd") or "/", None)
+        newpath = ws.real_from_virtual(target, base_real)
         if not os.path.isdir(newpath):
             raise ValidationError("no such directory")
         if newpath != root and not newpath.startswith(root + os.sep):
             raise PolicyError("cannot cd above the workspace")
-        return {"op": "chdir", "ok": True, "cwd": self._to_virtual(newpath)}
+        return {"op": "chdir", "ok": True, "cwd": ws.to_virtual(newpath)}
 
     def _redaction_info(self, request: dict) -> dict:
-        cwd = self._resolve_cwd(request.get("cwd"))
-        redactor = self._redactor_for(cwd)
-        return {"ok": True, "cwd": self._to_virtual(cwd),
+        ws = self._workspace(request)
+        cwd = ws.resolve_cwd(request.get("cwd"))
+        redactor = ws.redactor_for(cwd)
+        return {"ok": True, "cwd": ws.to_virtual(cwd),
                 "redacted_value_count": len(redactor.secret_values)}
 
     def _complete(self, request: dict) -> dict:
         from .repl import completion_candidates
 
+        ws = self._workspace(request)
         line = str(request.get("line", ""))
-        cwd = self._resolve_cwd(request.get("cwd"))
-        workspace = self.cfg.exec.workspace if self.cfg.policy.enforce_workspace_reads else None
+        cwd = ws.resolve_cwd(request.get("cwd"))
+        workspace = ws.exec.workspace if ws.policy.enforce_workspace_reads else None
         candidates = completion_candidates(line, cwd, workspace=workspace)
-        return {"op": "complete", "ok": True, "cwd": self._to_virtual(cwd),
+        return {"op": "complete", "ok": True, "cwd": ws.to_virtual(cwd),
                 "candidates": candidates}
 
+    def _workspaces_list(self) -> dict:
+        """List the host's workspaces (id, default flag, shell mode).
+
+        Path is intentionally omitted so a remote client never learns the real
+        directory layout — only names it can select with ``--workspace``.
+        """
+        workspaces = [
+            {
+                "id": wid,
+                "default": wid == self.default_workspace,
+                "shell": ws.exec.shell,
+            }
+            for wid, ws in sorted(self.workspaces.items())
+        ]
+        return {"op": "workspaces", "ok": True,
+                "default_workspace": self.default_workspace,
+                "workspaces": workspaces}
+
     def _processes_list(self, request: dict) -> dict:
-        redactor = self._redactor_for(None)
+        ws = self.workspaces[self.default_workspace]
+        redactor = ws.redactor_for(None)
         processes = [
             {
                 "pid": item.pid,
                 "cmd": self._safe(redactor, item.cmd),
                 "shell": item.shell,
-                "cwd": self._to_virtual(item.cwd),
+                "cwd": ws.to_virtual(item.cwd),
                 "started_at": item.started_at,
                 "runtime_seconds": round(item.runtime_seconds, 3),
             }
@@ -437,13 +650,15 @@ class Broker:
 
     # -- helpers ---------------------------------------------------------------
 
-    def _exec_plan(self, request: dict) -> _ExecPlan:
+    def _exec_plan(self, request: dict, ws: "Optional[Workspace]" = None) -> _ExecPlan:
+        if ws is None:
+            ws = self._workspace(request)
         raw_cmd = request.get("cmd")
         if not raw_cmd:
             raise ValidationError("missing 'cmd'")
 
-        shell = bool(request.get("shell", self.cfg.exec.shell))
-        if shell and not self.cfg.exec.shell:
+        shell = bool(request.get("shell", ws.exec.shell))
+        if shell and not ws.exec.shell:
             raise PolicyError("shell execution is disabled")
         cmd = self._normalize_cmd(raw_cmd, shell)
         extra_env = self._normalize_env(request.get("env"))
@@ -464,10 +679,10 @@ class Broker:
 
         # Config default env (with $VALET_WORKSPACE expanded) is the base layer;
         # per-command env (above) overrides it.
-        root = self._workspace_root()
+        root = ws.root()
         config_env = {
             name: _expand_workspace(value, root)
-            for name, value in self.cfg.exec.env.items()
+            for name, value in ws.exec.env.items()
         }
         if config_env:
             extra_env = {**config_env, **extra_env}
@@ -481,54 +696,22 @@ class Broker:
                 cmd = [_expand_workspace(token, root) for token in cmd]
             extra_env = {k: _expand_workspace(v, root) for k, v in extra_env.items()}
 
-        cwd = self._resolve_cwd(request.get("cwd"))
+        cwd = ws.resolve_cwd(request.get("cwd"))
         if cwd is not None and not os.path.isdir(cwd):
             raise ValidationError("cwd does not exist")
 
         timeout = int(request.get("timeout", self.cfg.timeout_seconds))
 
         # Policy gate (permissive in v0.2; see valet/policy.py).
-        self.policy.check(cmd, cwd)
+        ws.policy.check(cmd, cwd)
 
-        redactor = self._redactor_for(cwd, extra_values=extra_env.values())
+        redactor = ws.redactor_for(cwd, extra_values=extra_env.values())
         echoed = cmd if isinstance(cmd, str) else shlex.join(cmd)
-        run_cmd, run_shell = self._maybe_sandbox(cmd, shell)
+        run_cmd, run_shell = ws.maybe_sandbox(cmd, shell)
         return _ExecPlan(cmd=run_cmd, shell=shell, cwd=cwd, timeout=timeout,
                          extra_env=extra_env, redactor=redactor, echoed=echoed,
-                         run_shell=run_shell, path_prepend=self._workspace_bin(),
+                         run_shell=run_shell, path_prepend=ws.workspace_bin(),
                          workspace_root=root)
-
-    def _workspace_bin(self) -> Optional[str]:
-        """A ``bin`` directory at the workspace root, to search before PATH."""
-        root = self._workspace_root()
-        if not root:
-            return None
-        bin_dir = os.path.join(root, "bin")
-        return bin_dir if os.path.isdir(bin_dir) else None
-
-    def _maybe_sandbox(self, cmd: Any, shell: bool) -> tuple[Any, bool]:
-        """Wrap a command in the configured OS sandbox, if any.
-
-        Returns ``(command, run_shell)``. Without a sandbox the command runs as
-        given. With one, it becomes an argv prefixed by ``sandbox-exec`` (a real
-        binary), so a shell command is executed as ``sandbox-exec ... /bin/sh -c
-        <line>`` and ``run_shell`` is False even though the caller asked for a
-        shell.
-        """
-        profile = self.cfg.exec.sandbox_profile
-        if not profile:
-            return cmd, shell
-        root = self._workspace_root()
-        if root is None:
-            raise PolicyError("sandbox requires [exec].workspace to be set")
-        prefix = [
-            "sandbox-exec",
-            "-D", f"WORKSPACE={root}",
-            "-f", os.path.expanduser(os.path.expandvars(profile)),
-        ]
-        if shell:
-            return prefix + ["/bin/sh", "-c", cmd], False
-        return prefix + list(cmd), False
 
     @staticmethod
     def _normalize_cmd(raw_cmd, shell: bool):
@@ -547,77 +730,6 @@ class Broker:
             raise ValidationError("cmd must be a string or argv list")
         return [str(t) for t in raw_cmd]
 
-    def _workspace_root(self) -> Optional[str]:
-        """The real, canonical workspace root, or None when unconfigured."""
-        workspace = self.cfg.exec.workspace
-        if not workspace:
-            return None
-        return os.path.realpath(os.path.expanduser(os.path.expandvars(workspace)))
-
-    def _to_virtual(self, real: Optional[str]) -> Optional[str]:
-        """Present a real path as a workspace-relative virtual path.
-
-        The workspace root becomes "./", a child becomes "./child", and anything
-        outside the workspace (which should not normally occur) is returned as
-        is so we never invent a misleading mapping. The "./" prefix (rather than
-        a bare "/") signals a workspace-relative path so it is not mistaken for
-        the real filesystem root.
-        """
-        if real is None:
-            return None
-        root = self._workspace_root()
-        if not root or root == os.sep:
-            return real
-        real = os.path.realpath(real)
-        if real == root:
-            return "./"
-        if real.startswith(root + os.sep):
-            return "./" + real[len(root) + 1:]
-        return real
-
-    def _real_from_virtual(self, path: Any, base_real: Optional[str]) -> str:
-        """Resolve a client path (virtual absolute or relative) to a real path.
-
-        With a workspace set, an absolute path is virtual (rooted at the
-        workspace), a bare/`~` path is the workspace root, and a relative path is
-        joined onto ``base_real``. Callers jail the result where needed.
-        """
-        root = self._workspace_root()
-        assert root is not None
-        target = os.path.expandvars(str(path or ""))
-        if target in ("", "~"):
-            return root
-        if target.startswith("~/"):
-            target = "/" + target[2:]
-        if target.startswith("/"):
-            # Disambiguate a real absolute path from a virtual one:
-            #   1. already inside the workspace  -> real, as-is
-            #   2. names an existing workspace child ("/sub") -> virtual
-            #   3. otherwise -> real, as-is (legacy callers, outside paths)
-            real = os.path.realpath(target)
-            if real == root or real.startswith(root + os.sep):
-                return real
-            virtual = os.path.realpath(os.path.join(root, target.lstrip("/")))
-            if os.path.isdir(virtual):
-                return virtual
-            return real
-        base = base_real or root
-        return os.path.realpath(os.path.join(base, target))
-
-    def _resolve_cwd(self, raw_cwd: Any) -> Optional[str]:
-        root = self._workspace_root()
-        if root is None:
-            cwd = raw_cwd
-            if cwd is None:
-                return None
-            cwd = os.path.expanduser(os.path.expandvars(str(cwd)))
-            if not os.path.isabs(cwd):
-                cwd = os.path.abspath(cwd)
-            return os.path.realpath(cwd)
-        if not raw_cwd:
-            return root
-        return self._real_from_virtual(raw_cwd, root)
-
     @staticmethod
     def _normalize_env(raw_env: Any) -> dict[str, str]:
         if raw_env in (None, {}):
@@ -631,35 +743,6 @@ class Broker:
                 raise ValidationError("env names must be valid shell identifiers")
             env[name] = str(value)
         return env
-
-    def _redactor_for(
-        self,
-        cwd: Optional[str],
-        *,
-        extra_values=(),
-    ) -> Redactor:
-        sources = list(self.cfg.redaction.secret_sources)
-        if cwd:
-            for name in self.cfg.redaction.cwd_secret_files:
-                sources.append(os.path.join(cwd, name))
-        values = load_secret_values(sources)
-        # Config-listed literals are always masked; env values (e.g. an inline
-        # `NAME=value` prefix or --env) are masked only if long enough to look
-        # secret, so trivial ones like `1` or `tiny` don't over-redact output.
-        values.extend(v for v in self.cfg.redaction.extra_values if v)
-        values.extend(v for v in extra_values if _worth_redacting(v))
-        workspace_root = self._workspace_root() or ""
-        # Only rewrite the home prefix when confined to a workspace: that is the
-        # mode where leaking the real host layout (a sibling of the workspace,
-        # the username) matters. Without a workspace, output is left verbatim.
-        home_dir = os.path.expanduser("~") if workspace_root else ""
-        return Redactor.build(
-            values, self.cfg.fingerprint_salt,
-            suspected=self.cfg.redaction.redact_suspected,
-            high_entropy=self.cfg.redaction.redact_high_entropy,
-            workspace_root=workspace_root,
-            home_dir=home_dir,
-        )
 
     @staticmethod
     def _safe(redactor: Redactor, text: str) -> str:
@@ -748,9 +831,10 @@ class Broker:
         duration_seconds: float,
     ) -> dict[str, Any]:
         request_dict = request if isinstance(request, dict) else {}
-        redactor = self._audit_redactor(request_dict)
-        command = response.get("cmd") or self._audit_command(request_dict, redactor)
-        cwd = response.get("cwd") or self._audit_cwd(request_dict)
+        ws = self._workspace_or_default(request_dict)
+        redactor = self._audit_redactor(request_dict, ws)
+        command = response.get("cmd") or self._audit_command(request_dict, redactor, ws)
+        cwd = response.get("cwd") or self._audit_cwd(request_dict, ws)
         detail = response.get("detail")
         redacted_value_count = response.get("redacted_value_count")
         if redacted_value_count is None:
@@ -785,7 +869,7 @@ class Broker:
             ),
             # Visible even when the command was allowed, so probing outside the
             # workspace is auditable rather than hidden behind a virtual cwd.
-            "referenced_outside_workspace": self._references_outside_workspace(request_dict),
+            "referenced_outside_workspace": self._references_outside_workspace(request_dict, ws),
         }
         event["request"] = {
             "op": event["op"],
@@ -807,35 +891,36 @@ class Broker:
         }
         return event
 
-    def _audit_redactor(self, request: dict) -> Redactor:
+    def _audit_redactor(self, request: dict, ws: "Workspace") -> Redactor:
         try:
             extra_env = self._normalize_env(request.get("env"))
         except ValetError:
             extra_env = {}
-        return self._redactor_for(self._audit_cwd(request), extra_values=extra_env.values())
+        return ws.redactor_for(self._audit_cwd(request, ws), extra_values=extra_env.values())
 
-    def _audit_cwd(self, request: dict) -> Optional[str]:
-        return self._resolve_cwd(request.get("cwd"))
+    @staticmethod
+    def _audit_cwd(request: dict, ws: "Workspace") -> Optional[str]:
+        return ws.resolve_cwd(request.get("cwd"))
 
-    def _references_outside_workspace(self, request: dict) -> bool:
+    def _references_outside_workspace(self, request: dict, ws: "Workspace") -> bool:
         raw_cmd = request.get("cmd")
         if raw_cmd is None:
             return False
-        shell = bool(request.get("shell", self.cfg.exec.shell))
+        shell = bool(request.get("shell", ws.exec.shell))
         try:
             cmd = self._normalize_cmd(raw_cmd, shell)
         except ValetError:
             cmd = raw_cmd
         try:
-            return self.policy.references_outside_workspace(cmd, self._audit_cwd(request))
+            return ws.policy.references_outside_workspace(cmd, self._audit_cwd(request, ws))
         except Exception:
             return False
 
-    def _audit_command(self, request: dict, redactor: Redactor) -> Optional[str]:
+    def _audit_command(self, request: dict, redactor: Redactor, ws: "Workspace") -> Optional[str]:
         raw_cmd = request.get("cmd")
         if raw_cmd is None:
             return None
-        shell = bool(request.get("shell", self.cfg.exec.shell))
+        shell = bool(request.get("shell", ws.exec.shell))
         try:
             cmd = self._normalize_cmd(raw_cmd, shell)
         except ValetError:

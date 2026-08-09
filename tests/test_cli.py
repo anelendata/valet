@@ -172,14 +172,21 @@ def test_processes_kill_sends_broker_process_kill(monkeypatch, capsys):
     assert "killed subprocess 123" in capsys.readouterr().out
 
 
+def _doctor_config(ws, *, exec_extra="", extra=""):
+    """A single-workspace config for the doctor tests (new [workspace.*] schema)."""
+    return (
+        "[broker]\nfingerprint_salt = 'x'\n\n"
+        f"[exec]\ndefault_workspace = 'default'\n{exec_extra}\n"
+        f"[workspace.default]\npath = '{ws}'\n"
+        f"{extra}"
+    )
+
+
 def test_doctor_reports_config_and_skips_sandbox_when_unset(tmp_path, capsys):
     ws = tmp_path / "ws"
     ws.mkdir()
     config = tmp_path / "config.toml"
-    config.write_text(
-        "[broker]\nfingerprint_salt = 'x'\n\n"
-        f"[exec]\nworkspace = '{ws}'\n"
-    )
+    config.write_text(_doctor_config(ws))
 
     rc = main(["-c", str(config), "doctor"])
 
@@ -194,10 +201,7 @@ def test_doctor_warns_when_config_inside_workspace(tmp_path, capsys):
     ws = tmp_path / "ws"
     ws.mkdir()
     config = ws / "config.toml"  # placed INSIDE the workspace — unsafe
-    config.write_text(
-        "[broker]\nfingerprint_salt = 'x'\n\n"
-        f"[exec]\nworkspace = '{ws}'\n"
-    )
+    config.write_text(_doctor_config(ws))
 
     rc = main(["-c", str(config), "doctor"])
 
@@ -211,10 +215,7 @@ def test_doctor_no_warning_when_config_outside_workspace(tmp_path, capsys):
     ws = tmp_path / "ws"
     ws.mkdir()
     config = tmp_path / "config.toml"  # sibling of the workspace — safe
-    config.write_text(
-        "[broker]\nfingerprint_salt = 'x'\n\n"
-        f"[exec]\nworkspace = '{ws}'\n"
-    )
+    config.write_text(_doctor_config(ws))
 
     rc = main(["-c", str(config), "doctor"])
 
@@ -226,11 +227,8 @@ def test_doctor_warns_when_audit_log_inside_workspace(tmp_path, capsys):
     ws = tmp_path / "ws"
     ws.mkdir()
     config = tmp_path / "config.toml"
-    config.write_text(
-        "[broker]\nfingerprint_salt = 'x'\n\n"
-        f"[exec]\nworkspace = '{ws}'\n\n"
-        f"[audit]\nlog_path = '{ws / 'audit.jsonl'}'\n"
-    )
+    config.write_text(_doctor_config(
+        ws, extra=f"\n[audit]\nlog_path = '{ws / 'audit.jsonl'}'\n"))
 
     rc = main(["-c", str(config), "doctor"])
 
@@ -244,10 +242,7 @@ def test_doctor_warns_when_workspace_is_home(tmp_path, capsys, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     config = tmp_path / "config.toml"  # outside home, so only the home warning fires
-    config.write_text(
-        "[broker]\nfingerprint_salt = 'x'\n\n"
-        "[exec]\nworkspace = '~'\n"
-    )
+    config.write_text(_doctor_config("~"))
 
     rc = main(["-c", str(config), "doctor"])
 
@@ -264,10 +259,8 @@ def test_doctor_fails_when_sandbox_profile_missing(tmp_path, capsys, monkeypatch
     ws = tmp_path / "ws"
     ws.mkdir()
     config = tmp_path / "config.toml"
-    config.write_text(
-        "[broker]\nfingerprint_salt = 'x'\n\n"
-        f"[exec]\nworkspace = '{ws}'\nsandbox_profile = '{tmp_path / 'nope.sb'}'\n"
-    )
+    config.write_text(_doctor_config(
+        ws, exec_extra=f"sandbox_profile = '{tmp_path / 'nope.sb'}'\n"))
 
     rc = main(["-c", str(config), "doctor"])
 
@@ -299,8 +292,8 @@ def test_init_creates_config_and_injects_salt(tmp_path, monkeypatch):
     assert "[broker]" in text
     salt_line = next(l for l in text.splitlines() if l.strip().startswith("fingerprint_salt"))
     assert "CHANGE_ME" not in salt_line  # the salt value was replaced
-    ws_line = next(l for l in text.splitlines() if l.strip().startswith("workspace ="))
-    assert str(workspace) in ws_line  # workspace points at the given dir
+    ws_line = next(l for l in text.splitlines() if l.strip().startswith("path ="))
+    assert str(workspace) in ws_line  # the default workspace points at the given dir
     assert "CHANGE_ME" not in ws_line
 
 
@@ -317,7 +310,7 @@ def test_init_uses_existing_workspace(tmp_path, monkeypatch):
 
     assert rc == 0
     ws_line = next(l for l in config.read_text().splitlines()
-                   if l.strip().startswith("workspace ="))
+                   if l.strip().startswith("path ="))
     assert str(workspace) in ws_line
 
 

@@ -36,7 +36,7 @@ fingerprint_salt = "CHANGE_ME_or_run_valet_init"
 # Level 1 trusted-LAN WebSocket RPC host settings. The LAN listener is disabled
 # unless lan = true. Bind to 127.0.0.1 for local testing, or deliberately choose
 # a LAN interface such as 0.0.0.0 only on a trusted network.
-id = "my-main-laptop"
+id = "my-computer"
 lan = false
 listen = "127.0.0.1:8766"
 
@@ -46,16 +46,16 @@ listen = "127.0.0.1:8766"
 # no [hosts], client commands talk to the local daemon over the Unix socket.
 #
 # [client]
-# id = "my-main-laptop"
+# id = "my-computer"
 # key = "<shared key approved under [identity.clients] on the host>"
-# default_host = "my-main-laptop"
+# default_host = "my-computer"
 # reconnect_max_retries = 5
 # reconnect_backoff_seconds = 0.25
 # reconnect_backoff_max_seconds = 3.0
 #
 # Name the section after the host's [host].id; host_id then defaults to it and
 # needs no separate line. Set host_id only to label the section differently.
-# [hosts.my-main-laptop]
+# [hosts.my-computer]
 # url = "ws://192.168.1.25:8766/rpc"
 # The reconnect keys can also be set under [hosts.<name>] to override one host.
 
@@ -84,25 +84,14 @@ log_path = "~/.valet/audit.jsonl"
 console = true
 
 [exec]
-# Default working directory for commands, and the root of the REPL's cd jail:
-# in the interactive shell `cd` sticks for the session but cannot climb above
-# this directory (.. and symlinks are resolved first). Leave unset to use the
-# daemon's own working directory and impose no cd jail.
-#
-# When set, the workspace is presented as a virtual root: it appears as "./" (a
-# child as "./child"), and the real parent path is stripped from all output
-# during redaction, so `pwd` and any command that prints an absolute path under
-# the workspace never disclose the directories above it. The "./" prefix marks
-# the path as workspace-relative so it is not mistaken for the real "/".
-#
-# If the workspace root has a `bin/` directory, it is prepended to PATH, so
-# project-local tools there are found before anything else (with or without the
-# OS sandbox).
-#
-# Point this at a dedicated project directory, NOT your home directory: the
-# workspace is the blast radius commands are confined to, so "~" would expose
-# your whole home. `valet init <workspace_dir>` fills this in for you.
-workspace = "CHANGE_ME_TO_WORKSPACE_DIR"
+# Everything under [exec], [policy], and [redaction] is the DEFAULT for every
+# workspace. Each [workspace.<id>] section below can override exec/policy/
+# redaction per key; anything it does not set falls back to these defaults.
+
+# Which workspace a command runs in when none is named. Select another with
+# `valet -w <id> run ...` / `valet -w <id> sh ...`, or `:workspace set <id>` in
+# the REPL. Must match a [workspace.<id>] section below.
+default_workspace = "default"
 
 # Shell execution is disabled by default. Leave this false unless you trust all
 # clients of this host and need shell syntax such as pipes, globs, redirects, or
@@ -112,9 +101,9 @@ shell = false
 # Optional OS sandbox (macOS). Path to a sandbox-exec (.sb) profile; when set,
 # every command is run as `sandbox-exec -D WORKSPACE=<workspace> -f <profile>
 # <command>`, a real kernel boundary that command-line policy cannot provide.
-# Requires [exec].workspace, and `sandbox-exec` on PATH. A ready profile ships
-# in contrib/sandbox-exec/workspace.sb — copy it somewhere stable and point here.
-# Leave unset to run commands without an OS sandbox.
+# Requires the workspace path to be set, and `sandbox-exec` on PATH. A ready
+# profile ships in contrib/sandbox-exec/workspace.sb — copy it somewhere stable
+# and point here. Leave unset to run commands without an OS sandbox.
 #   sandbox_profile = "~/.valet/workspace.sb"
 
 # Every command's environment includes VALET_WORKSPACE = the workspace root, so
@@ -128,6 +117,36 @@ shell = false
 #   [exec.env]
 #   AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
 #   AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
+
+# ==== WORKSPACES =============================================================
+# A workspace is a dedicated directory the agent's commands are confined to, and
+# the root of the REPL's cd jail: `cd` sticks for the session but cannot climb
+# above it (.. and symlinks are resolved first). The workspace is presented as a
+# virtual root — it appears as "./" (a child as "./child") — and the real parent
+# path is stripped from all output during redaction, so `pwd` and any absolute
+# path under it never disclose the directories above. If the workspace root has
+# a `bin/` directory, it is prepended to PATH.
+#
+# Point each workspace at a dedicated project directory, NOT your home: the
+# workspace is the blast radius commands are confined to, so "~" would expose
+# your whole home. Add more with `valet workspace add <id> <dir>`; list them
+# with `valet workspace list`. `valet init <dir>` fills in the default below.
+[workspace.default]
+path = "CHANGE_ME_TO_WORKSPACE_DIR"
+
+# A second workspace with its own path and optional per-key overrides of the
+# [exec] / [policy] / [redaction] defaults above:
+#   [workspace.personal]
+#   path = "~/personal"
+#
+#   [workspace.personal.exec]
+#   shell = true
+#
+#   [workspace.personal.policy]
+#   deny = ["rm"]
+#
+#   [workspace.personal.redaction]
+#   extra_values = ["a-token-only-this-workspace-uses"]
 
 [redaction]
 # ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
@@ -175,7 +194,7 @@ redact_suspected = true
 # just prints on its own). It skips git SHAs / hashes (hex), UUIDs, decimal ids,
 # and filesystem paths, but will still sometimes mask base64 blobs or random-
 # looking IDs that are not secrets. Enable per environment if you need it.
-redact_high_entropy = false
+redact_high_entropy = true
 
 [policy]
 # ==== FAMILY 2: block EXECUTION — decide whether the command runs at all ====
