@@ -395,6 +395,12 @@ valet workspaces add personal ~/personal --make-default   # ...and make it the d
 valet workspaces list                      # list workspaces (* marks the default)
 ```
 
+`valet workspaces add` edits the host config, so it is a host-side command.
+`valet workspaces list` adapts to context: run locally it reads the config
+(showing paths); run as a client (a remote `--host` or a client config's
+`default_host`) it lists the **remote** host's workspaces over RPC — ids, the
+default marker, and shell mode, but not paths, which the host never discloses.
+
 The first workspace added becomes `[exec].default_workspace` automatically; pass
 `--make-default` to point the default at a later one.
 

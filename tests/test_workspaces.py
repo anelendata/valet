@@ -296,6 +296,39 @@ def test_cli_workspace_list(tmp_path, capsys):
     assert "* default" in out and str(a) in out
 
 
+def test_cli_workspace_list_remote_queries_daemon(monkeypatch, capsys):
+    # In client mode (remote host), `workspaces list` lists the remote host's
+    # workspaces over RPC — paths are not disclosed.
+    from valet.rpc import Target
+
+    class _Conn:
+        def __init__(self):
+            self.requests = []
+        def request(self, req):
+            self.requests.append(req)
+            return {"ok": True, "default_workspace": "work", "workspaces": [
+                {"id": "work", "default": True, "shell": False},
+                {"id": "personal", "default": False, "shell": True},
+            ]}
+        def close(self):
+            pass
+
+    conn = _Conn()
+    remote = Target(kind="websocket", name="my-computer")
+    monkeypatch.setattr("valet.cli.resolve_target", lambda **kw: (remote, None))
+    monkeypatch.setattr("valet.cli._connect", lambda _args: (conn, remote, None))
+
+    rc = main(["--host", "my-computer", "workspaces", "list"])
+
+    assert rc == 0
+    assert conn.requests == [{"op": "workspaces"}]
+    out = capsys.readouterr().out
+    assert "* work" in out and "[default]" in out
+    assert "personal" in out and "shell" in out
+    # No filesystem path is shown for a remote host.
+    assert "/" not in out
+
+
 def test_cli_workspace_add_creates_and_scaffolds_directory(tmp_path):
     a = tmp_path / "a"; a.mkdir()
     cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})

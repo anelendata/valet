@@ -890,6 +890,23 @@ def _cmd_workspace_add(args: argparse.Namespace) -> int:
 
 
 def _cmd_workspace_list(args: argparse.Namespace) -> int:
+    # In client mode (a remote host selected via --host or a client config's
+    # default_host), list the remote host's workspaces over RPC. Otherwise read
+    # the local config directly (no running daemon required).
+    try:
+        target, _client_cfg = resolve_target(
+            host_name=args.host, force_local=args.local,
+            client_config_path=args.config,
+        )
+    except (RpcError, ValetError) as exc:
+        print(f"valet: {exc}", file=sys.stderr)
+        return 2
+    if target.is_remote:
+        return _workspace_list_remote(args, target.name)
+    return _workspace_list_local(args)
+
+
+def _workspace_list_local(args: argparse.Namespace) -> int:
     path = Path(args.config) if args.config else default_config_path()
     if not path.exists():
         print(f"valet: {path} not found. Run `valet init` first.",
@@ -905,6 +922,45 @@ def _cmd_workspace_list(args: argparse.Namespace) -> int:
         wcfg = workspaces[wid]
         marker = "*" if wid == cfg.default_workspace else " "
         print(f"{marker} {wid}\t{wcfg.exec.workspace or '(no path)'}")
+    return 0
+
+
+def _workspace_list_remote(args: argparse.Namespace, host_name: str) -> int:
+    """List a remote host's workspaces via the daemon's ``workspaces`` op.
+
+    The host does not disclose workspace paths to clients, so only the id,
+    default marker, and shell mode are shown.
+    """
+    try:
+        conn, _target, _cfg = _connect(args)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request({"op": "workspaces"})
+    finally:
+        conn.close()
+    if not resp.get("ok"):
+        return _print_response(resp)
+    workspaces = resp.get("workspaces") or []
+    if not workspaces:
+        print(f"valet: no workspaces on {host_name}")
+        return 0
+    default = resp.get("default_workspace")
+    for item in workspaces:
+        wid = item.get("id")
+        marker = "*" if wid == default else " "
+        tags = []
+        if item.get("default"):
+            tags.append("default")
+        if item.get("shell"):
+            tags.append("shell")
+        suffix = f"\t[{', '.join(tags)}]" if tags else ""
+        print(f"{marker} {wid}{suffix}")
     return 0
 
 
