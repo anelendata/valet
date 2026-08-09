@@ -17,6 +17,8 @@ Subcommands:
   valet clients add     generate and approve a host-side client key
   valet clients list    list host-approved client identities
   valet clients remove  remove a host-approved client identity
+  valet workspace add   add a [workspace.<id>] section to config.toml
+  valet workspace list  list configured workspaces
   valet init <dir>      create config.toml for workspace <dir> (+ macOS sandbox) and check it
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
@@ -35,7 +37,7 @@ import sys
 from pathlib import Path
 
 from .client_config import default_client_config_path, load_client_config, write_new_client_config
-from .config import default_config_path, load_config
+from .config import default_config_path, load_config, resolve_workspaces
 from .errors import ValetError, ValidationError
 from .host_config import (
     client_config_snippet,
@@ -44,6 +46,12 @@ from .host_config import (
     normalize_client_id,
     remove_client_identity,
     upsert_client_identity,
+)
+from .workspace_config import (
+    add_workspace,
+    find_workspace,
+    list_workspaces,
+    normalize_workspace_id,
 )
 from .rpc import RpcError, ValetClient, resolve_target
 from .repl import Session, interact
@@ -112,17 +120,18 @@ def _cmd_init(args: argparse.Namespace) -> int:
         lambda m: f'{m.group(1)}"{salt}"',
         text,
     )
-    # Point the workspace at the directory the user just named, replacing the
-    # CHANGE_ME placeholder so no one ships home (~) as the blast radius.
+    # Point the default workspace at the directory the user just named,
+    # replacing the CHANGE_ME placeholder so no one ships home (~) as the blast
+    # radius. The placeholder is the `path` under [workspace.default].
     text, n_ws = re.subn(
-        r'(?m)^(\s*workspace\s*=\s*).*$',
-        lambda m: f'{m.group(1)}"{workspace_dir}"',
+        re.escape('"CHANGE_ME_TO_WORKSPACE_DIR"'),
+        f'"{workspace_dir}"',
         text,
         count=1,
     )
     if n_ws == 0:
-        print("valet: warning: could not find the workspace line to set; "
-              "edit it by hand.", file=sys.stderr)
+        print("valet: warning: could not find the workspace path placeholder to "
+              "set; edit [workspace.default].path by hand.", file=sys.stderr)
 
     if is_mac:
         text = _init_macos_sandbox(text, workspace_sb)
@@ -217,20 +226,38 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _doctor_report(path: Path, cfg) -> bool:
     """Print the config summary and sandbox checks; return True if a check failed."""
     print("valet doctor\n")
-    workspace = _resolve_workspace(cfg.exec.workspace)
+    print(f"  config file:  {path}")
+    workspaces = resolve_workspaces(cfg)
+    print(f"  default ws:   {cfg.default_workspace}")
+    print(f"  workspaces:   {len(workspaces)}")
+
+    failed = False
+    for wid in sorted(workspaces):
+        failed = _doctor_workspace(path, cfg, wid, workspaces[wid]) or failed
+
+    print()
+    print("result: " + ("FAILED — see above" if failed else "all checks passed"))
+    return failed
+
+
+def _doctor_workspace(path: Path, cfg, wid: str, wcfg) -> bool:
+    """Report one workspace's config summary and sandbox checks."""
+    workspace = _resolve_workspace(wcfg.exec.workspace)
     ws_note = "(unset)"
     if workspace:
         ws_note = f"{workspace}  [{'exists' if os.path.isdir(workspace) else 'MISSING'}]"
-    print(f"  config file:  {path}")
-    print(f"  workspace:    {ws_note}")
-    print(f"  shell:        {'on' if cfg.exec.shell else 'off'}")
+    default_mark = " (default)" if wid == cfg.default_workspace else ""
+    print()
+    print(f"[workspace.{wid}]{default_mark}")
+    print(f"  path:         {ws_note}")
+    print(f"  shell:        {'on' if wcfg.exec.shell else 'off'}")
     print(
-        f"  policy:       reads={_onoff(cfg.policy.enforce_workspace_reads)} "
-        f"writes={_onoff(cfg.policy.enforce_workspace_writes)}  "
-        f"deny=+{len(cfg.policy.deny)}  "
-        f"allow={'(none)' if not cfg.policy.allow else ','.join(cfg.policy.allow)}"
+        f"  policy:       reads={_onoff(wcfg.policy.enforce_workspace_reads)} "
+        f"writes={_onoff(wcfg.policy.enforce_workspace_writes)}  "
+        f"deny=+{len(wcfg.policy.deny)}  "
+        f"allow={'(none)' if not wcfg.policy.allow else ','.join(wcfg.policy.allow)}"
     )
-    print(f"  sandbox:      {cfg.exec.sandbox_profile or '(not configured)'}")
+    print(f"  sandbox:      {wcfg.exec.sandbox_profile or '(not configured)'}")
     print()
 
     warned = False
@@ -238,23 +265,20 @@ def _doctor_report(path: Path, cfg) -> bool:
     if workspace and _within(home, workspace):
         detail = ("your home directory" if workspace == home
                   else f"a parent of your home directory ({home})")
-        _doctor_line("WARN", f"[exec].workspace is {detail} — very high risk: the "
+        _doctor_line("WARN", f"workspace path is {detail} — very high risk: the "
                              "agent's blast radius is your whole home. Point it at a "
                              "dedicated project directory.")
         warned = True
 
-    for label, where in _paths_inside_workspace(path, cfg, workspace):
+    for label, where in _paths_inside_workspace(path, cfg, wcfg, workspace):
         _doctor_line("WARN", f"{label} is inside the workspace ({where}); the "
                              "sandboxed agent can read it — keep it outside "
-                             "[exec].workspace")
+                             "the workspace path")
         warned = True
     if warned:
         print()
 
-    failed = _doctor_sandbox_checks(cfg, workspace)
-    print()
-    print("result: " + ("FAILED — see above" if failed else "all checks passed"))
-    return failed
+    return _doctor_sandbox_checks(wcfg, workspace)
 
 
 def _onoff(value: bool) -> str:
@@ -279,7 +303,7 @@ def _within(child: str, parent: str) -> bool:
         return False
 
 
-def _paths_inside_workspace(config_path: Path, cfg, workspace: str) -> list[tuple[str, str]]:
+def _paths_inside_workspace(config_path: Path, cfg, wcfg, workspace: str) -> list[tuple[str, str]]:
     """Sensitive files that must live outside the workspace but currently don't.
 
     The agent's sandbox grants reads across the whole workspace (and writes,
@@ -289,11 +313,11 @@ def _paths_inside_workspace(config_path: Path, cfg, workspace: str) -> list[tupl
     if not workspace:
         return []
     candidates = [("config file", str(config_path))]
-    if cfg.exec.sandbox_profile:
-        candidates.append(("sandbox profile", cfg.exec.sandbox_profile))
+    if wcfg.exec.sandbox_profile:
+        candidates.append(("sandbox profile", wcfg.exec.sandbox_profile))
     if cfg.audit.log_path:
         candidates.append(("audit log", cfg.audit.log_path))
-    for src in cfg.redaction.secret_sources:
+    for src in wcfg.redaction.secret_sources:
         candidates.append(("secret source", str(src)))
     return [(label, p) for label, p in candidates if _within(p, workspace)]
 
@@ -302,11 +326,11 @@ def _doctor_line(status: str, text: str) -> None:
     print(f"  [{status:^4}] {text}")
 
 
-def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
+def _doctor_sandbox_checks(wcfg, workspace: str) -> bool:
     """Run sandbox checks. Returns True if any hard check failed."""
-    profile = cfg.exec.sandbox_profile
+    profile = wcfg.exec.sandbox_profile
     if not profile:
-        print("sandbox checks: skipped ([exec].sandbox_profile is unset)")
+        print("sandbox checks: skipped (sandbox_profile is unset)")
         return False
 
     print("sandbox checks:")
@@ -329,7 +353,7 @@ def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
     _doctor_line(" OK ", f"profile readable: {profile_path}")
 
     if not workspace or not os.path.isdir(workspace):
-        _doctor_line("FAIL", "[exec].workspace must be set and exist for the sandbox")
+        _doctor_line("FAIL", "the workspace path must be set and exist for the sandbox")
         return True
 
     def run(*cmd):
@@ -370,7 +394,7 @@ def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
     if hasattr(res, "returncode") and res.returncode == 0:
         _doctor_line("WARN", "home directory IS readable inside the sandbox "
                              "(reads are not confined)")
-        print("         → [exec].workspace is your home (or an ancestor of it). Set it")
+        print("         → the workspace path is your home (or an ancestor of it). Set it")
         print("           to a dedicated subdirectory (e.g. ~/valet-workspace) so only")
         print("           that subtree is readable, not the whole home.")
     else:
@@ -436,16 +460,31 @@ def _cmd_repl(args: argparse.Namespace) -> int:
         print(f"valet: could not connect: {exc}", file=sys.stderr)
         return 2
     try:
-        # A local target reads the host's [exec].shell from its own config; a
-        # remote target has no access to it, so ask the host for its default.
-        # Without this the REPL would default remote sessions to shell=off and
-        # send shell=False, running argv mode even when the host allows a shell.
-        shell_default = cfg.exec.shell if cfg else _remote_shell_default(conn)
+        # A local target reads the selected workspace's settings from its own
+        # config; a remote target has no access to it, so ask the host for its
+        # defaults. Without this the REPL would default remote sessions to
+        # shell=off and run argv mode even when the host allows a shell.
+        if cfg:
+            wsmap = resolve_workspaces(cfg)
+            active_ws = args.workspace or cfg.default_workspace
+            wcfg = (wsmap.get(active_ws) or wsmap.get(cfg.default_workspace)
+                    or next(iter(wsmap.values())))
+            if args.workspace and args.workspace not in wsmap:
+                print(f"valet: unknown workspace {args.workspace!r}; using "
+                      f"{wcfg.id!r} instead.", file=sys.stderr)
+            active_ws = wcfg.id
+            shell_default = wcfg.exec.shell
+            completion_ws = (wcfg.exec.workspace
+                             if wcfg.policy.enforce_workspace_reads else None)
+        else:
+            shell_default, remote_default = _remote_defaults(conn)
+            active_ws = args.workspace or remote_default
+            completion_ws = None
         session = Session(
             shell=shell_default,
             host_label=target.name if target.is_remote else None,
-            completion_workspace=(cfg.exec.workspace
-                                  if cfg and cfg.policy.enforce_workspace_reads else None),
+            completion_workspace=completion_ws,
+            workspace=active_ws,
         )
         def send(req: dict) -> dict:
             if req.get("op", "exec") == "exec" and req.get("stream", True):
@@ -460,17 +499,18 @@ def _cmd_repl(args: argparse.Namespace) -> int:
         conn.close()
 
 
-def _remote_shell_default(conn: ValetClient) -> bool:
-    """Ask a remote host whether it defaults exec to shell mode.
+def _remote_defaults(conn: ValetClient) -> tuple[bool, str | None]:
+    """Ask a remote host for its default shell mode and default workspace.
 
-    Falls back to False if the host is old enough not to report it or the
-    ping fails; the host still rejects shell requests it does not allow.
+    Falls back to ``(False, None)`` if the host is old enough not to report
+    them or the ping fails; the host still rejects shell requests it does not
+    allow and resolves the workspace itself.
     """
     try:
         resp = conn.request({"op": "ping"})
     except (ConnectionError, RpcError, OSError):
-        return False
-    return bool(resp.get("shell_default", False))
+        return False, None
+    return bool(resp.get("shell_default", False)), resp.get("default_workspace")
 
 
 def _one_shot(args: argparse.Namespace, request: dict) -> int:
@@ -550,6 +590,9 @@ def _attach_env(args: argparse.Namespace, req: dict) -> None:
     env = _parse_env_args(getattr(args, "env", None))
     if env:
         req["env"] = env
+    workspace = getattr(args, "workspace", None)
+    if workspace:
+        req["workspace"] = workspace
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -746,6 +789,66 @@ def _cmd_clients_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workspace_add(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Run `valet init <dir>` first.",
+              file=sys.stderr)
+        return 2
+
+    raw_id = args.workspace_id.strip()
+    if not raw_id:
+        print("valet workspace add: workspace id cannot be empty", file=sys.stderr)
+        return 2
+    try:
+        workspace_id = normalize_workspace_id(raw_id)
+    except ValueError as exc:
+        print(f"valet workspace add: {exc}", file=sys.stderr)
+        return 2
+
+    if find_workspace(path, workspace_id) and not args.yes:
+        answer = input(
+            f"valet: workspace {workspace_id!r} already exists. "
+            "Replace its path? [y/N] "
+        )
+        if answer.strip().lower() not in ("y", "yes"):
+            print("valet: workspace unchanged.")
+            return 1
+
+    ws_path = args.path.strip()
+    result = add_workspace(path, workspace_id=workspace_id, workspace_path=ws_path)
+    # Surface config errors introduced by the edit early.
+    load_config(path)
+
+    print(f"valet: added workspace {result.workspace_id!r} -> {result.path} in {path}")
+    if result.made_default:
+        print(f"valet: set it as [exec].default_workspace (was unset).")
+    expanded = os.path.expanduser(os.path.expandvars(ws_path))
+    if not os.path.isdir(expanded):
+        print(f"valet: note: {expanded} does not exist yet — create it before use.")
+    print("valet: `valet serve` reloads workspaces automatically.")
+    return 0
+
+
+def _cmd_workspace_list(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Run `valet init <dir>` first.",
+              file=sys.stderr)
+        return 2
+
+    cfg = load_config(path)
+    workspaces = resolve_workspaces(cfg)
+    if not workspaces:
+        print(f"valet: no workspaces configured in {path}")
+        return 0
+    for wid in sorted(workspaces):
+        wcfg = workspaces[wid]
+        marker = "*" if wid == cfg.default_workspace else " "
+        print(f"{marker} {wid}\t{wcfg.exec.workspace or '(no path)'}")
+    return 0
+
+
 def _default_lan_url(listen: str) -> str:
     host, port = listen.rsplit(":", 1) if ":" in listen else (listen, "8766")
     if host in ("", "0.0.0.0", "::"):
@@ -762,6 +865,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "else ~/.valet/config.toml, else the repo config.toml)")
     p.add_argument("--host", default=None,
                    help="configured remote host to use for client commands")
+    p.add_argument("-w", "--workspace", default=None,
+                   help="workspace to run in (host default when omitted); "
+                        "applies to run/sh and the REPL")
     p.add_argument("--local", action="store_true",
                    help="force the local Unix-domain socket transport")
     p.add_argument("-e", "--env", "-env", action="append", default=[],
@@ -825,6 +931,18 @@ def build_parser() -> argparse.ArgumentParser:
     clients_remove = clients_sub.add_parser("remove", help="remove an approved client key")
     clients_remove.add_argument("client_id", metavar="id", help="client id to remove")
     clients_remove.set_defaults(func=_cmd_clients_remove)
+
+    workspace = sub.add_parser("workspace", help="manage workspaces (host-side)")
+    workspace_sub = workspace.add_subparsers(dest="workspace_cmd", required=True)
+    workspace_sub.add_parser("list", help="list configured workspaces"
+                             ).set_defaults(func=_cmd_workspace_list)
+    ws_add = workspace_sub.add_parser("add", help="add a [workspace.<id>] section")
+    ws_add.add_argument("workspace_id", metavar="id",
+                        help="workspace id (spaces become hyphens)")
+    ws_add.add_argument("path", help="directory the workspace confines commands to")
+    ws_add.add_argument("--yes", "-y", action="store_true",
+                        help="replace an existing workspace path without prompting")
+    ws_add.set_defaults(func=_cmd_workspace_add)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
     run.add_argument("--cwd", default=argparse.SUPPRESS)

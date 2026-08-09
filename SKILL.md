@@ -20,10 +20,13 @@ redacts known and suspected secret values, and returns only the sanitized result
   `[exec] shell = true`.
 - Use `valet --cwd DIR run -- ...` to run a one-shot command in a directory.
   `valet run --cwd DIR -- ...` also works. Relative cwd values resolve on the
-  trusted host under `[exec].workspace`; this is the shell-free replacement for
-  patterns like `cd DIR; command`.
+  trusted host under the active workspace's path; this is the shell-free
+  replacement for patterns like `cd DIR; command`.
 - Use `valet --env NAME=value run -- ...` for per-command environment variables
   instead of shell assignment syntax.
+- A host may define several workspaces (separate directory jails, each with its
+  own settings). Target one with `valet -w <id> run -- ...` / `valet -w <id> sh
+  '...'`; omit it to use the host's default. `valet workspace list` shows them.
 - Do not use host process tools such as `ps`, `kill`, `pkill`, or `killall`.
   Use `valet processes list` and `valet processes kill <pid>` for subprocesses
   that Valet itself started.
@@ -57,19 +60,19 @@ LAN mode uses a client-only `client.toml` and WebSocket RPC to a trusted host:
 
 ```bash
 valet hosts
-valet --host my-main-laptop ping
-valet --host my-main-laptop run -- aws sts get-caller-identity
-valet --host my-main-laptop --cwd projects/app run -- cat text.txt
-valet --host my-main-laptop --env AWS_PROFILE=prod-readonly run -- aws s3 ls
-valet --host my-main-laptop --env AWS_PROFILE=prod-readonly --cwd projects/app run -- aws s3 ls
-valet --host my-main-laptop processes list
-valet --host my-main-laptop repl
+valet --host my-computer ping
+valet --host my-computer run -- aws sts get-caller-identity
+valet --host my-computer --cwd projects/app run -- cat text.txt
+valet --host my-computer --env AWS_PROFILE=prod-readonly run -- aws s3 ls
+valet --host my-computer --env AWS_PROFILE=prod-readonly --cwd projects/app run -- aws s3 ls
+valet --host my-computer processes list
+valet --host my-computer repl
 ```
 
 Use a non-default config when needed:
 
 ```bash
-valet -c /path/to/config.toml --host my-main-laptop ping
+valet -c /path/to/config.toml --host my-computer ping
 ```
 
 ## Client Config
@@ -82,12 +85,12 @@ policy.
 [client]
 id = "local-ai-box"
 key = "client-shared-key"
-default_host = "my-main-laptop"
+default_host = "my-computer"
 reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
 
-[hosts.my-main-laptop]
+[hosts.my-computer]
 url = "ws://192.168.1.25:8766/rpc"
 ```
 
@@ -107,7 +110,7 @@ its host-side `config.toml`:
 
 ```toml
 [host]
-id = "my-main-laptop"
+id = "my-computer"
 lan = true
 listen = "0.0.0.0:8766"
 ```
@@ -139,7 +142,7 @@ server after changing listener bind settings such as `broker.socket_path`,
 The REPL keeps a session cwd and shell mode on the trusted host:
 
 ```bash
-valet --host my-main-laptop repl
+valet --host my-computer repl
 ```
 
 Inside the REPL, `cd` sticks only when it is a standalone line. With shell mode
@@ -152,7 +155,7 @@ app valet> cat text.txt
 ```
 
 ```bash
-valet --host my-main-laptop --cwd projects/app run -- cat text.txt
+valet --host my-computer --cwd projects/app run -- cat text.txt
 ```
 
 Useful meta-commands:
@@ -163,6 +166,8 @@ Useful meta-commands:
 :cwd path
 :shell on
 :shell off
+:workspace
+:workspace set <id>
 :secrets
 :processes list
 :processes kill <pid>

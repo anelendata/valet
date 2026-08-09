@@ -100,6 +100,24 @@ class IdentityConfig:
 
 
 @dataclass(frozen=True)
+class WorkspaceConfig:
+    """One workspace: its resolved exec/redaction/policy settings.
+
+    A workspace is a named directory the agent's commands are confined to.
+    ``exec.workspace`` holds its resolved ``path``. The exec/redaction/policy
+    here are the top-level defaults with any ``[workspace.<id>.*]`` overrides
+    already merged in, so the broker can use them directly.
+    """
+    id: str
+    exec: ExecConfig = field(default_factory=ExecConfig)
+    redaction: RedactionConfig = field(default_factory=RedactionConfig)
+    policy: PolicyConfig = field(default_factory=PolicyConfig)
+
+
+DEFAULT_WORKSPACE_ID = "default"
+
+
+@dataclass(frozen=True)
 class BrokerConfig:
     socket_path: str
     timeout_seconds: int
@@ -110,6 +128,27 @@ class BrokerConfig:
     audit: AuditConfig = field(default_factory=AuditConfig)
     host: HostConfig = field(default_factory=HostConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
+    # Which workspace requests use when they name none. The exec/redaction/policy
+    # above are the shared defaults; ``workspaces`` holds the per-id resolved
+    # configs. When ``workspaces`` is empty, ``resolve_workspaces`` synthesises a
+    # single default workspace from the defaults above.
+    default_workspace: str = DEFAULT_WORKSPACE_ID
+    workspaces: dict[str, WorkspaceConfig] = field(default_factory=dict)
+
+
+def resolve_workspaces(cfg: BrokerConfig) -> dict[str, WorkspaceConfig]:
+    """The effective workspace map for a config.
+
+    Uses ``cfg.workspaces`` when populated; otherwise synthesises one default
+    workspace from the top-level exec/redaction/policy defaults so a config (or
+    a directly-built ``BrokerConfig``) with no ``[workspace.*]`` sections still
+    works as a single-workspace host.
+    """
+    if cfg.workspaces:
+        return dict(cfg.workspaces)
+    wid = cfg.default_workspace or DEFAULT_WORKSPACE_ID
+    return {wid: WorkspaceConfig(id=wid, exec=cfg.exec,
+                                 redaction=cfg.redaction, policy=cfg.policy)}
 
 
 def default_config_path() -> Path:
@@ -152,40 +191,59 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     host = raw.get("host", {})
     identity = raw.get("identity", {})
 
+    # `[exec].workspace` was replaced by per-workspace `[workspace.<id>].path`.
+    # Reject the old key rather than silently synthesising a workspace from it,
+    # so a legacy config fails loudly (in `valet doctor` and every other command)
+    # instead of appearing healthy.
+    if "workspace" in exec_:
+        raise ConfigError(
+            "[exec].workspace is no longer supported. Define a workspace instead:\n"
+            "  [workspace.default]\n"
+            '  path = "<your workspace dir>"\n'
+            'and set [exec].default_workspace = "default". '
+            "Run `valet workspace add <id> <dir>` or see config.example.toml."
+        )
+
     # A stable salt keeps redaction tags comparable across runs; if unset we
     # generate an ephemeral one so the tool works with zero setup.
     salt = broker.get("fingerprint_salt", "")
     if not salt or salt.startswith("CHANGE_ME"):
         salt = _secrets.token_urlsafe(24)
 
-    workspace = exec_.get("workspace")
+    # Top-level [exec]/[redaction]/[policy] are the shared defaults for every
+    # workspace; each [workspace.<id>.*] section overrides them per key.
+    default_exec = _parse_exec_table(exec_, ExecConfig(), path=None)
+    default_redaction = _parse_redaction_table(red, RedactionConfig())
+    default_policy = _parse_policy_table(pol, PolicyConfig())
+
+    default_workspace = str(exec_.get("default_workspace", DEFAULT_WORKSPACE_ID))
+    workspaces = _load_workspaces(
+        raw.get("workspace", {}),
+        default_exec, default_redaction, default_policy,
+    )
+    if not workspaces:
+        # No [workspace.*] sections at all: a single, path-less default workspace
+        # (no directory jail) built from the shared defaults. This is the valid
+        # "run anywhere" config; a legacy [exec].workspace was already rejected.
+        workspaces = {
+            default_workspace: WorkspaceConfig(
+                id=default_workspace, exec=default_exec,
+                redaction=default_redaction, policy=default_policy,
+            )
+        }
+    if default_workspace not in workspaces:
+        raise ConfigError(
+            f"[exec].default_workspace = {default_workspace!r} but no "
+            f"[workspace.{default_workspace}] section is defined"
+        )
+
     return BrokerConfig(
         socket_path=_expand(broker.get("socket_path", "~/.valet/broker.sock")),
         timeout_seconds=int(broker.get("timeout_seconds", 60)),
         fingerprint_salt=salt,
-        exec=ExecConfig(
-            workspace=_expand(workspace) if workspace else None,
-            shell=bool(exec_.get("shell", False)),
-            sandbox_profile=(
-                _expand(exec_["sandbox_profile"])
-                if exec_.get("sandbox_profile") else None
-            ),
-            env=_load_exec_env(exec_.get("env", {})),
-        ),
-        redaction=RedactionConfig(
-            secret_sources=tuple(_expand(s) for s in red.get("secret_sources", ())),
-            cwd_secret_files=tuple(red.get("cwd_secret_files", (".env", ".secrets"))),
-            extra_values=tuple(red.get("extra_values", ())),
-            redact_suspected=bool(red.get("redact_suspected", True)),
-            redact_high_entropy=bool(red.get("redact_high_entropy", False)),
-        ),
-        policy=PolicyConfig(
-            allow=tuple(pol.get("allow", ())),
-            deny=tuple(pol.get("deny", ())),
-            deny_read_paths=tuple(pol.get("deny_read_paths", ())),
-            enforce_workspace_reads=bool(pol.get("enforce_workspace_reads", True)),
-            enforce_workspace_writes=bool(pol.get("enforce_workspace_writes", True)),
-        ),
+        exec=default_exec,
+        redaction=default_redaction,
+        policy=default_policy,
         audit=AuditConfig(
             log_path=_expand(str(audit.get("log_path", ""))),
             console=bool(audit.get("console", True)),
@@ -198,7 +256,100 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
         identity=IdentityConfig(
             clients=_load_client_identities(identity.get("clients", {})),
         ),
+        default_workspace=default_workspace,
+        workspaces=workspaces,
     )
+
+
+def _parse_exec_table(table: dict, base: ExecConfig, *, path: object) -> ExecConfig:
+    """Parse an [exec] (or [workspace.<id>.exec]) table over ``base`` defaults.
+
+    ``path`` (a workspace's ``path``) wins for the workspace directory; env
+    tables merge over the base env per-key.
+    """
+    if path is not None:
+        workspace = path
+    else:
+        workspace = table.get("workspace", base.workspace)
+    if "sandbox_profile" in table:
+        sandbox = table["sandbox_profile"]
+        sandbox_profile = _expand(sandbox) if sandbox else None
+    else:
+        sandbox_profile = base.sandbox_profile
+    env = dict(base.env)
+    env.update(_load_exec_env(table.get("env", {})))
+    return ExecConfig(
+        workspace=_expand(str(workspace)) if workspace else None,
+        shell=bool(table.get("shell", base.shell)),
+        sandbox_profile=sandbox_profile,
+        env=env,
+    )
+
+
+def _parse_redaction_table(table: dict, base: RedactionConfig) -> RedactionConfig:
+    return RedactionConfig(
+        secret_sources=(
+            tuple(_expand(s) for s in table["secret_sources"])
+            if "secret_sources" in table else base.secret_sources
+        ),
+        cwd_secret_files=(
+            tuple(table["cwd_secret_files"])
+            if "cwd_secret_files" in table else base.cwd_secret_files
+        ),
+        extra_values=(
+            tuple(table["extra_values"])
+            if "extra_values" in table else base.extra_values
+        ),
+        redact_suspected=bool(table.get("redact_suspected", base.redact_suspected)),
+        redact_high_entropy=bool(table.get("redact_high_entropy", base.redact_high_entropy)),
+    )
+
+
+def _parse_policy_table(table: dict, base: PolicyConfig) -> PolicyConfig:
+    return PolicyConfig(
+        allow=tuple(table["allow"]) if "allow" in table else base.allow,
+        deny=tuple(table["deny"]) if "deny" in table else base.deny,
+        deny_read_paths=(
+            tuple(table["deny_read_paths"])
+            if "deny_read_paths" in table else base.deny_read_paths
+        ),
+        enforce_workspace_reads=bool(
+            table.get("enforce_workspace_reads", base.enforce_workspace_reads)
+        ),
+        enforce_workspace_writes=bool(
+            table.get("enforce_workspace_writes", base.enforce_workspace_writes)
+        ),
+    )
+
+
+def _load_workspaces(
+    raw: object,
+    default_exec: ExecConfig,
+    default_redaction: RedactionConfig,
+    default_policy: PolicyConfig,
+) -> dict[str, WorkspaceConfig]:
+    """Build the workspace map from [workspace.<id>] sections.
+
+    Each section's ``path`` sets the workspace directory; its optional
+    ``[workspace.<id>.exec]`` / ``.policy`` / ``.redaction`` sub-tables override
+    the shared defaults per key.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    workspaces: dict[str, WorkspaceConfig] = {}
+    for wid, table in raw.items():
+        if not isinstance(table, dict):
+            continue
+        path = table.get("path")
+        if not path:
+            raise ConfigError(f"[workspace.{wid}] must set a 'path'")
+        workspaces[str(wid)] = WorkspaceConfig(
+            id=str(wid),
+            exec=_parse_exec_table(table.get("exec", {}), default_exec, path=path),
+            redaction=_parse_redaction_table(table.get("redaction", {}), default_redaction),
+            policy=_parse_policy_table(table.get("policy", {}), default_policy),
+        )
+    return workspaces
 
 
 def _load_exec_env(raw: object) -> dict[str, str]:

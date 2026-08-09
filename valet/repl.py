@@ -38,6 +38,8 @@ Type any command to run it; output has secrets redacted.
   :help, :?            this help
   :cwd [dir]           show or change the working directory (same as `cd`)
   :shell [on|off]      show or toggle shell mode (default off)
+  :workspace [list]    list workspaces (active marked *); :ws also works
+  :workspace set <id>  switch to another workspace (resets cwd to its root)
   :secrets             how many secret values are being redacted for the cwd
   :processes [list]    list subprocesses started by valet (:jobs also works)
   :processes kill PID  terminate a valet subprocess (:kill PID also works)
@@ -59,6 +61,16 @@ class Session:
     completion_send: Optional[Send] = None
     # Set by the CLI when policy.enforce_workspace_reads is enabled.
     completion_workspace: Optional[str] = None
+    # Active workspace id (None => the daemon's default). Shown in the prompt and
+    # attached to every request so the daemon runs it in the right workspace.
+    workspace: Optional[str] = None
+
+
+def _with_workspace(req: dict, session: Session) -> dict:
+    """Attach the session's active workspace to a request, if one is set."""
+    if session.workspace:
+        req["workspace"] = session.workspace
+    return req
 
 
 def _pure_cd_target(line: str) -> Optional[str]:
@@ -80,6 +92,7 @@ def _change_dir(target: str, session: Session, send: Send) -> tuple[bool, Option
     req = {"op": "chdir", "target": target}
     if session.cwd:
         req["cwd"] = session.cwd
+    _with_workspace(req, session)
     try:
         resp = send(req)
     except ConnectionError as exc:
@@ -121,6 +134,7 @@ def run_command(line: str, session: Session, send: Send) -> tuple[bool, Optional
     req = {"op": "exec", "cmd": line, "shell": session.shell}
     if session.cwd:
         req["cwd"] = session.cwd
+    _with_workspace(req, session)
     try:
         resp = send(req)
     except ConnectionError as exc:
@@ -153,12 +167,15 @@ def _meta(body: str, session: Session, send: Send) -> tuple[bool, Optional[str]]
         req = {"op": "redaction_info"}
         if session.cwd:
             req["cwd"] = session.cwd
+        _with_workspace(req, session)
         try:
             resp = send(req)
         except ConnectionError:
             return False, "connection to daemon lost. Exiting."
         n = resp.get("redacted_value_count", "?")
         return True, f"redacting {n} secret value(s) for {resp.get('cwd') or '(default)'}"
+    if name in ("workspace", "workspaces", "ws"):
+        return _meta_workspace(arg, session, send)
     if name in ("processes", "procs", "jobs"):
         return _meta_processes(arg, send)
     if name == "kill":
@@ -218,6 +235,73 @@ def _meta_processes_kill(
     return True, f"killed subprocess {resp.get('pid')}"
 
 
+def _meta_workspace(body: str, session: Session, send: Send) -> tuple[bool, Optional[str]]:
+    parts = body.split()
+    action = parts[0] if parts else "list"
+
+    if action in ("list", "ls", ""):
+        try:
+            resp = send({"op": "workspaces"})
+        except ConnectionError:
+            return False, "connection to daemon lost. Exiting."
+        return True, _format_workspaces(resp, session)
+
+    if action == "set":
+        if len(parts) != 2:
+            return True, "usage: :workspace set <id>"
+        return _switch_workspace(parts[1], session, send)
+
+    return True, "usage: :workspace [list] | :workspace set <id>"
+
+
+def _switch_workspace(target: str, session: Session, send: Send) -> tuple[bool, Optional[str]]:
+    """Switch the active workspace, adopting its shell default and root cwd."""
+    try:
+        resp = send({"op": "workspaces"})
+    except ConnectionError:
+        return False, "connection to daemon lost. Exiting."
+    entries = resp.get("workspaces") or []
+    match = next((w for w in entries if w.get("id") == target), None)
+    if match is None:
+        known = ", ".join(sorted(str(w.get("id")) for w in entries)) or "(none)"
+        return True, f"unknown workspace: {target} (known: {known})"
+
+    session.workspace = target
+    session.shell = bool(match.get("shell", session.shell))
+    # Reset the cwd to the new workspace's root (each workspace has its own jail).
+    session.cwd = None
+    req = {"op": "chdir", "target": "."}
+    _with_workspace(req, session)
+    try:
+        chdir = send(req)
+    except ConnectionError:
+        return False, "connection to daemon lost. Exiting."
+    if chdir.get("ok"):
+        session.cwd = chdir.get("cwd")
+    return True, f"workspace: {target}"
+
+
+def _format_workspaces(resp: dict, session: Session) -> Optional[str]:
+    if not resp.get("ok"):
+        return format_exec(resp)
+    entries = resp.get("workspaces") or []
+    if not entries:
+        return "no workspaces configured"
+    active = session.workspace or resp.get("default_workspace")
+    rows = []
+    for item in entries:
+        wid = item.get("id")
+        marker = "*" if wid == active else " "
+        tags = []
+        if item.get("default"):
+            tags.append("default")
+        if item.get("shell"):
+            tags.append("shell")
+        suffix = f"\t[{', '.join(tags)}]" if tags else ""
+        rows.append(f"{marker} {wid}{suffix}")
+    return "\n".join(rows)
+
+
 def _format_processes(resp: dict) -> Optional[str]:
     if not resp.get("ok"):
         return format_exec(resp)
@@ -265,8 +349,15 @@ def format_exec(resp: dict) -> Optional[str]:
 
 
 def prompt_for(session: Session) -> str:
-    """`<cwd> valet> `, or plain `valet> ` if the cwd is unknown."""
+    """`(workspace) <cwd> valet> `.
+
+    The host label (remote only) and workspace id are optional prefixes; each is
+    omitted when unknown, so a bare local session with no workspace still reads
+    as `<cwd> valet> `.
+    """
     prefix = f"{session.host_label}:" if session.host_label else ""
+    if session.workspace:
+        prefix += f"({session.workspace}) "
     cwd = session.cwd
     if cwd:
         return f"{prefix}{_short_cwd(cwd)} valet> "
@@ -487,6 +578,7 @@ def session_completion_candidates(line: str, session: Session) -> list[str]:
         req = {"op": "complete", "line": line}
         if session.cwd:
             req["cwd"] = session.cwd
+        _with_workspace(req, session)
         try:
             resp = session.completion_send(req)
         except (ConnectionError, OSError):
@@ -578,7 +670,7 @@ def interact(send: Send, *, session: Optional[Session] = None,
     # `cd`s have a concrete base.
     if session.cwd is None:
         try:
-            resp = send({"op": "chdir", "target": "."})
+            resp = send(_with_workspace({"op": "chdir", "target": "."}, session))
             if resp.get("ok"):
                 session.cwd = resp.get("cwd")
         except (ConnectionError, OSError):

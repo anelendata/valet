@@ -346,7 +346,7 @@ valet doctor                            # re-check config health anytime
 confined to as a required argument. If that directory doesn't exist it offers to
 create it; if it does, it confirms the full path with you. It then copies
 `config.example.toml` into `~/.valet/config.toml` (use `-c PATH` to write it
-elsewhere) with `[exec].workspace` already set to your directory, gives it a
+elsewhere) with the default workspace's `path` already set to your directory, gives it a
 stable redaction salt, and on macOS offers to install and activate the OS
 sandbox profile. It reports where the config was written, and refuses to
 overwrite an existing `config.toml`/`workspace.sb` — remove or rename them to
@@ -356,9 +356,51 @@ Keep the config, the sandbox profile, the audit log, and your secret sources
 **outside** the workspace: the agent can read (and, when jailed there, write)
 anything inside it, so any of these placed under the workspace is exposed to the
 very agent it hides secrets from. `valet doctor` (also run at the end of `valet
-init`) warns when any of them resolve inside `[exec].workspace`, and separately
-flags an `[exec].workspace` that is your home directory (or broader) as very
+init`) warns when any of them resolve inside a workspace path, and separately
+flags a workspace path that is your home directory (or broader) as very
 high risk — the agent's blast radius would be your whole home.
+
+#### Multiple workspaces under one host
+
+A host can serve several workspaces, each a separate directory jail with its own
+settings. `[exec]`, `[policy]`, and `[redaction]` are the **defaults** for every
+workspace; each `[workspace.<id>]` names a `path` and may override those defaults
+per key. `[exec].default_workspace` picks the one used when a command names none.
+
+```toml
+[exec]
+default_workspace = "default"      # used when no workspace is named
+shell = false                      # default for all workspaces
+
+[policy]
+deny = ["curl"]                    # denied in every workspace
+
+[workspace.default]
+path = "~/work/project"
+
+[workspace.personal]
+path = "~/personal"
+[workspace.personal.exec]
+shell = true                       # overrides the [exec] default, personal only
+[workspace.personal.policy]
+deny = ["rm"]                      # replaces the shared deny list for personal
+```
+
+Manage them from the host:
+
+```bash
+valet workspace add personal ~/personal   # add a [workspace.personal] section
+valet workspace list                      # list workspaces (* marks the default)
+```
+
+Select a workspace per command with `-w/--workspace`, or switch inside the REPL
+with `:workspace set <id>` (see below). `valet serve` reloads workspace changes
+automatically.
+
+```bash
+valet -w personal run -- ls
+valet -w personal sh 'ls | grep foo'
+```
 
 From a sandbox running in the same machine,
 
@@ -392,12 +434,12 @@ Client config:
 [client]
 id = "my-ai-box"
 key = "xxxxxxxxxxxxxxxxxxxxxxxx"
-default_host = "my-main-laptop"
+default_host = "my-computer"
 reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
 
-[hosts.my-main-laptop]
+[hosts.my-computer]
 url = "ws://<host-lan-ip>:8766/rpc"
 ```
 
@@ -420,7 +462,7 @@ valet repl
 
 You can select host with `--host` option:
 ```bash
-valet --host my-main-laptop -- run ls
+valet --host my-computer -- run ls
 ```
 
 To revoke a LAN client, remove it from the trusted host config:
@@ -446,7 +488,7 @@ reconnect_max_retries = 5
 reconnect_backoff_seconds = 0.25
 reconnect_backoff_max_seconds = 3.0
 
-[hosts.my-main-laptop]
+[hosts.my-computer]
 # Optional per-host overrides use the same keys.
 ```
 
@@ -461,22 +503,26 @@ you type is run as a command**, and the output comes back redacted:
 ```
 $ valet
 valet 0.2.0 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
-ws valet> cat .secrets
+(default) ws valet> cat .secrets
 DB_PASSWORD=[REDACTED:secret:h:38673aad]
 API_TOKEN=[REDACTED:secret:h:3bc13a30]
-ws valet> cd projects/x-com       # cd sticks for the session
-x-com valet> aws s3 ls | head     # runs in projects/x-com
-x-com valet> cd ../../..          # cd: cannot cd above the workspace
-x-com valet> :shell off           # run following lines as argv, not shell
-x-com valet> :quit
+(default) ws valet> cd projects/x-com       # cd sticks for the session
+(default) x-com valet> aws s3 ls | head     # runs in projects/x-com
+(default) x-com valet> cd ../../..          # cd: cannot cd above the workspace
+(default) x-com valet> :workspace set personal   # switch workspace (resets cwd)
+(personal) personal valet> :shell off       # run following lines as argv, not shell
+(personal) personal valet> :quit
 ```
 
-The prompt shows the current directory's name. **`cd` sticks** for the session,
+The prompt shows `(workspace) <dir>`. **`cd` sticks** for the session,
 and is **jailed to the workspace** — `..` and symlinks can't climb above
-`[exec].workspace` (a bare `cd` returns to the workspace root). A compound line
+the workspace path (a bare `cd` returns to the workspace root). A compound line
 (`cd x && y`) is not intercepted: the `cd` there applies only to that
 subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
-`:shell`, `:secrets`, `:processes`, `:call`, `:quit`); everything else runs.
+`:shell`, `:workspace`, `:secrets`, `:processes`, `:call`, `:quit`); everything
+else runs. `:workspace` (or `:ws`) lists workspaces; `:workspace set <id>`
+switches to another, resetting the cwd to its root and adopting its shell
+default.
 Use `:processes list` (or `:jobs`) to list subprocesses started by Valet, and
 `:processes kill <pid>` (or `:kill <pid>`) to terminate one of them. Ctrl-D
 also exits. Up/Down and Ctrl-P/Ctrl-N recall previously submitted commands.
@@ -506,7 +552,7 @@ The knobs split into two families that do fundamentally different things:
 | `redaction.cwd_secret_files` | Same, but **by filename**, auto-loaded from **whatever dir the command runs in** | Per-**project** secrets that live in each project dir | `.env`, `.secrets` |
 | `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
 | `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
-| `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside `[exec].workspace` | Commands should stay within one project tree | `true` |
+| `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside the workspace path | Commands should stay within one project tree | `true` |
 | `audit.log_path` | Appends metadata-only JSON objects for requests; streamed execs get an immediate `started` event plus a final event | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
 
 By default, `[exec].shell` is `false`; `valet sh`, REPL shell mode, and direct
