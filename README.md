@@ -307,18 +307,31 @@ pip install -e .
 
 In the host,
 ```
-valet init                              # create ~/.valet/config.toml (macOS: + OS sandbox),
-                                        # then run a health check. Answers y/n prompts.
-$EDITOR ~/.valet/config.toml            # set workspace + secret_sources
+valet init ~/work/project               # create ~/.valet/config.toml for that workspace
+                                        # (macOS: + OS sandbox), then a health check. y/n prompts.
+$EDITOR ~/.valet/config.toml            # set secret_sources (workspace is already filled in)
 
 valet serve                             # start the daemon (keep this shell open)
 valet doctor                            # re-check config health anytime
 ```
 
-`valet init` copies `config.example.toml` into `~/.valet/config.toml` for you
-(no manual copy), gives it a stable redaction salt, and on macOS offers to
-install and activate the OS sandbox profile. It refuses to overwrite an
-existing `config.toml`/`workspace.sb` — remove or rename them to re-run.
+`valet init <workspace_dir>` takes the directory the agent's commands will be
+confined to as a required argument. If that directory doesn't exist it offers to
+create it; if it does, it confirms the full path with you. It then copies
+`config.example.toml` into `~/.valet/config.toml` (use `-c PATH` to write it
+elsewhere) with `[exec].workspace` already set to your directory, gives it a
+stable redaction salt, and on macOS offers to install and activate the OS
+sandbox profile. It reports where the config was written, and refuses to
+overwrite an existing `config.toml`/`workspace.sb` — remove or rename them to
+re-run.
+
+Keep the config, the sandbox profile, the audit log, and your secret sources
+**outside** the workspace: the agent can read (and, when jailed there, write)
+anything inside it, so any of these placed under the workspace is exposed to the
+very agent it hides secrets from. `valet doctor` (also run at the end of `valet
+init`) warns when any of them resolve inside `[exec].workspace`, and separately
+flags an `[exec].workspace` that is your home directory (or broader) as very
+high risk — the agent's blast radius would be your whole home.
 
 From a sandbox running in the same machine,
 

@@ -17,7 +17,7 @@ Subcommands:
   valet clients add     generate and approve a host-side client key
   valet clients list    list host-approved client identities
   valet clients remove  remove a host-approved client identity
-  valet init            create config.toml (+ macOS sandbox profile) and check it
+  valet init <dir>      create config.toml for workspace <dir> (+ macOS sandbox) and check it
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
 themselves; the daemon does the privileged work and redacts before replying.
@@ -72,6 +72,28 @@ def _cmd_init(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
+    # Resolve, confirm, and (if needed) create the workspace the agent's commands
+    # will be confined to.
+    workspace_dir = Path(
+        os.path.expanduser(os.path.expandvars(args.workspace_dir))
+    ).resolve()
+    if workspace_dir.exists():
+        if not workspace_dir.is_dir():
+            print(f"valet: {workspace_dir} exists but is not a directory.",
+                  file=sys.stderr)
+            return 2
+        if not _confirm(f"Use existing workspace directory {workspace_dir}?",
+                        default=True):
+            print("valet: nothing created.")
+            return 1
+    else:
+        if not _confirm(f"Workspace directory {workspace_dir} does not exist. "
+                        "Create it?", default=True):
+            print("valet: nothing created.")
+            return 1
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        print(f"valet: created {workspace_dir}")
+
     if not valet_dir.exists():
         if not _confirm(f"Create directory {valet_dir}?", default=True):
             print("valet: nothing created.")
@@ -90,12 +112,23 @@ def _cmd_init(args: argparse.Namespace) -> int:
         lambda m: f'{m.group(1)}"{salt}"',
         text,
     )
+    # Point the workspace at the directory the user just named, replacing the
+    # CHANGE_ME placeholder so no one ships home (~) as the blast radius.
+    text, n_ws = re.subn(
+        r'(?m)^(\s*workspace\s*=\s*).*$',
+        lambda m: f'{m.group(1)}"{workspace_dir}"',
+        text,
+        count=1,
+    )
+    if n_ws == 0:
+        print("valet: warning: could not find the workspace line to set; "
+              "edit it by hand.", file=sys.stderr)
 
     if is_mac:
         text = _init_macos_sandbox(text, workspace_sb)
 
     config_path.write_text(text)
-    print(f"valet: wrote {config_path}")
+    print(f"valet: wrote config to {config_path}")
 
     # Health check at the end, mirroring `valet doctor`.
     print()
@@ -200,6 +233,24 @@ def _doctor_report(path: Path, cfg) -> bool:
     print(f"  sandbox:      {cfg.exec.sandbox_profile or '(not configured)'}")
     print()
 
+    warned = False
+    home = os.path.realpath(os.path.expanduser("~"))
+    if workspace and _within(home, workspace):
+        detail = ("your home directory" if workspace == home
+                  else f"a parent of your home directory ({home})")
+        _doctor_line("WARN", f"[exec].workspace is {detail} — very high risk: the "
+                             "agent's blast radius is your whole home. Point it at a "
+                             "dedicated project directory.")
+        warned = True
+
+    for label, where in _paths_inside_workspace(path, cfg, workspace):
+        _doctor_line("WARN", f"{label} is inside the workspace ({where}); the "
+                             "sandboxed agent can read it — keep it outside "
+                             "[exec].workspace")
+        warned = True
+    if warned:
+        print()
+
     failed = _doctor_sandbox_checks(cfg, workspace)
     print()
     print("result: " + ("FAILED — see above" if failed else "all checks passed"))
@@ -214,6 +265,37 @@ def _resolve_workspace(workspace) -> str:
     if not workspace:
         return ""
     return os.path.realpath(os.path.expanduser(os.path.expandvars(str(workspace))))
+
+
+def _within(child: str, parent: str) -> bool:
+    """True if resolved ``child`` is ``parent`` itself or nested under it."""
+    if not child or not parent:
+        return False
+    child = os.path.realpath(os.path.expanduser(os.path.expandvars(str(child))))
+    parent = os.path.realpath(parent)
+    try:
+        return os.path.commonpath([child, parent]) == parent
+    except ValueError:  # different drives / roots — not comparable
+        return False
+
+
+def _paths_inside_workspace(config_path: Path, cfg, workspace: str) -> list[tuple[str, str]]:
+    """Sensitive files that must live outside the workspace but currently don't.
+
+    The agent's sandbox grants reads across the whole workspace (and writes,
+    when jailed there), so config, the sandbox profile, and any secret source
+    placed inside it are exposed to the agent it is meant to be hidden from.
+    """
+    if not workspace:
+        return []
+    candidates = [("config file", str(config_path))]
+    if cfg.exec.sandbox_profile:
+        candidates.append(("sandbox profile", cfg.exec.sandbox_profile))
+    if cfg.audit.log_path:
+        candidates.append(("audit log", cfg.audit.log_path))
+    for src in cfg.redaction.secret_sources:
+        candidates.append(("secret source", str(src)))
+    return [(label, p) for label, p in candidates if _within(p, workspace)]
 
 
 def _doctor_line(status: str, text: str) -> None:
@@ -690,8 +772,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_repl)  # no subcommand => REPL
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("init", help="create config.toml (and, on macOS, the sandbox profile)"
-                   ).set_defaults(func=_cmd_init)
+    init_p = sub.add_parser(
+        "init", help="create config.toml (and, on macOS, the sandbox profile)")
+    init_p.add_argument(
+        "workspace_dir",
+        help="directory the agent's commands are confined to (created if missing)")
+    init_p.set_defaults(func=_cmd_init)
     sub.add_parser("doctor", help="check config and the OS sandbox setup"
                    ).set_defaults(func=_cmd_doctor)
     sub.add_parser("serve", help="run the configured host daemon").set_defaults(func=_cmd_serve)

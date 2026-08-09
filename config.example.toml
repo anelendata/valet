@@ -1,7 +1,9 @@
 # valet — example config. Copy to config.toml (git-ignored) and edit.
 #
+#   valet init <workspace_dir>   # writes ~/.valet/config.toml for you (recommended)
+#
+# or copy this file by hand and edit workspace + fingerprint_salt yourself:
 #   cp config.example.toml config.toml
-#   valet init            # (optional) generate a stable fingerprint_salt
 #
 # valet is a secret-redacting command runner: it runs a command and returns the
 # output with known secret VALUES scrubbed out. v0.2 is intentionally
@@ -96,7 +98,11 @@ console = true
 # If the workspace root has a `bin/` directory, it is prepended to PATH, so
 # project-local tools there are found before anything else (with or without the
 # OS sandbox).
-workspace = "~"
+#
+# Point this at a dedicated project directory, NOT your home directory: the
+# workspace is the blast radius commands are confined to, so "~" would expose
+# your whole home. `valet init <workspace_dir>` fills this in for you.
+workspace = "CHANGE_ME_TO_WORKSPACE_DIR"
 
 # Shell execution is disabled by default. Leave this false unless you trust all
 # clients of this host and need shell syntax such as pipes, globs, redirects, or
