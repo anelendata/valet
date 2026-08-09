@@ -151,7 +151,10 @@ secret_sources = [
 # cwd_secret_files: like secret_sources but by FILENAME, auto-loaded from each
 # command's working directory — so a project's own .env/.secrets are redacted
 # when you run there, without listing every project. One line covers all of them.
-cwd_secret_files = [".env", ".config", ".secrets" "secrets", ".passwords", "passwords", ".ssh", ".aws"]
+cwd_secret_files = [
+    ".env", ".config", ".secrets", "secrets",
+    ".passwords", "passwords", ".ssh", ".aws",
+]
 
 # Extra literal strings to always redact (e.g. a token not stored in a file).
 extra_values = []
