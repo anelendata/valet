@@ -65,15 +65,18 @@ def add_workspace(
     *,
     workspace_id: str,
     workspace_path: str,
+    make_default: bool = False,
 ) -> WorkspaceAdd:
     """Add (or replace) a ``[workspaces.<id>]`` section.
 
-    When the config names no ``default_workspace`` yet, the newly added
-    workspace becomes the default so a fresh single-workspace config keeps
-    working without extra edits.
+    The added workspace becomes ``[exec].default_workspace`` when ``make_default``
+    is set, or when it is the first workspace in the config (so a fresh
+    single-workspace config keeps working without extra edits). ``make_default``
+    replaces any existing default.
     """
     text = path.read_text()
     normalized = normalize_workspace_id(workspace_id)
+    had_workspaces = bool(_workspace_sections(text))
     section = _workspace_section(normalized, workspace_path)
 
     replaced = False
@@ -86,8 +89,10 @@ def add_workspace(
         separator = "" if text.endswith("\n") else "\n"
         text = text + separator + "\n" + section
 
+    # First-ever workspace always becomes the default; otherwise only on request.
+    should_default = make_default or not had_workspaces
     made_default = False
-    if not _read_default_workspace(text):
+    if should_default and _read_default_workspace(text) != normalized:
         text = _set_default_workspace(text, normalized)
         made_default = True
 
@@ -137,16 +142,28 @@ def _read_default_workspace(text: str) -> str | None:
 
 
 def _set_default_workspace(text: str, workspace_id: str) -> str:
-    """Set ``default_workspace`` under ``[exec]``, adding the key or section."""
-    line = f'default_workspace = "{_toml_escape(workspace_id)}"\n'
+    """Set ``default_workspace`` under ``[exec]``.
+
+    Replaces an existing ``default_workspace`` assignment (so ``--make-default``
+    can override the current default); otherwise inserts the key, creating the
+    ``[exec]`` section if it is absent.
+    """
+    line = f'default_workspace = "{_toml_escape(workspace_id)}"'
+    # Replace an existing assignment. Use a function replacement so the id (and
+    # any escapes) are inserted verbatim, not treated as regex backreferences.
+    text, replaced = re.subn(
+        r"(?m)^\s*default_workspace\s*=.*$", lambda _m: line, text, count=1
+    )
+    if replaced:
+        return text
     exec_match = re.search(r"(?m)^\[exec\]\s*$", text)
     if exec_match is None:
         separator = "" if text.endswith("\n") else "\n"
-        return text + separator + "\n[exec]\n" + line
+        return text + separator + "\n[exec]\n" + line + "\n"
     insert_at = exec_match.end()
     if insert_at < len(text) and text[insert_at] == "\n":
         insert_at += 1
-    return text[:insert_at] + line + text[insert_at:]
+    return text[:insert_at] + line + "\n" + text[insert_at:]
 
 
 def _section_body(text: str, name: str) -> str | None:

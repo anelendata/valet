@@ -24,6 +24,7 @@ from .audit import AuditContext, AuditLogger
 from .config import BrokerConfig, resolve_workspaces
 from .errors import (
     CommandError,
+    ConfigError,
     PolicyError,
     TimeoutError_,
     ValetError,
@@ -308,6 +309,11 @@ class Broker:
     def _install_config(self, cfg: BrokerConfig, *, console: bool) -> None:
         self.cfg = cfg
         self.workspaces = self._build_workspaces(cfg)
+        if not self.workspaces:
+            raise ConfigError(
+                "no workspace configured. Add one with "
+                "`valet workspaces add <id> <dir>` before starting the server."
+            )
         self.default_workspace = (
             cfg.default_workspace if cfg.default_workspace in self.workspaces
             else next(iter(self.workspaces))

@@ -391,8 +391,16 @@ def test_sandbox_wraps_shell_command_as_argv(cfg):
 
 
 def test_sandbox_requires_workspace(cfg):
+    # A workspace with a sandbox profile but no path cannot build the sandbox
+    # wrapper (which needs -D WORKSPACE=<root>), so it is refused at exec time.
+    from valet.config import WorkspaceConfig
     c = dataclasses.replace(
-        cfg, exec=ExecConfig(workspace=None, shell=False, sandbox_profile="/x.sb")
+        cfg,
+        workspaces={"default": WorkspaceConfig(
+            id="default",
+            exec=ExecConfig(workspace=None, shell=False, sandbox_profile="/x.sb"),
+        )},
+        default_workspace="default",
     )
     with pytest.raises(PolicyError):
         Broker(c)._exec_plan({"op": "exec", "cmd": ["ls"], "shell": False})

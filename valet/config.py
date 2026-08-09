@@ -139,16 +139,20 @@ class BrokerConfig:
 def resolve_workspaces(cfg: BrokerConfig) -> dict[str, WorkspaceConfig]:
     """The effective workspace map for a config.
 
-    Uses ``cfg.workspaces`` when populated; otherwise synthesises one default
-    workspace from the top-level exec/redaction/policy defaults so a config (or
-    a directly-built ``BrokerConfig``) with no ``[workspaces.*]`` sections still
-    works as a single-workspace host.
+    Uses ``cfg.workspaces`` when populated. Otherwise, for a directly-built
+    ``BrokerConfig`` that carries a single ``exec.workspace`` (the programmatic
+    convenience used in tests), synthesises one workspace from the top-level
+    defaults. A config with neither (e.g. right after ``valet init``) resolves to
+    an empty map — the host has no workspace yet and ``valet serve`` refuses to
+    start until ``valet workspaces add`` creates one.
     """
     if cfg.workspaces:
         return dict(cfg.workspaces)
-    wid = cfg.default_workspace or DEFAULT_WORKSPACE_ID
-    return {wid: WorkspaceConfig(id=wid, exec=cfg.exec,
-                                 redaction=cfg.redaction, policy=cfg.policy)}
+    if cfg.exec.workspace:
+        wid = cfg.default_workspace or DEFAULT_WORKSPACE_ID
+        return {wid: WorkspaceConfig(id=wid, exec=cfg.exec,
+                                     redaction=cfg.redaction, policy=cfg.policy)}
+    return {}
 
 
 def default_config_path() -> Path:
@@ -222,26 +226,27 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     default_redaction = _parse_redaction_table(red, RedactionConfig())
     default_policy = _parse_policy_table(pol, PolicyConfig())
 
-    default_workspace = str(exec_.get("default_workspace", DEFAULT_WORKSPACE_ID))
+    default_workspace_raw = exec_.get("default_workspace")
     workspaces = _load_workspaces(
         raw.get("workspaces", {}),
         default_exec, default_redaction, default_policy,
     )
-    if not workspaces:
-        # No [workspaces.*] sections at all: a single, path-less default workspace
-        # (no directory jail) built from the shared defaults. This is the valid
-        # "run anywhere" config; a legacy [exec].workspace was already rejected.
-        workspaces = {
-            default_workspace: WorkspaceConfig(
-                id=default_workspace, exec=default_exec,
-                redaction=default_redaction, policy=default_policy,
-            )
-        }
-    if default_workspace not in workspaces:
-        raise ConfigError(
-            f"[exec].default_workspace = {default_workspace!r} but no "
-            f"[workspaces.{default_workspace}] section is defined"
-        )
+    if workspaces:
+        if default_workspace_raw is None:
+            # No explicit default: use the first workspace defined.
+            default_workspace = next(iter(workspaces))
+        else:
+            default_workspace = str(default_workspace_raw)
+            if default_workspace not in workspaces:
+                raise ConfigError(
+                    f"[exec].default_workspace = {default_workspace!r} but no "
+                    f"[workspaces.{default_workspace}] section is defined"
+                )
+    else:
+        # No workspaces defined yet (e.g. right after `valet init`). The config
+        # loads, but `valet serve` refuses to start until `valet workspaces add`
+        # creates one.
+        default_workspace = str(default_workspace_raw or DEFAULT_WORKSPACE_ID)
 
     return BrokerConfig(
         socket_path=_expand(broker.get("socket_path", "~/.valet/broker.sock")),

@@ -334,21 +334,22 @@ pip install -e .
 
 In the host,
 ```
-valet init ~/work/project               # create ~/.valet/config.toml for that workspace
+valet init                              # create ~/.valet/config.toml
                                         # (macOS: + OS sandbox), then a health check. y/n prompts.
-$EDITOR ~/.valet/config.toml            # set secret_sources (workspace is already filled in)
+valet workspaces add work ~/work/project  # add your first workspace (becomes default)
+$EDITOR ~/.valet/config.toml            # set secret_sources, tune policy, etc.
 
 valet serve                             # start the daemon (keep this shell open)
 valet doctor                            # re-check config health anytime
 ```
 
-`valet init <workspace_dir>` takes the directory the agent's commands will be
-confined to as a required argument. If that directory doesn't exist it offers to
-create it; if it does, it confirms the full path with you. It then copies
+`valet init` and workspace creation are two separate steps. `valet init` copies
 `config.example.toml` into `~/.valet/config.toml` (use `-c PATH` to write it
-elsewhere) with the default workspace's `path` already set to your directory, gives it a
-stable redaction salt, and on macOS offers to install and activate the OS
-sandbox profile. It reports where the config was written, and refuses to
+elsewhere), gives it a stable redaction salt, and on macOS offers to install and
+activate the OS sandbox profile. It defines **no** workspace — it ends by
+reminding you to run `valet workspaces add <id> <dir>`, which creates the first
+workspace (making it the default) and scaffolds its directory. `valet serve`
+refuses to start until at least one workspace exists. `init` refuses to
 overwrite an existing `config.toml`/`workspace.sb` — remove or rename them to
 re-run.
 
@@ -390,8 +391,19 @@ Manage them from the host:
 
 ```bash
 valet workspaces add personal ~/personal   # add a [workspaces.personal] section
+valet workspaces add personal ~/personal --make-default   # ...and make it the default
 valet workspaces list                      # list workspaces (* marks the default)
 ```
+
+The first workspace added becomes `[exec].default_workspace` automatically; pass
+`--make-default` to point the default at a later one.
+
+When the target directory does not exist, `valet workspaces add` offers to
+create it. Either way it scaffolds a standard layout — `bin/` (executables put
+on `PATH`), `tools/` (local tools installed outside `/usr/local/bin`, e.g.
+`handoff`), and `skills/` (skills for agents) — and writes a `README.md`
+explaining them (an existing `README.md` is never overwritten, so your own notes
+are safe).
 
 Select a workspace per command with `-w/--workspace`, or switch inside the REPL
 with `:workspaces set <id>` (see below). `valet serve` reloads workspace changes

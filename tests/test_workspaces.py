@@ -114,14 +114,35 @@ def test_legacy_exec_workspace_key_is_rejected(tmp_path):
         load_config(cfg_path)
 
 
-def test_no_workspace_configured_is_valid(tmp_path):
-    # A config with neither [exec].workspace nor [workspaces.*] is the valid
-    # "run anywhere, no jail" case: one path-less default workspace.
+def test_no_workspace_configured_loads_but_resolves_empty(tmp_path):
+    # A config with no [workspaces.*] (e.g. right after `valet init`) loads, but
+    # resolves to no workspaces — `valet serve` refuses to start until one exists.
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text('[broker]\nfingerprint_salt = "salt"\n')
-    ws = resolve_workspaces(load_config(cfg_path))
-    assert list(ws) == ["default"]
-    assert ws["default"].exec.workspace is None
+    cfg = load_config(cfg_path)
+    assert resolve_workspaces(cfg) == {}
+
+
+def test_broker_rejects_config_without_workspace(tmp_path):
+    from valet.broker import Broker
+    from valet.errors import ConfigError
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[broker]\nfingerprint_salt = "salt"\n')
+    with pytest.raises(ConfigError, match="no workspace configured"):
+        Broker(load_config(cfg_path))
+
+
+def test_serve_refuses_without_workspace(tmp_path, monkeypatch, capsys):
+    served = []
+    monkeypatch.setattr("valet.cli.serve_host", lambda *a, **k: served.append(a))
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[broker]\nfingerprint_salt = "salt"\n')
+
+    rc = main(["-c", str(cfg_path), "serve"])
+
+    assert rc == 2
+    assert served == []  # never reached the daemon
+    assert "no workspace configured" in capsys.readouterr().err
 
 
 # --- broker routing ----------------------------------------------------------
@@ -224,6 +245,30 @@ def test_add_workspace_detects_single_quoted_default(tmp_path):
     load_config(cfg_path)  # still valid TOML / config
 
 
+def test_make_default_overrides_existing_default(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
+
+    result = add_workspace(cfg_path, workspace_id="personal",
+                           workspace_path=str(a), make_default=True)
+
+    assert result.made_default is True
+    cfg = load_config(cfg_path)
+    assert cfg.default_workspace == "personal"
+    # No duplicate default_workspace key was written.
+    assert cfg_path.read_text().count("default_workspace") == 1
+
+
+def test_add_without_make_default_leaves_default(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
+
+    result = add_workspace(cfg_path, workspace_id="personal", workspace_path=str(a))
+
+    assert result.made_default is False
+    assert load_config(cfg_path).default_workspace == "default"
+
+
 def test_add_first_workspace_sets_default(tmp_path):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text('[broker]\nfingerprint_salt = "s"\n')
@@ -249,6 +294,64 @@ def test_cli_workspace_list(tmp_path, capsys):
     assert main(["-c", str(cfg_path), "workspaces", "list"]) == 0
     out = capsys.readouterr().out
     assert "* default" in out and str(a) in out
+
+
+def test_cli_workspace_add_creates_and_scaffolds_directory(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
+    new_dir = tmp_path / "personal"  # does not exist yet
+
+    rc = main(["-c", str(cfg_path), "workspaces", "add", "personal",
+               str(new_dir), "--yes"])
+
+    assert rc == 0
+    assert new_dir.is_dir()
+    for sub in ("bin", "tools", "skills"):
+        assert (new_dir / sub).is_dir()
+    readme = (new_dir / "README.md")
+    assert readme.is_file()
+    assert "bin/" in readme.read_text() and "tools/" in readme.read_text()
+    assert "personal" in load_config(cfg_path).workspaces
+
+
+def test_cli_workspace_add_scaffolds_existing_dir_without_clobbering_readme(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
+    existing = tmp_path / "existing"; existing.mkdir()
+    (existing / "README.md").write_text("my own notes")
+
+    rc = main(["-c", str(cfg_path), "workspaces", "add", "extra",
+               str(existing), "--yes"])
+
+    assert rc == 0
+    for sub in ("bin", "tools", "skills"):
+        assert (existing / sub).is_dir()
+    # An existing README is preserved, never overwritten.
+    assert (existing / "README.md").read_text() == "my own notes"
+
+
+def test_cli_workspace_add_make_default(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
+
+    rc = main(["-c", str(cfg_path), "workspaces", "add", "personal",
+               str(a), "--make-default", "--yes"])
+
+    assert rc == 0
+    assert load_config(cfg_path).default_workspace == "personal"
+
+
+def test_cli_workspace_add_declined_creation_leaves_dir_absent(tmp_path, monkeypatch):
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
+    new_dir = tmp_path / "later"
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    rc = main(["-c", str(cfg_path), "workspaces", "add", "later", str(new_dir)])
+
+    assert rc == 0
+    assert not new_dir.exists()           # not created
+    assert "later" in load_config(cfg_path).workspaces  # but still registered
 
 
 def test_repl_prompt_shows_workspace():

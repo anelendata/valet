@@ -30,6 +30,9 @@ def _config(path):
         "[host]\n"
         'id = "test-host"\n'
         'listen = "0.0.0.0:8766"\n'
+        "\n"
+        "[workspaces.main]\n"
+        f'path = "{path.parent}"\n'
     )
 
 

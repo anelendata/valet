@@ -19,7 +19,7 @@ Subcommands:
   valet clients remove  remove a host-approved client identity
   valet workspaces add  add a [workspaces.<id>] section to config.toml
   valet workspaces list list configured workspaces
-  valet init <dir>      create config.toml for workspace <dir> (+ macOS sandbox) and check it
+  valet init            create config.toml (+ macOS sandbox) and check it
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
 themselves; the daemon does the privileged work and redacts before replying.
@@ -80,28 +80,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    # Resolve, confirm, and (if needed) create the workspace the agent's commands
-    # will be confined to.
-    workspace_dir = Path(
-        os.path.expanduser(os.path.expandvars(args.workspace_dir))
-    ).resolve()
-    if workspace_dir.exists():
-        if not workspace_dir.is_dir():
-            print(f"valet: {workspace_dir} exists but is not a directory.",
-                  file=sys.stderr)
-            return 2
-        if not _confirm(f"Use existing workspace directory {workspace_dir}?",
-                        default=True):
-            print("valet: nothing created.")
-            return 1
-    else:
-        if not _confirm(f"Workspace directory {workspace_dir} does not exist. "
-                        "Create it?", default=True):
-            print("valet: nothing created.")
-            return 1
-        workspace_dir.mkdir(parents=True, exist_ok=True)
-        print(f"valet: created {workspace_dir}")
-
     if not valet_dir.exists():
         if not _confirm(f"Create directory {valet_dir}?", default=True):
             print("valet: nothing created.")
@@ -120,18 +98,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
         lambda m: f'{m.group(1)}"{salt}"',
         text,
     )
-    # Point the default workspace at the directory the user just named,
-    # replacing the CHANGE_ME placeholder so no one ships home (~) as the blast
-    # radius. The placeholder is the `path` under [workspaces.default].
-    text, n_ws = re.subn(
-        re.escape('"CHANGE_ME_TO_WORKSPACE_DIR"'),
-        f'"{workspace_dir}"',
-        text,
-        count=1,
-    )
-    if n_ws == 0:
-        print("valet: warning: could not find the workspace path placeholder to "
-              "set; edit [workspaces.default].path by hand.", file=sys.stderr)
 
     if is_mac:
         text = _init_macos_sandbox(text, workspace_sb)
@@ -146,8 +112,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
     except ValetError as exc:
         print(f"valet: could not run the health check: {exc}", file=sys.stderr)
     print()
-    print("valet: setup complete. Edit the config as needed, then run "
-          "`valet doctor` to check config health again.")
+    print("valet: setup complete. Next, add your first workspace:")
+    print("    valet workspaces add <id> <dir>")
+    print("The server will not start until at least one workspace exists.")
     return 0
 
 
@@ -228,9 +195,17 @@ def _doctor_report(path: Path, cfg) -> bool:
     print("valet doctor\n")
     print(f"  config file:  {path}")
     workspaces = resolve_workspaces(cfg)
-    print(f"  default ws:   {cfg.default_workspace}")
     print(f"  workspaces:   {len(workspaces)}")
 
+    if not workspaces:
+        print()
+        _doctor_line("WARN", "no workspace configured — `valet serve` will refuse "
+                             "to start. Add one with `valet workspaces add <id> <dir>`.")
+        print()
+        print("result: no workspace configured")
+        return False
+
+    print(f"  default ws:   {cfg.default_workspace}")
     failed = False
     for wid in sorted(workspaces):
         failed = _doctor_workspace(path, cfg, wid, workspaces[wid]) or failed
@@ -423,9 +398,21 @@ def _resolve_config_path(args: argparse.Namespace) -> Path:
     return Path(args.config) if args.config else default_config_path()
 
 
+def _require_workspace(cfg) -> bool:
+    """Print an error and return False when no workspace is configured."""
+    if resolve_workspaces(cfg):
+        return True
+    print("valet: no workspace configured. Add one with "
+          "`valet workspaces add <id> <dir>` before starting the server.",
+          file=sys.stderr)
+    return False
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     path = _resolve_config_path(args)
     cfg = load_config(path)  # raises ConfigError (exit 2) if -c names a missing file
+    if not _require_workspace(cfg):
+        return 2
     print(f"valet: config path: {path.resolve()}")
     serve_host(cfg, config_path=path)
     return 0
@@ -434,6 +421,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _cmd_serve_lan(args: argparse.Namespace) -> int:
     path = _resolve_config_path(args)
     cfg = load_config(path)
+    if not _require_workspace(cfg):
+        return 2
     print(f"valet: config path: {path.resolve()}")
     serve_lan(cfg)
     return 0
@@ -789,10 +778,61 @@ def _cmd_clients_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+# Standard subfolders scaffolded inside a workspace directory.
+_WORKSPACE_SUBDIRS = ("bin", "tools", "skills")
+
+_WORKSPACE_README = """\
+# Valet workspace
+
+This folder is a **valet workspace** — the directory that commands run through
+`valet` are confined to. valet presents it as the virtual root `./` and blocks
+access to anything above it.
+
+The subfolders below are a convention valet sets up for you:
+
+## `bin/`
+Executables that should be on `PATH`. valet prepends this folder to `PATH` for
+every command it runs in this workspace, so a program dropped here is runnable
+by name (e.g. `bin/deploy` runs as `deploy`).
+
+## `tools/`
+Local tools installed outside system locations like `/usr/local/bin` — for
+example `handoff`. Keep a tool's files here, then symlink or copy its
+executable into `bin/` so it lands on `PATH`.
+
+## `skills/`
+Skills made available to agents working in this workspace.
+
+---
+
+_Add your own notes below._
+"""
+
+
+def _scaffold_workspace(workspace_dir: Path) -> None:
+    """Create the standard bin/tools/skills subdirs and a starter README.
+
+    Non-destructive: existing subdirs are left as-is and an existing README is
+    never overwritten, so the user's own notes are preserved.
+    """
+    created = []
+    for name in _WORKSPACE_SUBDIRS:
+        sub = workspace_dir / name
+        if not sub.exists():
+            sub.mkdir(parents=True, exist_ok=True)
+            created.append(name + "/")
+    readme = workspace_dir / "README.md"
+    if not readme.exists():
+        readme.write_text(_WORKSPACE_README)
+        created.append("README.md")
+    if created:
+        print(f"valet: created {', '.join(created)} in {workspace_dir}")
+
+
 def _cmd_workspace_add(args: argparse.Namespace) -> int:
     path = Path(args.config) if args.config else default_config_path()
     if not path.exists():
-        print(f"valet: {path} not found. Run `valet init <dir>` first.",
+        print(f"valet: {path} not found. Run `valet init` first.",
               file=sys.stderr)
         return 2
 
@@ -806,6 +846,12 @@ def _cmd_workspace_add(args: argparse.Namespace) -> int:
         print(f"valet workspaces add: {exc}", file=sys.stderr)
         return 2
 
+    ws_path = args.path.strip()
+    workspace_dir = Path(os.path.expanduser(os.path.expandvars(ws_path)))
+    if workspace_dir.exists() and not workspace_dir.is_dir():
+        print(f"valet: {workspace_dir} exists but is not a directory.", file=sys.stderr)
+        return 2
+
     if find_workspace(path, workspace_id) and not args.yes:
         answer = input(
             f"valet: workspace {workspace_id!r} already exists. "
@@ -815,17 +861,30 @@ def _cmd_workspace_add(args: argparse.Namespace) -> int:
             print("valet: workspace unchanged.")
             return 1
 
-    ws_path = args.path.strip()
-    result = add_workspace(path, workspace_id=workspace_id, workspace_path=ws_path)
+    result = add_workspace(path, workspace_id=workspace_id, workspace_path=ws_path,
+                           make_default=args.make_default)
     # Surface config errors introduced by the edit early.
     load_config(path)
 
     print(f"valet: added workspace {result.workspace_id!r} -> {result.path} in {path}")
     if result.made_default:
-        print(f"valet: set it as [exec].default_workspace (was unset).")
-    expanded = os.path.expanduser(os.path.expandvars(ws_path))
-    if not os.path.isdir(expanded):
-        print(f"valet: note: {expanded} does not exist yet — create it before use.")
+        print(f"valet: set as the default workspace "
+              f"([exec].default_workspace = {result.workspace_id!r}).")
+
+    # Create the workspace directory (with confirmation) and scaffold its
+    # standard bin/tools/skills layout and README.
+    if workspace_dir.is_dir():
+        _scaffold_workspace(workspace_dir)
+    elif args.yes or _confirm(
+        f"Workspace directory {workspace_dir} does not exist. Create it with "
+        "bin/, tools/, skills/ and a README?", default=True
+    ):
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        print(f"valet: created {workspace_dir}")
+        _scaffold_workspace(workspace_dir)
+    else:
+        print(f"valet: note: {workspace_dir} does not exist yet — create it before use.")
+
     print("valet: `valet serve` reloads workspaces automatically.")
     return 0
 
@@ -833,7 +892,7 @@ def _cmd_workspace_add(args: argparse.Namespace) -> int:
 def _cmd_workspace_list(args: argparse.Namespace) -> int:
     path = Path(args.config) if args.config else default_config_path()
     if not path.exists():
-        print(f"valet: {path} not found. Run `valet init <dir>` first.",
+        print(f"valet: {path} not found. Run `valet init` first.",
               file=sys.stderr)
         return 2
 
@@ -878,12 +937,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_repl)  # no subcommand => REPL
     sub = p.add_subparsers(dest="cmd")
 
-    init_p = sub.add_parser(
-        "init", help="create config.toml (and, on macOS, the sandbox profile)")
-    init_p.add_argument(
-        "workspace_dir",
-        help="directory the agent's commands are confined to (created if missing)")
-    init_p.set_defaults(func=_cmd_init)
+    sub.add_parser(
+        "init", help="create config.toml (and, on macOS, the sandbox profile)"
+    ).set_defaults(func=_cmd_init)
     sub.add_parser("doctor", help="check config and the OS sandbox setup"
                    ).set_defaults(func=_cmd_doctor)
     sub.add_parser("serve", help="run the configured host daemon").set_defaults(func=_cmd_serve)
@@ -941,8 +997,12 @@ def build_parser() -> argparse.ArgumentParser:
     ws_add.add_argument("workspace_id", metavar="id",
                         help="workspace id (spaces become hyphens)")
     ws_add.add_argument("path", help="directory the workspace confines commands to")
+    ws_add.add_argument("--make-default", action="store_true",
+                        help="set this workspace as [exec].default_workspace "
+                             "(the first workspace added becomes default anyway)")
     ws_add.add_argument("--yes", "-y", action="store_true",
-                        help="replace an existing workspace path without prompting")
+                        help="assume yes to prompts (replace an existing workspace, "
+                             "create the directory)")
     ws_add.set_defaults(func=_cmd_workspace_add)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")

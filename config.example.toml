@@ -85,13 +85,20 @@ console = true
 
 [exec]
 # Everything under [exec], [policy], and [redaction] is the DEFAULT for every
-# workspace. Each [workspaces.<id>] section below can override exec/policy/
-# redaction per key; anything it does not set falls back to these defaults.
-
-# Which workspace a command runs in when none is named. Select another with
-# `valet -w <id> run ...` / `valet -w <id> sh ...`, or `:workspaces set <id>` in
-# the REPL. Must match a [workspaces.<id>] section below.
-default_workspace = "default"
+# workspace. Each [workspaces.<id>] section (added with `valet workspaces add`)
+# can override exec/policy/redaction per key; anything it does not set falls back
+# to these defaults.
+#
+# This config ships with NO workspace. Add your first one after `valet init`:
+#     valet workspaces add <id> <dir>
+# That creates a [workspaces.<id>] section, sets [exec].default_workspace to it,
+# and scaffolds the directory. `valet serve` refuses to start until one exists.
+#
+# default_workspace names the workspace a command runs in when none is named;
+# `valet workspaces add` manages it, so it is left unset here. Select another
+# workspace per command with `valet -w <id> run ...`, or `:workspaces set <id>`
+# in the REPL.
+#   default_workspace = "<id>"
 
 # Shell execution is disabled by default. Leave this false unless you trust all
 # clients of this host and need shell syntax such as pipes, globs, redirects, or
@@ -129,13 +136,16 @@ shell = false
 #
 # Point each workspace at a dedicated project directory, NOT your home: the
 # workspace is the blast radius commands are confined to, so "~" would expose
-# your whole home. Add more with `valet workspaces add <id> <dir>`; list them
-# with `valet workspaces list`. `valet init <dir>` fills in the default below.
-[workspaces.default]
-path = "CHANGE_ME_TO_WORKSPACE_DIR"
-
-# A second workspace with its own path and optional per-key overrides of the
-# [exec] / [policy] / [redaction] defaults above:
+# your whole home.
+#
+# Add workspaces with the CLI (recommended) rather than editing by hand:
+#     valet workspaces add work ~/work/project     # first one becomes default
+#     valet workspaces add personal ~/personal --make-default
+#     valet workspaces list
+#
+# Each `add` writes a section like the ones below and scaffolds the directory
+# (bin/, tools/, skills/, README.md). Per-key overrides of the [exec] / [policy]
+# / [redaction] defaults above go in optional sub-tables:
 #   [workspaces.personal]
 #   path = "~/personal"
 #

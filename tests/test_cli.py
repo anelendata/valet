@@ -275,62 +275,32 @@ def _answers(*vals):
     return lambda prompt="": next(it)
 
 
-def test_init_creates_config_and_injects_salt(tmp_path, monkeypatch):
+def test_init_creates_config_and_injects_salt(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("valet.cli.sys.platform", "linux")  # skip macOS sandbox steps
-    # create workspace, create valet dir, create config
-    monkeypatch.setattr("builtins.input", _answers("y", "y", "y"))
+    # create valet dir, create config (init no longer touches a workspace)
+    monkeypatch.setattr("builtins.input", _answers("y", "y"))
     monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
     config = tmp_path / "valet" / "config.toml"
-    workspace = tmp_path / "ws"
 
-    rc = main(["-c", str(config), "init", str(workspace)])
+    rc = main(["-c", str(config), "init"])
 
     assert rc == 0
     assert config.exists()
-    assert workspace.is_dir()  # the missing workspace was created
     text = config.read_text()
     assert "[broker]" in text
     salt_line = next(l for l in text.splitlines() if l.strip().startswith("fingerprint_salt"))
     assert "CHANGE_ME" not in salt_line  # the salt value was replaced
-    ws_line = next(l for l in text.splitlines() if l.strip().startswith("path ="))
-    assert str(workspace) in ws_line  # the default workspace points at the given dir
-    assert "CHANGE_ME" not in ws_line
-
-
-def test_init_uses_existing_workspace(tmp_path, monkeypatch):
-    monkeypatch.setattr("valet.cli.sys.platform", "linux")
-    # use existing workspace, create valet dir, create config
-    monkeypatch.setattr("builtins.input", _answers("y", "y", "y"))
-    monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
-    config = tmp_path / "valet" / "config.toml"
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-
-    rc = main(["-c", str(config), "init", str(workspace)])
-
-    assert rc == 0
-    ws_line = next(l for l in config.read_text().splitlines()
-                   if l.strip().startswith("path ="))
-    assert str(workspace) in ws_line
-
-
-def test_init_declining_workspace_creation_creates_nothing(tmp_path, monkeypatch):
-    monkeypatch.setattr("valet.cli.sys.platform", "linux")
-    monkeypatch.setattr("builtins.input", _answers("n"))  # decline making the workspace
-    config = tmp_path / "config.toml"
-
-    rc = main(["-c", str(config), "init", str(tmp_path / "ws")])
-
-    assert rc == 1
-    assert not config.exists()
-    assert not (tmp_path / "ws").exists()
+    # No workspace is defined; the user is reminded to add one.
+    from valet.config import load_config, resolve_workspaces
+    assert resolve_workspaces(load_config(config)) == {}
+    assert "workspaces add" in capsys.readouterr().out
 
 
 def test_init_refuses_when_config_exists(tmp_path, capsys):
     config = tmp_path / "config.toml"
     config.write_text("[broker]\n")
 
-    rc = main(["-c", str(config), "init", str(tmp_path / "ws")])
+    rc = main(["-c", str(config), "init"])
 
     assert rc == 2
     assert "already exist" in capsys.readouterr().err
@@ -338,13 +308,10 @@ def test_init_refuses_when_config_exists(tmp_path, capsys):
 
 def test_init_declining_creates_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr("valet.cli.sys.platform", "linux")
-    # accept existing workspace, then decline config creation
-    monkeypatch.setattr("builtins.input", _answers("y", "n"))
-    config = tmp_path / "config.toml"
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
+    monkeypatch.setattr("builtins.input", _answers("n"))  # decline config creation
+    config = tmp_path / "config.toml"  # parent (tmp_path) exists -> only the config prompt
 
-    rc = main(["-c", str(config), "init", str(workspace)])
+    rc = main(["-c", str(config), "init"])
 
     assert rc == 1
     assert not config.exists()
@@ -352,14 +319,12 @@ def test_init_declining_creates_nothing(tmp_path, monkeypatch):
 
 def test_init_activates_sandbox_on_macos(tmp_path, monkeypatch):
     monkeypatch.setattr("valet.cli.sys.platform", "darwin")
-    # existing workspace, parent exists -> no dir prompt; then: create config, copy sb, activate
-    monkeypatch.setattr("builtins.input", _answers("y", "y", "y", "y"))
+    # parent exists -> no dir prompt; then: create config, copy sb, activate
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "y"))
     monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
     config = tmp_path / "config.toml"
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
 
-    rc = main(["-c", str(config), "init", str(workspace)])
+    rc = main(["-c", str(config), "init"])
 
     assert rc == 0
     assert (tmp_path / "workspace.sb").exists()
