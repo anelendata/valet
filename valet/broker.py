@@ -858,6 +858,10 @@ class Broker:
             "decision": self._audit_decision(response),
             "approval": "not_required",
             "command": command,
+            # Which workspace the command targeted: the requested id, or the
+            # host default when none was named. The virtual cwd ("./…") hides
+            # this otherwise, so it is recorded explicitly for the audit trail.
+            "workspace": request_dict.get("workspace") or self.default_workspace,
             "cwd": self._safe(redactor, str(cwd)) if cwd else None,
             "shell": response.get("shell", request_dict.get("shell")),
             "timeout_seconds": request_dict.get("timeout", self.cfg.timeout_seconds),
@@ -880,6 +884,7 @@ class Broker:
         event["request"] = {
             "op": event["op"],
             "cmd": command,
+            "workspace": event["workspace"],
             "cwd": event["cwd"],
             "shell": event["shell"],
             "timeout_seconds": event["timeout_seconds"],

@@ -166,3 +166,27 @@ def test_stream_audit_console_prints_started_before_completion(cfg, capsys):
     out = capsys.readouterr().out
     assert " INFO: codex uds allowed printf 'first\\nsecond\\n'" in out
     assert "allowed None" not in out
+
+
+def test_audit_records_selected_workspace(cfg, tmp_path):
+    from valet.config import WorkspaceConfig
+
+    audit_log = tmp_path / "audit.jsonl"
+    ws = WorkspaceConfig(id="main", exec=cfg.exec, redaction=cfg.redaction,
+                         policy=cfg.policy)
+    extra = dataclasses.replace(ws, id="extra")
+    c = dataclasses.replace(
+        cfg,
+        audit=AuditConfig(log_path=str(audit_log)),
+        default_workspace="main",
+        workspaces={"main": ws, "extra": extra},
+    )
+    broker = Broker(c)
+
+    broker.handle({"op": "exec", "cmd": "echo a"})                       # -> default
+    broker.handle({"op": "exec", "cmd": "echo b", "workspace": "extra"})  # -> selected
+
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    assert events[0]["workspace"] == "main"          # host default recorded
+    assert events[1]["workspace"] == "extra"         # explicit selection recorded
+    assert events[1]["request"]["workspace"] == "extra"
