@@ -3,6 +3,11 @@ name: valet-client
 description: Use Valet from a client environment to run local or trusted-LAN commands through the redacting broker. Use when Codex needs host-side credentials or tools without reading secrets directly, needs to choose between Unix-socket local mode and WebSocket LAN mode, needs to run valet run/sh/repl/ping/hosts, or needs to troubleshoot client.toml, HTTP proxy, or reconnect behavior.
 ---
 
+# Valet executable
+
+If valet is not available in PATH, try relative paths
+(./bin/, ./venv/bin, ../.venv/bin) to this SKILL.md document.
+
 # Valet Client Usage
 
 Use `valet` when a task needs privileged host-side tools or credentials that the
