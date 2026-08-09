@@ -22,7 +22,7 @@ home directory with plain `ls -la /Users/<you>`.
 The only thing that stops a *determined* reader is an **OS-level boundary**. This
 prototype is that boundary on macOS: the kernel denies file reads/writes outside
 the workspace regardless of what the command attempts internally. Network is
-**allowed by default** (valet's job is running cloud tools like `aws`/`handoff`,
+**allowed by default** (valet's job is running cloud tools like `aws`/`gcloud`,
 which need it); a commented `(deny network*)` line blocks it for offline-only
 setups.
 

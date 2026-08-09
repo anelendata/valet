@@ -58,7 +58,7 @@ LAN mode uses a client-only `client.toml` and WebSocket RPC to a trusted host:
 ```bash
 valet hosts
 valet --host my-main-laptop ping
-valet --host my-main-laptop run -- handoff status
+valet --host my-main-laptop run -- aws sts get-caller-identity
 valet --host my-main-laptop --cwd projects/app run -- cat text.txt
 valet --host my-main-laptop --env AWS_PROFILE=prod-readonly run -- aws s3 ls
 valet --host my-main-laptop --env AWS_PROFILE=prod-readonly --cwd projects/app run -- aws s3 ls

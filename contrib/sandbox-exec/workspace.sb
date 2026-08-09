@@ -21,7 +21,7 @@
 ;; What it still allows (weaker than a full jail): reading system locations such
 ;; as /etc, /usr, /Library (minus keychains), /opt, /Applications, AND the
 ;; network — because valet's job is running credentialed cloud commands (aws,
-;; handoff, psql over a network DB), which need it. sandbox-exec cannot filter
+;; gcloud, psql over a network DB), which need it. sandbox-exec cannot filter
 ;; network by hostname, so it is all-or-nothing: uncomment the (deny network*)
 ;; line at the bottom for a stricter, offline-only profile (that also blocks a
 ;; command from exfiltrating over the network, at the cost of breaking cloud
@@ -68,5 +68,5 @@
     (literal "/dev/dtracehelper"))
 
 ;; --- Network: allowed (see the header). Uncomment to block it entirely —
-;; stops exfiltration over the network, but also breaks aws/handoff/psql. ------
+;; stops exfiltration over the network, but also breaks aws/gcloud/psql. ------
 ;; (deny network*)

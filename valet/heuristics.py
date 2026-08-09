@@ -7,8 +7,8 @@ valet has loaded from files; this catches secrets that only appear at runtime.
 Precision-first (see README): it masks
   1. the VALUE of an assignment whose KEY name looks sensitive
      (`AWS_SECRET_ACCESS_KEY=...`, `password: ...`, `"api_key": "..."`),
-  2. the `value:` field of a `key:`/`value:` object pair (as dumped by tools
-     like `handoff secrets print`), and
+  2. the `value:` field of a `key:`/`value:` object pair (a common
+     secrets-dump shape), and
   3. known token shapes (AWS keys, GitHub/GitLab/Slack/Stripe/Google tokens,
      JWTs, PEM blocks) wherever they appear.
 

@@ -491,10 +491,10 @@ difference is only *how the file is located*. `secret_sources` is one fixed
 path, masked in **every** command's output. `cwd_secret_files` is a **name**
 resolved **relative to each command's cwd**, so one line covers all projects.
 
-**`secret_sources` vs `deny_read_paths`** — the important pairing. Your
-`handoff` case needs both:
+**`secret_sources` vs `deny_read_paths`** — the important pairing. A credentialed
+tool like the AWS CLI needs both:
 
-| | `handoff … schedule list` (reads creds **internally**, output safe) | `cat ~/.aws/credentials` (a reveal) |
+| | `aws cloudformation list-stacks` (reads creds **internally**, output safe) | `cat ~/.aws/credentials` (a reveal) |
 |---|---|---|
 | `secret_sources = ["~/.aws/credentials"]` | ✅ runs; any leak masked | ✅ runs, content masked |
 | `deny_read_paths = ["~/.aws/**"]` | ✅ runs (doesn't *name* the file) | ⛔ refused before running |

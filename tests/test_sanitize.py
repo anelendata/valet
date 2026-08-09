@@ -97,9 +97,9 @@ def test_home_prefix_outside_workspace_becomes_tilde():
         home_dir="/Users/x",
     )
     # A sibling of the workspace, under home but not under the workspace root.
-    out = red.redact("/usr/local/bin/handoff: /Users/x/projects/app/.venv/bin/handoff: nope")
+    out = red.redact("/usr/local/bin/gcloud: /Users/x/projects/app/.venv/bin/gcloud: nope")
     assert "/Users/x" not in out
-    assert "~/projects/app/.venv/bin/handoff" in out
+    assert "~/projects/app/.venv/bin/gcloud" in out
 
 
 def test_home_prefix_bare_becomes_tilde():

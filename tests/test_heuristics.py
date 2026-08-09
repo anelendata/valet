@@ -25,7 +25,7 @@ def test_env_assignment_masks_only_sensitive_value():
 
 
 def test_key_value_dump_masks_values():
-    # Format emitted by `handoff secrets print` (YAML list of {key, value}).
+    # A secrets-dump shape (YAML list of {key, value}).
     text = (
         "secrets:\n"
         "- key: DB_PASSWORD\n"
@@ -120,7 +120,7 @@ def test_high_entropy_keeps_hashes_uuids_and_numbers():
 
 
 def test_high_entropy_keeps_non_sensitive_lowercase_slugs():
-    text = "handoff-etl-saasoptics-tiny-rest-so-tiny-1"
+    text = "data-pipeline-etl-reports-daily-rest-so-tiny-1"
     assert redact_high_entropy(text) == text
 
 

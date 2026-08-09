@@ -115,7 +115,7 @@ def test_stream_launch_os_error_is_command_error(cfg, monkeypatch):
 def test_stream_shebangless_path_script_runs_when_shell_enabled(cfg, workspace):
     bindir = workspace / "bin"
     bindir.mkdir()
-    script = bindir / "handoff"
+    script = bindir / "gcloud"
     script.write_text(
         'if [ "$AWS_PROFILE" = tiny ]; then printf "env-ok "; fi\n'
         'printf "args=%s cwd=%s\\n" "$*" "$PWD"\n'
@@ -126,7 +126,7 @@ def test_stream_shebangless_path_script_runs_when_shell_enabled(cfg, workspace):
 
     events = list(Broker(cfg).handle_stream({
         "op": "exec",
-        "cmd": ["handoff", "-p", ".", "-w", "workspace", "cloud", "schedule", "list"],
+        "cmd": ["gcloud", "-p", ".", "-w", "workspace", "cloud", "schedule", "list"],
         "shell": False,
         "cwd": "zendesk-jira",
         "env": {
@@ -147,13 +147,13 @@ def test_shebangless_path_script_requires_shell_fallback_enabled(cfg, workspace)
     c = dataclasses.replace(cfg, exec=dataclasses.replace(cfg.exec, shell=False))
     bindir = workspace / "bin"
     bindir.mkdir()
-    script = bindir / "handoff"
+    script = bindir / "gcloud"
     script.write_text('printf "never\\n"\n')
     script.chmod(0o755)
 
     events = list(Broker(c).handle_stream({
         "op": "exec",
-        "cmd": ["handoff"],
+        "cmd": ["gcloud"],
         "shell": False,
         "env": {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"},
     }))

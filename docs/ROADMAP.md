@@ -84,7 +84,7 @@ The CLI and REPL should call a common client API such as:
 ```python
 result = client.call(
     method="exec.run",
-    params={"argv": ["handoff", "status"], "cwd": "..."},
+    params={"argv": ["aws", "sts", "get-caller-identity"], "cwd": "..."},
 )
 ```
 
@@ -106,8 +106,8 @@ Example:
 ```text
 Local AI workstation                  Primary laptop
 --------------------                  --------------
-valet run -- handoff status  ------>  valet host
-                                      local Handoff installation
+valet run -- aws sts get-caller-identity  ------>  valet host
+                                      local aws / gcloud CLIs
                                       local AWS / BigQuery credentials
                               <------  redacted streamed result
 ```
@@ -173,7 +173,7 @@ real need.
   "client_id": "client_...",
   "method": "exec.run",
   "params": {
-    "argv": ["handoff", "status"],
+    "argv": ["aws", "sts", "get-caller-identity"],
     "cwd": "/Users/daigo/projects/customer-etl"
   },
   "metadata": {
@@ -304,9 +304,9 @@ Recommended precedence:
 Examples:
 
 ```bash
-valet run -- handoff status                     # configured default
-valet --host daigo-main run -- handoff status   # explicit host
-valet --local run -- handoff status             # force local UDS
+valet run -- aws sts get-caller-identity                     # configured default
+valet --host daigo-main run -- aws sts get-caller-identity   # explicit host
+valet --local run -- aws sts get-caller-identity             # force local UDS
 valet hosts                                     # list configured hosts
 valet host use daigo-main                       # change default
 ```
@@ -615,7 +615,7 @@ Expected behavior:
 Example:
 
 ```bash
-valet --host daigo-main run -- handoff status
+valet --host daigo-main run -- aws sts get-caller-identity
 ```
 
 The client resolves `daigo-main` to the configured relay target, authenticates,
@@ -770,7 +770,7 @@ Do not collapse human identity, agent identity, and device identity into a
 single `caller` string. Audit records should be able to state, for example:
 
 > Human Daigo authorized Codex agent `editor-agent` on device `macbook-01` to
-> invoke `handoff.status` on host `daigo-main` for project `tiugo`, under policy
+> invoke `aws.sts.get-caller-identity` on host `daigo-main` for project `tiugo`, under policy
 > version `abc123`.
 
 ## Authorization model
@@ -812,10 +812,10 @@ Level 3 should accelerate migration away from arbitrary shell commands.
 Examples:
 
 ```text
-handoff.schedule.list
-handoff.schedule.inspect
-handoff.run.status
-handoff.run.trigger
+gcloud.scheduler.jobs.list
+gcloud.scheduler.jobs.describe
+gcloud.run.services.describe
+gcloud.run.jobs.execute
 aws.ecs.service.describe
 aws.logs.tail
 bigquery.query.aggregate

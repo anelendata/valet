@@ -347,7 +347,7 @@ def test_run_command_exits_and_reports_reason_on_revoked_identity():
         # the client's identity has been revoked (removed on config reload).
         raise ConnectionError("client identity is not approved by this host")
 
-    keep_going, output = run_command("handoff status", Session(), send)
+    keep_going, output = run_command("aws sts get-caller-identity", Session(), send)
 
     assert keep_going is False
     assert "not approved" in output
@@ -373,7 +373,7 @@ def test_connection_lost_message_falls_back_without_detail():
 
 def test_prompt_truncates_deep_virtual_path():
     from valet.repl import prompt_for
-    deep = "./handoff_bos/operation/customers/etl_tasks/projects/zendesk-jira"
+    deep = "./work/operation/customers/etl_tasks/projects/zendesk-jira"
     assert prompt_for(Session(cwd=deep)) == "./…/zendesk-jira valet> "
 
 

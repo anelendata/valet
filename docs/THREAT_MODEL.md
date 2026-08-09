@@ -89,7 +89,8 @@ field is withheld rather than returned.
 ## Heuristic redaction (for secrets valet doesn't know)
 
 Some secrets never sit in a file valet can pre-load — a tool may fetch them from
-a parameter store and print them at runtime (e.g. `handoff secrets print`). For
+a parameter store and print them at runtime (e.g. `aws secretsmanager
+get-secret-value`). For
 those, valet also runs **heuristic** redaction (on by default,
 `redact_suspected`, [`valet/heuristics.py`](../valet/heuristics.py)): it masks
 the *value* of an assignment whose *key name* looks sensitive

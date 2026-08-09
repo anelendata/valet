@@ -124,7 +124,7 @@ shell = false
 #
 # [exec.env] sets default env vars for EVERY command ($VALET_WORKSPACE expands
 # to the workspace root); per-command env (inline `NAME=value` or --env) wins.
-# Example — then just run `AWS_PROFILE=tiny handoff ...`, no path needed:
+# Example — then just run `AWS_PROFILE=tiny aws s3 ls ...`, no path needed:
 #   [exec.env]
 #   AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
 #   AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
@@ -158,7 +158,7 @@ extra_values = []
 
 # Heuristically mask values that *look* secret, even when valet does not know
 # the exact value (e.g. secrets a command fetched from a parameter store at
-# runtime, like `handoff secrets print`). On by default. It masks:
+# runtime, like `aws secretsmanager get-secret-value`). On by default. It masks:
 #   - the VALUE of an assignment whose KEY name looks sensitive
 #     (password / secret / token / api_key / credential / auth / ...),
 #   - the `value:` field of a key:/value: object pair (secrets-dump format), and

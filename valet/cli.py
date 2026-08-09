@@ -389,7 +389,7 @@ def _doctor_sandbox_checks(cfg, workspace: str) -> bool:
     if denies_network:
         _doctor_line(" OK ", "network is denied by the profile (offline commands only)")
     else:
-        _doctor_line(" OK ", "network is allowed (needed by cloud tools like aws/handoff)")
+        _doctor_line(" OK ", "network is allowed (needed by cloud tools like aws/gcloud)")
 
     return failed
 
