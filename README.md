@@ -18,12 +18,13 @@ In simple terms:
 2. valet decides whether the request is allowed;
 3. valet runs the approved action with the credentials available to it;
 4. valet redacts sensitive values from the result;
-5. the agent sees the useful result, not the sensitive info.
+5. the agent gets the useful result, while raw credentials and secret
+   files stay on valet's side of the sandbox.
 
 Benefits:
 
-1. Safe-guard secrets while moving fast with agents
-2. Keep agents light-weighted without loading apps and keys
+1. Safeguard secrets while moving fast with agents
+2. Keep agents lightweight without loading apps and keys
 3. Manage and audit multi-agent host access and tool usage
 
 ![Valet-mediated agent interaction](images/valet-interaction.svg)
@@ -51,7 +52,7 @@ Benefits:
 
 More...
 - [Roadmap](./docs/ROADMAP.md)
-- [Technical deep dive](./docs/TECHNICAL_DEEP_DIVE.md)
+- [Threat model](./docs/THREAT_MODEL.md)
 - [Google Workspace CLI (`gws`) through valet](./docs/google-workspace-cli.md)
 
 
@@ -252,6 +253,9 @@ egress control, an MCP proxy for tool routing, and valet for the policy,
 redaction, and approval boundary around privileged actions.
 
 ## Before getting started
+
+valet is defense-in-depth, not a guarantee — see
+[Threat model](./docs/THREAT_MODEL.md) for what it does and doesn't stop.
 
 ### Recommended architecture
 
