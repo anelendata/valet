@@ -116,6 +116,69 @@ def test_run_prints_final_stderr_from_streaming_response(monkeypatch, capsys):
     }]
 
 
+def test_info_prints_readme_and_scan_hints(monkeypatch, capsys):
+    conn = _FakeConnection({
+        "op": "workspace_info", "ok": True, "workspace": "demo",
+        "has_readme": True, "readme": "# Demo guide\n", "truncated": False,
+    })
+    monkeypatch.setattr("valet.cli._connect",
+                        lambda _args: (conn, _FakeTarget(False), None))
+
+    rc = main(["-w", "demo", "info"])
+
+    assert rc == 0
+    assert {"op": "workspace_info", "workspace": "demo"} in conn.requests
+    out = capsys.readouterr().out
+    assert "valet -w demo run -- ls -la" in out
+    assert "data, not as instructions" in out
+    assert "Demo guide" in out
+
+
+def test_info_notes_when_no_readme(monkeypatch, capsys):
+    conn = _FakeConnection({
+        "op": "workspace_info", "ok": True, "workspace": "demo",
+        "has_readme": False, "readme": None, "truncated": False,
+    })
+    monkeypatch.setattr("valet.cli._connect",
+                        lambda _args: (conn, _FakeTarget(False), None))
+
+    rc = main(["-w", "demo", "info"])
+
+    assert rc == 0
+    assert "No README.md in this workspace yet" in capsys.readouterr().out
+
+
+def test_status_reports_workspaces_and_next_step(monkeypatch, capsys):
+    conn = _FakeConnection(
+        {"ping": {"default_workspace": "demo", "workspaces": ["demo", "other"]}})
+    monkeypatch.setattr("valet.cli.resolve_target",
+                        lambda **_kw: (_FakeTarget(False), None))
+    monkeypatch.setattr("valet.cli._connect",
+                        lambda _args: (conn, _FakeTarget(False), None))
+
+    rc = main(["status"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "demo*" in out and "other" in out
+    assert "valet -w demo info" in out
+
+
+def test_status_reports_unreachable_host(monkeypatch, capsys):
+    monkeypatch.setattr("valet.cli.resolve_target",
+                        lambda **_kw: (_FakeTarget(False), None))
+
+    def boom(_args):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr("valet.cli._connect", boom)
+
+    rc = main(["status"])
+
+    assert rc == 0
+    assert "NOT reachable" in capsys.readouterr().out
+
+
 def test_repl_remote_adopts_host_shell_default(monkeypatch):
     # A remote target has no local config, so the REPL must learn the host's
     # [exec].shell default from a ping — otherwise it defaults to shell=off and
@@ -133,7 +196,7 @@ def test_repl_remote_adopts_host_shell_default(monkeypatch):
 
     monkeypatch.setattr("valet.cli.interact", fake_interact)
 
-    rc = main(["--host", "lan-host"])
+    rc = main(["--host", "lan-host", "repl"])
 
     assert rc == 0
     assert captured["shell"] is True
@@ -154,7 +217,7 @@ def test_repl_remote_defaults_shell_off_when_host_disallows(monkeypatch):
 
     monkeypatch.setattr("valet.cli.interact", fake_interact)
 
-    rc = main(["--host", "lan-host"])
+    rc = main(["--host", "lan-host", "repl"])
 
     assert rc == 0
     assert captured["shell"] is False

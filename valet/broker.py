@@ -37,6 +37,9 @@ from .secrets import _keep as _worth_redacting
 from .secrets import load_secret_values
 
 _WITHHELD = "[REDACTED: output withheld — residual secret detected]"
+# Cap README bytes returned by the ``workspace_info`` op so a pathological file
+# can't flood a client orienting itself.
+_README_MAX_BYTES = 64 * 1024
 _STRUCTURED_LINE_RE = re.compile(
     r"^\s*(?:---\s*)?$|"
     r"^\s*[\{\[]|"
@@ -394,6 +397,9 @@ class Broker:
             if op == "workspaces":
                 response = {**base, **self._workspaces_list()}
                 return response
+            if op == "workspace_info":
+                response = {**base, **self._workspace_info(request)}
+                return response
             if op == "redaction_info":
                 response = {**base, **self._redaction_info(request)}
                 return response
@@ -626,6 +632,35 @@ class Broker:
         return {"op": "workspaces", "ok": True,
                 "default_workspace": self.default_workspace,
                 "workspaces": workspaces}
+
+    def _workspace_info(self, request: dict) -> dict:
+        """Return a workspace's ``README.md`` so an agent can orient itself.
+
+        Like ``_workspaces_list``, the real path is never disclosed — only the
+        id and the README's text, defensively redacted and size-capped so a
+        pathological file can't be used to flood a client.
+        """
+        ws = self._workspace(request)
+        result: dict = {
+            "op": "workspace_info", "ok": True, "workspace": ws.id,
+            "default": ws.id == self.default_workspace, "shell": ws.exec.shell,
+            "has_readme": False, "readme": None, "truncated": False,
+        }
+        root = ws.root()
+        if root is None:
+            return result
+        try:
+            with open(os.path.join(root, "README.md"),
+                      "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read(_README_MAX_BYTES + 1)
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            return result
+        truncated = len(text) > _README_MAX_BYTES
+        redactor = ws.redactor_for(root)
+        result["has_readme"] = True
+        result["readme"] = self._safe(redactor, text[:_README_MAX_BYTES])
+        result["truncated"] = truncated
+        return result
 
     def _processes_list(self, request: dict) -> dict:
         ws = self.workspaces[self.default_workspace]

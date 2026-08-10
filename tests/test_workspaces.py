@@ -433,6 +433,34 @@ def test_cli_workspace_list_remote_queries_daemon(monkeypatch, capsys):
     assert "/" not in out
 
 
+def test_workspace_info_returns_readme(cfg, workspace):
+    (workspace / "README.md").write_text("# Guide\nScan the folders.\n")
+    resp = Broker(cfg).handle({"op": "workspace_info"})
+    assert resp["ok"] and resp["has_readme"] is True
+    assert "Scan the folders." in resp["readme"]
+    assert resp["truncated"] is False
+
+
+def test_workspace_info_redacts_secrets_in_readme(cfg, workspace):
+    # The fixture config redacts this literal; it must not leak via the README.
+    (workspace / "README.md").write_text(
+        "token: sup3r-s3cret-value-do-not-leak\n")
+    resp = Broker(cfg).handle({"op": "workspace_info"})
+    assert "sup3r-s3cret-value-do-not-leak" not in resp["readme"]
+
+
+def test_workspace_info_when_no_readme(cfg):
+    resp = Broker(cfg).handle({"op": "workspace_info"})
+    assert resp["ok"] and resp["has_readme"] is False
+    assert resp["readme"] is None
+
+
+def test_workspace_info_unknown_workspace_is_rejected(cfg):
+    resp = Broker(cfg).handle({"op": "workspace_info", "workspace": "nope"})
+    assert resp["ok"] is False
+    assert resp["error_class"] == "ValidationError"
+
+
 def test_cli_workspace_add_creates_and_scaffolds_directory(tmp_path):
     a = tmp_path / "a"; a.mkdir()
     cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
@@ -443,7 +471,7 @@ def test_cli_workspace_add_creates_and_scaffolds_directory(tmp_path):
 
     assert rc == 0
     assert new_dir.is_dir()
-    for sub in ("bin", "tools", "skills"):
+    for sub in ("bin", "tools", "skills", "projects"):
         assert (new_dir / sub).is_dir()
     readme = (new_dir / "README.md")
     assert readme.is_file()
@@ -461,7 +489,7 @@ def test_cli_workspace_add_scaffolds_existing_dir_without_clobbering_readme(tmp_
                str(existing), "--yes"])
 
     assert rc == 0
-    for sub in ("bin", "tools", "skills"):
+    for sub in ("bin", "tools", "skills", "projects"):
         assert (existing / sub).is_dir()
     # An existing README is preserved, never overwritten.
     assert (existing / "README.md").read_text() == "my own notes"
