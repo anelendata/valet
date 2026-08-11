@@ -27,7 +27,9 @@ Benefits:
 2. Keep agents lightweight without loading apps and keys
 3. Manage and audit multi-agent host access and tool usage
 
-![Valet-mediated agent interaction](images/valet-interaction.svg)
+<!-- Absolute raw URL + PNG so the image renders on PyPI too (PyPI's image proxy
+     rejects SVG and does not resolve relative paths). SVG source is in images/. -->
+![Valet-mediated agent interaction](https://raw.githubusercontent.com/anelendata/valet/main/images/valet-interaction.png)
 
 ## Table of contents
 
