@@ -53,12 +53,12 @@ Benefits:
   - [Tests](#tests)
 
 More...
-- [Configuration reference](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md)
-- [Roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md)
 - [Threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md)
-- [Google Workspace CLI (`gws`) through valet](https://github.com/anelendata/valet/blob/main/docs/google-workspace-cli.md)
+- [Configuration reference](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md)
+- [Command reference](https://github.com/anelendata/valet/blob/main/docs/COMMANDS.md)
 - [Set up a workspace-wide Python venv](https://github.com/anelendata/valet/blob/main/docs/workspace-python-venv.md)
-
+- [Google Workspace CLI (`gws`) through valet](https://github.com/anelendata/valet/blob/main/docs/google-workspace-cli.md)
+- [Roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md)
 
 ## Quick demo
 

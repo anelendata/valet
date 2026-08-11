@@ -90,8 +90,14 @@ shell = false
 # [exec.env] sets default env vars for every command ($VALET_WORKSPACE expands);
 # per-command env (inline `NAME=value` or --env) wins.
 #   [exec.env]
-#   AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
-#   AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
+#   AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.config/aws/credentials"
+#   AWS_CONFIG_FILE = "$VALET_WORKSPACE/.config/aws/config"
+#   GIT_CONFIG_GLOBAL="$VALET_WORKSPACE/.config/git/.gitconfig"
+#   GH_CONFIG_DIR="$VALET_WORKSPACE/.config/gh"
+#   GH_TOKEN="ghp_xxxx"
+#   GOOGLE_WORKSPACE_CLI_CONFIG_DIR = "$VALET_WORKSPACE/.config/gws"
+#   GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND = "file"
+#   ...
 
 # ==== WORKSPACES =============================================================
 # A workspace is a dedicated directory commands are confined to, and the REPL's
@@ -130,7 +136,7 @@ shell = false
 # / ini / json / yaml). Missing paths skipped; files >1 MB skip the whole-blob
 # step. A "**/" pattern walks the tree per command — prefer shallow for huge trees.
 secret_file_paths = [
-    "~/.aws/**",
+    "~/.aws/**", "~/.config/**",
     ".env", ".config/**", ".secrets/**", "secrets/**",
     ".passwords/**", "passwords/**", ".ssh/**", ".aws/**",
 ]
@@ -147,7 +153,7 @@ redact_suspected = true
 # OFF by default, noisy: mask long high-entropy tokens ANYWHERE, even a bare
 # string with no key name or known shape. Skips git SHAs/hashes, UUIDs, decimal
 # ids, and paths, but may still mask base64 blobs or random-looking non-secrets.
-redact_high_entropy = true
+redact_high_entropy = false
 
 [policy]
 # ==== FAMILY 2: block EXECUTION (decide whether a command runs) ====
