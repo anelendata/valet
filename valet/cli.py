@@ -110,6 +110,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if is_mac:
         text = _init_macos_sandbox(text, workspace_sb)
 
+    text = _init_lan_host(text)
+
     config_path.write_text(text)
     print(f"valet: wrote config to {config_path}")
 
@@ -127,19 +129,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _init_macos_sandbox(text: str, workspace_sb: Path) -> str:
-    """Offer to install and activate the OS sandbox; return the (maybe edited) config."""
-    if _confirm(f"Copy the OS sandbox profile to {workspace_sb}?", default=True):
-        src = _workspace_sb_source()
-        if src.exists():
-            shutil.copyfile(src, workspace_sb)
-            print(f"valet: wrote {workspace_sb}")
-        else:
-            print(f"valet: warning: {src} not found; skipping sandbox profile.",
-                  file=sys.stderr)
-
-    if not workspace_sb.exists():
-        return text
-
+    """Offer to activate the OS sandbox; on yes, copy the profile and edit the config."""
     print()
     print("The OS sandbox (macOS sandbox-exec) confines every command to your")
     print("workspace: it blocks reads of your home, keychain, and other users,")
@@ -148,6 +138,14 @@ def _init_macos_sandbox(text: str, workspace_sb: Path) -> str:
     print("profile has a commented (deny network*) line to block it if you want.")
     if not _confirm("Activate it now (recommended for maximum safety)?", default=True):
         return text
+
+    src = _workspace_sb_source()
+    if not src.exists():
+        print(f"valet: warning: {src} not found; skipping sandbox profile.",
+              file=sys.stderr)
+        return text
+    shutil.copyfile(src, workspace_sb)
+    print(f"valet: wrote {workspace_sb}")
 
     activated, n = re.subn(
         r"(?m)^#\s*sandbox_profile\s*=.*$",
@@ -160,6 +158,27 @@ def _init_macos_sandbox(text: str, workspace_sb: Path) -> str:
         return text
     print("valet: activated sandbox_profile in the config.")
     return activated
+
+
+def _init_lan_host(text: str) -> str:
+    """Offer to enable the LAN WebSocket host; return the (maybe edited) config."""
+    print()
+    print("Besides local tools over the Unix socket, valet can accept commands")
+    print("over your LAN from another machine (e.g. a separate AI box) via an")
+    print("authenticated WebSocket. It stays OFF unless you enable it, and every")
+    print("client key is approved by you with `valet clients add`.")
+    if not _confirm("Enable the LAN (WebSocket) host?", default=False):
+        return text
+
+    enabled, n = re.subn(r"(?m)^(\s*lan\s*=\s*).*$", r"\1true", text)
+    if n == 0:
+        print("valet: warning: could not find the [host].lan line to enable; "
+              "set it by hand.", file=sys.stderr)
+        return text
+    print("valet: enabled [host].lan. It listens on 127.0.0.1:8766 by default; to")
+    print("accept connections from other machines, set [host].listen to a LAN")
+    print("interface (e.g. 0.0.0.0:8766) and add clients with `valet clients add`.")
+    return enabled
 
 
 def _confirm(prompt: str, *, default: bool) -> bool:

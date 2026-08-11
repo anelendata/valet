@@ -340,8 +340,8 @@ def _answers(*vals):
 
 def test_init_creates_config_and_injects_salt(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("valet.cli.sys.platform", "linux")  # skip macOS sandbox steps
-    # create valet dir, create config (init no longer touches a workspace)
-    monkeypatch.setattr("builtins.input", _answers("y", "y"))
+    # create valet dir, create config, decline the LAN host prompt
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "n"))
     monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
     config = tmp_path / "valet" / "config.toml"
 
@@ -382,8 +382,8 @@ def test_init_declining_creates_nothing(tmp_path, monkeypatch):
 
 def test_init_activates_sandbox_on_macos(tmp_path, monkeypatch):
     monkeypatch.setattr("valet.cli.sys.platform", "darwin")
-    # parent exists -> no dir prompt; then: create config, copy sb, activate
-    monkeypatch.setattr("builtins.input", _answers("y", "y", "y"))
+    # parent exists -> no dir prompt; then: create config, activate sandbox, no LAN
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "n"))
     monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
     config = tmp_path / "config.toml"
 
@@ -393,3 +393,30 @@ def test_init_activates_sandbox_on_macos(tmp_path, monkeypatch):
     assert (tmp_path / "workspace.sb").exists()
     text = config.read_text()
     assert any(line.strip().startswith("sandbox_profile =") for line in text.splitlines())
+
+
+def test_init_enables_lan_when_confirmed(tmp_path, monkeypatch):
+    monkeypatch.setattr("valet.cli.sys.platform", "linux")
+    # create valet dir, create config, ENABLE the LAN host
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "y"))
+    monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
+    config = tmp_path / "valet" / "config.toml"
+
+    rc = main(["-c", str(config), "init"])
+
+    assert rc == 0
+    from valet.config import load_config
+    assert load_config(config).host.lan is True
+
+
+def test_init_leaves_lan_off_when_declined(tmp_path, monkeypatch):
+    monkeypatch.setattr("valet.cli.sys.platform", "linux")
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "n"))
+    monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
+    config = tmp_path / "valet" / "config.toml"
+
+    rc = main(["-c", str(config), "init"])
+
+    assert rc == 0
+    from valet.config import load_config
+    assert load_config(config).host.lan is False
