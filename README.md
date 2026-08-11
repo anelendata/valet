@@ -1,25 +1,20 @@
 # valet: Let agents use privileged tools without seeing secrets
 
-valet is a broker between an AI agent and the tools the agent should not run
-directly.
+valet lets an AI agent use privileged tools — the AWS CLI, `psql`, anything that
+needs a real credential — without ever seeing the secret behind it.
 
-The name *valet*: it holds your keys, brings the car around, and hands you back
-only what you asked for, never the keys.
+The name says it: a valet holds your keys, brings the car around, and hands it
+back — never the keys.
 
-The agent stays in a sandbox where it cannot read credential files like
-`~/.aws`, `.env`, `.secrets`, etc. valet runs outside that sandbox, where it
-can use those credentials on the agent's behalf. Before valet returns anything,
-it scrubs known and suspected secret values from stdout, stderr, and the echoed
-command.
+The agent runs in a sandbox that can't read credential files (`~/.aws`, `.env`,
+`.secrets`, …). valet runs *outside* that sandbox and does the privileged work
+for it:
 
-In simple terms:
-
-1. the agent asks valet to do something;
-2. valet decides whether the request is allowed;
-3. valet runs the approved action with the credentials available to it;
-4. valet redacts sensitive values from the result;
-5. the agent gets the useful result, while raw credentials and secret
-   files stay on valet's side of the sandbox.
+1. the agent asks valet to run something;
+2. valet checks it against policy;
+3. valet runs it with the credentials only valet can see;
+4. valet scrubs secret values from the output;
+5. the agent gets the useful result — the raw secrets never leave valet's side.
 
 Benefits:
 
