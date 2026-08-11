@@ -366,20 +366,27 @@ before installing valet!
 
 ## Install & run
 
-### Running from the a sandbox inside the host
-
-Install valet in the host and sandbox:
+Install from PyPI — on the host, and inside the agent's sandbox:
 
 ```bash
+pip install valet-ai
+```
+
+Or from source for development (you can also use `uv`):
+
+```bash
+git clone https://github.com/anelendata/valet.git
+cd valet
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 ```
-(You can also use uv)
 
-In the host,
-```
-valet init                              # create ~/.valet/config.toml
-                                        # (macOS: + OS sandbox), then a health check. y/n prompts.
+### On the host
+
+```bash
+valet init                              # create ~/.valet/config.toml, then a
+                                        # health check. y/n prompts along the way:
+                                        # macOS OS sandbox, and the LAN host.
 valet workspaces add work ~/work/project  # add your first workspace (becomes default)
 $EDITOR ~/.valet/config.toml            # set secret_file_paths, tune policy, etc.
 
@@ -387,15 +394,15 @@ valet serve                             # start the daemon (keep this shell open
 valet doctor                            # re-check config health anytime
 ```
 
-`valet init` and workspace creation are two separate steps. `valet init` copies
-`config.example.toml` into `~/.valet/config.toml` (use `-c PATH` to write it
-elsewhere), gives it a stable redaction salt, and on macOS offers to install and
-activate the OS sandbox profile. It defines **no** workspace — it ends by
-reminding you to run `valet workspaces add <id> <dir>`, which creates the first
-workspace (making it the default) and scaffolds its directory. `valet serve`
-refuses to start until at least one workspace exists. `init` refuses to
-overwrite an existing `config.toml`/`workspace.sb` — remove or rename them to
-re-run.
+`valet init` and workspace creation are two separate steps. `valet init` writes
+its bundled example config to `~/.valet/config.toml` (use `-c PATH` to write it
+elsewhere), gives it a stable redaction salt, and prompts to (on macOS) install
+and activate the OS sandbox profile and to enable the LAN (WebSocket) host. It
+defines **no** workspace — it ends by reminding you to run `valet workspaces add
+<id> <dir>`, which creates the first workspace (making it the default) and
+scaffolds its directory. `valet serve` refuses to start until at least one
+workspace exists. `init` refuses to overwrite an existing
+`config.toml`/`workspace.sb` — remove or rename them to re-run.
 
 Keep the config, the sandbox profile, the audit log, and your secret sources
 **outside** the workspace: the agent can read (and, when jailed there, write)
@@ -437,7 +444,12 @@ Manage them from the host:
 valet workspaces add personal ~/personal   # add a [workspaces.personal] section
 valet workspaces add personal ~/personal --make-default   # ...and make it the default
 valet workspaces list                      # list workspaces (* marks the default)
+valet workspaces remove personal           # drop it from the config (keeps the dir)
 ```
+
+`valet workspaces remove <id>` deletes the config entry (and clears the default
+pointer if it was the default) but **leaves the directory on disk** — it prints
+the path and you delete it yourself if you want.
 
 `valet workspaces add` edits the host config, so it is a host-side command.
 `valet workspaces list` adapts to context: run locally it reads the config
@@ -451,9 +463,11 @@ The first workspace added becomes `[exec].default_workspace` automatically; pass
 When the target directory does not exist, `valet workspaces add` offers to
 create it. Either way it scaffolds a standard layout — `bin/` (executables put
 on `PATH`), `tools/` (local tools installed outside `/usr/local/bin`, e.g.
-`handoff`), and `skills/` (skills for agents) — and writes a `README.md`
-explaining them (an existing `README.md` is never overwritten, so your own notes
-are safe).
+`handoff`), `skills/` (skills for agents), `projects/` (where you and agents
+organize projects and day-to-day work), and `tmp/` (scratch space, since `/tmp`
+is outside the workspace) — plus a `.secrets/` directory holding a `demo.yaml`
+you can try redaction on, and a `README.md` explaining the layout. Existing
+files are never overwritten, so your own notes and secrets are safe.
 
 Select a workspace per command with `-w/--workspace`, or switch inside the REPL
 with `:workspaces set <id>` (see below). `valet serve` reloads workspace changes
@@ -517,6 +531,11 @@ This writes a new `[identity.clients.<id>]` entry to the host's `config.toml`
 and prints a client-only TOML snippet. (If the id already exists, valet asks
 before rotating its key.) valet hot-reloads the config if the server is already
 running.
+
+Manage approved clients with `valet clients list`, `valet clients block <id>` /
+`unblock <id>` (temporarily deny a client without deleting its key — a blocked
+client can't authenticate and any live connection is dropped on reload), and
+`valet clients remove <id>` (permanently revoke the key).
 
 Put the printed client config on the second machine (i.e. agent),
 set `[host].lan = true` and `[host].listen` on the trusted host.
