@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "valet-ai"
-version = "0.0.3"
+version = "0.0.4"
 description = "A local secret-redacting command runner: run a command, get output with secrets scrubbed."
 requires-python = ">=3.11"
 readme = "README.md"
@@ -27,6 +27,7 @@ test = ["pytest>=7"]
 Homepage = "https://github.com/anelendata/valet"
 Repository = "https://github.com/anelendata/valet"
 Issues = "https://github.com/anelendata/valet/issues"
+Changelog = "https://github.com/anelendata/valet/blob/main/HISTORY.md"
 
 [project.scripts]
 valet = "valet.cli:main"
