@@ -34,12 +34,12 @@ Benefits:
 ## Table of contents
 
 - [Quick demo](#quick-demo)
-- [Motivating examples](#motivating-examples)
-  - [Example 1: Running AWS CLI commands in a hardened sandbox](#example-1-running-aws-cli-commands-in-a-hardened-sandbox)
-  - [Example 2: Database query](#example-2-database-query)
+- [Use cases](#use-cases)
+  - [Use case 1: Running AWS CLI commands in a hardened sandbox](#use-case-1-running-aws-cli-commands-in-a-hardened-sandbox)
+  - [Use case 2: Database query](#use-case-2-database-query)
 - [Features](#features)
   - [Valet serve](#valet-serve)
-  - [REPL mode](#repl-mode)
+  - [Interactive shell (REPL)](#interactive-shell-repl)
   - [Audit logging](#audit-logging)
   - [Multi-transport: one host, many agents](#multi-transport-one-host-many-agents)
 - [Valet is not...](#valet-is-not)
@@ -47,14 +47,18 @@ Benefits:
   - [Recommended architecture](#recommended-architecture)
   - [Sandbox hardening](#sandbox-hardening)
 - [Install & run](#install--run)
+  - [On the host](#on-the-host)
+  - [Run commands through valet](#run-commands-through-valet)
   - [Interactive mode — a redacting shell](#interactive-mode--a-redacting-shell)
-- [Config](#config)
-  - [Choosing what to configure](#choosing-what-to-configure)
+  - [Multiple workspaces under one host](#multiple-workspaces-under-one-host)
+  - [Running from a node in the local network](#running-from-a-node-in-the-local-network)
+- [Configuration](#configuration)
 - [Guardrails](#guardrails)
 - [Development](#development)
   - [Tests](#tests)
 
 More...
+- [Configuration reference](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md)
 - [Roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md)
 - [Threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md)
 - [Google Workspace CLI (`gws`) through valet](https://github.com/anelendata/valet/blob/main/docs/google-workspace-cli.md)
@@ -93,9 +97,9 @@ valet run -- grep secret_key .secrets/demo.yaml
 its value from the output an agent would get, yet the file stays usable — a trusted
 tool can still receive it as an argument (`my_command --key-file ./.secrets/demo.yaml`).
 
-## Motivating examples
+## Use cases
 
-### Example 1: Running AWS CLI commands in a hardened sandbox
+### Use case 1: Running AWS CLI commands in a hardened sandbox
 
 With a hardened Codex or Claude Code sandbox (see
 [Sandbox hardening](#sandbox-hardening)), commands that need host-side
@@ -145,7 +149,7 @@ artifact names, timestamps, sizes, and missing checksum files, while account
 IDs, ARNs, access keys, emails, tokens, and configured **secret values are
 scrubbed before the response reaches the agent**.
 
-### Example 2: Database query
+### Use case 2: Database query
 
 The same pattern applies to database diagnostics. A hardened agent sandbox
 should not be able to read the `.env` or `.secrets` file that contains
@@ -168,46 +172,27 @@ capabilities with explicit policy and approval, not raw shell habits.
 
 ### Valet serve
 
-`valet serve` is the normal way to make privileged tools available to a
-sandboxed agent. Start it yourself in a regular terminal that has the profiles,
-tokens, and environment the trusted tools already use:
-
-```bash
-valet serve
-```
-
-Leave that terminal running while the agent works. The agent still runs inside
-its hardened Codex or Claude Code sandbox, where it cannot read `.env`,
-`.secrets`, `~/.aws`, or other denied credential locations. When it needs the
-result of an approved privileged command, it calls valet instead:
+The broker runs in a trusted terminal that already has your profiles, tokens,
+and cloud CLIs, and hands a sandboxed agent the *results* of privileged commands
+without ever handing over the credentials. The agent can't read `.env`,
+`.secrets`, or `~/.aws` from inside its sandbox — it asks valet instead:
 
 ```bash
 sandbox$ valet --env AWS_PROFILE=prod-readonly run -- aws s3 ls s3://my-prod-bucket/releases/
 sandbox$ valet run -- psql --csv -c "select status, count(*) from jobs group by status"
 ```
 
-From the user's point of view, this gives the agent useful operational output
-while keeping the credential material on the trusted side of the boundary.
-Valet loads the configured secret sources, runs the command, redacts the echoed
-command plus stdout/stderr, and only then returns output to the agent. For
-`valet run`, `valet sh`, and the REPL, safe line-oriented output streams as it
-arrives; structured JSON/YAML/PEM-shaped output is buffered until valet has
-enough context to redact it safely.
+Valet loads the secret sources, runs the command, and redacts the echoed command
+plus stdout/stderr **before a single byte reaches model context**. Safe
+line-oriented output streams as it arrives; structured JSON/YAML/PEM is buffered
+just long enough to redact it safely. Edit `config.toml` while it runs and
+policy, redaction, and audit changes reload live.
 
-Use `valet serve` for day-to-day local agent sessions. Stop it with Ctrl-C when
-the session is over. If a client reports that no daemon is running, start
-`valet serve` again from the trusted terminal.
+### Interactive shell (REPL)
 
-While `valet serve` is running it watches `config.toml` and reloads changes to
-policy, redaction, audit settings, and approved LAN client identities. Listener
-bind settings such as `broker.socket_path`, `[host].lan`, and `[host].listen`
-are read when the server starts; restart `valet serve` after changing those.
-
-### REPL mode
-
-REPL (Read-Eval-Print Loop) is available to examine valet's behavior
-interactively while `valet serve` is running. This is particularly useful
-validating a policy.
+Run bare `valet` for a redacting shell — type any command and watch the output
+come back scrubbed. It's the fastest way to *see* your policy and redaction
+rules at work before you trust an agent to them:
 
 ```
 $ valet
@@ -215,22 +200,17 @@ valet 0.2.0 — redacting shell. Type a command to run it; ':help' for meta-comm
 
 valet> aws logs tail mystack/some-task --since 60m --profile prod-readonly
 
-2026-08-05T04:00:17.166000+00:00 states/mystack-some-task-1/2026-08-05-04/00000000 {"details":{"roleArn":"[REDACTED:arn]"},"redrive_count":"0","id":"1","type":"ExecutionStarted","previous_event_id":"0","event_timestamp":"1785902417166","execution_arn":"[REDACTED:arn]"}
-2026-08-05T04:00:17.192000+00:00 states/mystack-some-task-1/2026-08-05-04/00000000 {"details":{"name":"RunTask"},"redrive_count":"0","id":"2","type":"TaskStateEntered","previous_event_id":"0","event_timestamp":"1785902417192","execution_arn":"[REDACTED:arn]"}
-2026-08-05T04:00:17.192000+00:00 states/mystack-some-task-1/2026-08-05-04/00000000 {"details":{"region":"[REDACTED:secret:h:52a3d849]","resource":"runTask.sync","resourceType":"ecs"},"redrive_count":"0","id":"3","type":"TaskScheduled","previous_event_id":"2","event_timestamp":"1785902417192","execution_arn":"[REDACTED:arn]"}
+2026-08-05T04:00:17 … {"details":{"roleArn":"[REDACTED:arn]"}, … "execution_arn":"[REDACTED:arn]"}
+2026-08-05T04:00:17 … {"details":{"region":"[REDACTED:secret:h:52a3d849]","resource":"runTask.sync"}, …}
 ...
 ```
 
 ### Audit logging
 
-Audit logging makes valet's privileged boundary inspectable after the fact.
-When an agent asks valet to run something, the log helps a human
-answer: who asked, what command or capability was requested, which working
-directory was used, whether policy allowed or denied it, whether approval was
-required, how long it ran, whether it succeeded, and how much redaction happened
-before output returned to the agent.
-
-Configure the JSON log path in `config.toml`:
+Every request through valet can land in an append-only JSON log, so the
+privileged boundary stays accountable: who asked, what command ran, in which
+workspace, whether policy allowed or denied it, how long it took, and how many
+values were redacted.
 
 ```toml
 [audit]
@@ -238,65 +218,40 @@ log_path = "~/.valet/audit.jsonl"
 console = true
 ```
 
-The file is newline-delimited JSON. Non-streaming requests append one final
-JSON object. Streamed exec requests append a `phase = "started"` event as soon
-as policy allows the command and the process is about to run, then append a
-final event when the command finishes. When `console = true`, `valet serve` and
-`valet serve-lan` also print readable server-console entries:
+The log is **safe to keep** — it records metadata (request IDs, caller, command
+shape, decision, exit code, redaction counts, fail-closed events), never raw
+stdout/stderr or credential values, so it can't become another secret sink. With
+`console = true`, `valet serve` also prints readable entries as commands run:
 
 ```text
 2026-08-05T12:31:03Z INFO: codex uds allowed started aws ecs describe-services ...
 2026-08-05T12:31:04Z INFO: codex uds allowed aws ecs describe-services ...
-   {
-     "caller": "codex",
-     "transport": "uds",
-     "decision": "allowed",
-     "phase": null,
-     "command": "aws ecs describe-services ...",
-     ...
-   }
 ```
 
-The audit log is meant to be safe to keep. It records metadata
-such as request IDs, caller identity, command shape, policy decision, exit code,
-duration, byte counts, redaction counts, and fail-closed events. It should not
-store raw stdout, raw stderr, credential values, or unredacted command material;
-otherwise the log becomes another secret sink.
-
-For example, an audit event might say that `codex` requested an
-`aws ecs describe-services ... --profile prod-readonly` command, valet allowed
-it under policy, loaded several configured secret sources, redacted six values,
-and returned a zero exit code after 1.8 seconds. A denied event might say that a
-command referenced `**/.env` and was refused before execution. The point is
-accountability: redaction protects model context, policy controls execution,
-and audit logging lets an operator reconstruct what happened without exposing
-the secrets valet was built to protect.
+Denied requests read the same way — e.g. a command that referenced `**/.env` and
+was refused before execution — so an operator can reconstruct exactly what
+happened without ever touching the secrets valet protects.
 
 ### Multi-transport: one host, many agents
 
-valet speaks two transports behind the same request/response contract, so the
-same `valet run` / `valet sh` / REPL commands work whether the agent is on the
-host or on another machine:
+Configure credentials, cloud CLIs, and secret sources **once, on the host**, then
+point every agent at it — the REPL on your laptop, a coding agent in a hardened
+sandbox, a second workstation running another model. They all get the same
+policy-gated, redacted tool access, and none of them hold a secret. No separate
+stack of MCP servers and app installs to stand up and secure inside every agent.
 
-- **Unix domain socket** (default) — `valet serve`. The socket file is `0600`,
-  owned by the user who started the daemon, so the OS is the access-control
-  layer: no port, no token, no network surface.
-- **Trusted-LAN WebSocket RPC** — `valet serve-lan`. A client on a second
-  computer on the same trusted network reaches the host over WebSocket, with
-  challenge-response authentication against approved client identities. It stays
-  off unless `[host].lan = true`; setup is in
-  [Running from a node in the local network](#running-from-a-node-in-the-local-network).
+The same `valet run` / `valet sh` / REPL commands work over either transport:
 
-The payoff is **one credentialed host, many agents**. Point every agent — the
-REPL on your laptop, a coding agent in a hardened sandbox, a second workstation
-running another model — at the same valet host, and they all get the same
-policy-gated, redacted tool access. You install and configure the credentials,
-cloud CLIs, and secret sources **once, on the host**, instead of standing up and
-securing a separate stack of MCP servers and application installs inside every
-agent. Agents stay lightweight and hold no secrets; the host is the single place
-where privileged tools live and where policy and audit are enforced. Each
-request's transport (`uds` or `lan`) is recorded in the audit log, so a shared
-host stays accountable.
+- **Unix domain socket** (default) — the socket is `0600`, owned by the user who
+  started the daemon, so the OS *is* the access control: no port, no token, no
+  network surface.
+- **Trusted-LAN WebSocket** — reach the host from another machine on the trusted
+  network, with challenge-response auth against approved client identities. Off
+  unless you opt in with `[host].lan = true`
+  ([setup](#running-from-a-node-in-the-local-network)).
+
+Every request records its transport (`uds` or `lan`) in the audit log, so a
+shared host stays accountable.
 
 ## Valet is not...
 
@@ -383,206 +338,42 @@ pip install -e .
 
 ### On the host
 
+Set up the daemon once, in a trusted terminal:
+
 ```bash
-valet init                              # create ~/.valet/config.toml, then a
-                                        # health check. y/n prompts along the way:
-                                        # macOS OS sandbox, and the LAN host.
+valet init                                # create ~/.valet/config.toml + health check
+                                          # (y/n prompts: macOS OS sandbox, LAN host)
 valet workspaces add work ~/work/project  # add your first workspace (becomes default)
-$EDITOR ~/.valet/config.toml            # set secret_file_paths, tune policy, etc.
+$EDITOR ~/.valet/config.toml              # point secret_file_paths at your secrets, etc.
 
-valet serve                             # start the daemon (keep this shell open)
-valet doctor                            # re-check config health anytime
+valet serve                               # start the daemon (keep this shell open)
+valet doctor                              # re-check config health anytime
 ```
 
-`valet init` and workspace creation are two separate steps. `valet init` writes
-its bundled example config to `~/.valet/config.toml` (use `-c PATH` to write it
-elsewhere), gives it a stable redaction salt, and prompts to (on macOS) install
-and activate the OS sandbox profile and to enable the LAN (WebSocket) host. It
-defines **no** workspace — it ends by reminding you to run `valet workspaces add
-<id> <dir>`, which creates the first workspace (making it the default) and
-scaffolds its directory. `valet serve` refuses to start until at least one
-workspace exists. `init` refuses to overwrite an existing
-`config.toml`/`workspace.sb` — remove or rename them to re-run.
+- **`valet init`** writes the example config with a stable redaction salt and
+  prompts for the macOS sandbox and LAN host. It defines **no** workspace and
+  won't overwrite an existing config.
+- **`valet workspaces add <id> <dir>`** creates the first workspace and scaffolds
+  its directory. `valet serve` won't start until one exists.
 
-Keep the config, the sandbox profile, the audit log, and your secret sources
-**outside** the workspace: the agent can read (and, when jailed there, write)
-anything inside it, so any of these placed under the workspace is exposed to the
-very agent it hides secrets from. `valet doctor` (also run at the end of `valet
-init`) warns when any of them resolve inside a workspace path, and separately
-flags a workspace path that is your home directory (or broader) as very
-high risk — the agent's blast radius would be your whole home.
+Keep the config, sandbox profile, audit log, and secret sources **outside** the
+workspace — anything inside it is readable (and, when jailed there, writable) by
+the agent. `valet doctor` warns when they aren't. Full setup of secrets, policy,
+and redaction lives in [Configuration](docs/CONFIGURATION.md).
 
-#### Multiple workspaces under one host
+### Run commands through valet
 
-A host can serve several workspaces, each a separate directory jail with its own
-settings. `[exec]`, `[policy]`, and `[redaction]` are the **defaults** for every
-workspace; each `[workspaces.<id>]` names a `path` and may override those defaults
-per key. `[exec].default_workspace` picks the one used when a command names none.
-
-```toml
-[exec]
-default_workspace = "default"      # used when no workspace is named
-shell = false                      # default for all workspaces
-
-[policy]
-deny_exec = ["curl"]               # denied in every workspace
-
-[workspaces.default]
-path = "~/work/project"
-
-[workspaces.personal]
-path = "~/personal"
-[workspaces.personal.exec]
-shell = true                       # overrides the [exec] default, personal only
-[workspaces.personal.policy]
-deny_exec = ["rm"]                 # replaces the shared deny list for personal
-```
-
-Manage them from the host:
+From the agent's sandbox on the same machine, call valet instead of the tool
+directly. You get redacted output and the command's own exit code, so it drops
+into scripts like the real command would:
 
 ```bash
-valet workspaces add personal ~/personal   # add a [workspaces.personal] section
-valet workspaces add personal ~/personal --make-default   # ...and make it the default
-valet workspaces list                      # list workspaces (* marks the default)
-valet workspaces remove personal           # drop it from the config (keeps the dir)
-```
-
-`valet workspaces remove <id>` deletes the config entry (and clears the default
-pointer if it was the default) but **leaves the directory on disk** — it prints
-the path and you delete it yourself if you want.
-
-`valet workspaces add` edits the host config, so it is a host-side command.
-`valet workspaces list` adapts to context: run locally it reads the config
-(showing paths); run as a client (a remote `--host` or a client config's
-`default_host`) it lists the **remote** host's workspaces over RPC — ids, the
-default marker, and shell mode, but not paths, which the host never discloses.
-
-The first workspace added becomes `[exec].default_workspace` automatically; pass
-`--make-default` to point the default at a later one.
-
-When the target directory does not exist, `valet workspaces add` offers to
-create it. Either way it scaffolds a standard layout — `bin/` (executables put
-on `PATH`), `tools/` (local tools installed outside `/usr/local/bin`, e.g.
-`handoff`), `skills/` (skills for agents), `projects/` (where you and agents
-organize projects and day-to-day work), and `tmp/` (scratch space, since `/tmp`
-is outside the workspace) — plus a `.secrets/` directory holding a `demo.yaml`
-you can try redaction on, and a `README.md` explaining the layout. Existing
-files are never overwritten, so your own notes and secrets are safe.
-
-Select a workspace per command with `-w/--workspace`, or switch inside the REPL
-with `:workspaces set <id>` (see below). `valet serve` reloads workspace changes
-automatically.
-
-```bash
-valet -w personal run -- ls
-valet -w personal sh 'ls | grep foo'
-```
-
-From a sandbox running in the same machine,
-
-```bash
-# Lists files in the host's workspace root
-valet run -- ls
-```
-
-Run privileged commands according to host's environment:
-
-```bash
-valet repl # (or simply valet) to start REPL mode
-valet run -- aws s3 ls                   # argv, no shell (exact)
-valet --cwd projects/app run -- ls       # cwd without shell syntax
+valet run -- ls                          # list the host's workspace root
+valet run -- aws s3 ls                    # argv, no shell (exact)
+valet --cwd projects/app run -- ls        # set cwd without shell syntax
 valet --env AWS_PROFILE=prod run -- aws s3 ls
-valet sh 'aws s3 ls | grep prod'         # requires [exec] shell = true
+valet sh 'aws s3 ls | grep prod'          # pipes/globs — needs [exec] shell = true
 ```
-
-`run`/`sh` print redacted stdout/stderr and exit with the command's code, so
-they drop into scripts like the real command would.
-
-### Running from a node in the local network
-
-For trusted-LAN RPC, approve a client on the trusted host:
-
-```bash
-$ valet clients add my-ai-box
-valet: added client 'my-ai-box' in ./config.toml
-
-Client config:
-[client]
-id = "my-ai-box"
-key = "xxxxxxxxxxxxxxxxxxxxxxxx"
-default_host = "my-computer"
-# default_workspace = "<id>"  # optional; overrides the host default
-reconnect_max_retries = 5
-reconnect_backoff_seconds = 0.25
-reconnect_backoff_max_seconds = 3.0
-
-[hosts.my-computer]
-url = "ws://<host-lan-ip>:8766/rpc"
-```
-
-`[client].default_workspace` (optional) sets which workspace this client runs in
-when a command names none. It takes priority over the host's own default; an
-explicit `valet -w <id> ...` still overrides it. Manage it with `valet client
-default_workspace set <id>` / `show` / `unset`. If it points at a workspace the
-host no longer offers, `valet run`/`sh` fail with a clear message and the REPL
-declines to start — update or `unset` it (or run `valet workspaces list`).
-
-This writes a new `[identity.clients.<id>]` entry to the host's `config.toml`
-and prints a client-only TOML snippet. (If the id already exists, valet asks
-before rotating its key.) valet hot-reloads the config if the server is already
-running.
-
-Manage approved clients with `valet clients list`, `valet clients block <id>` /
-`unblock <id>` (temporarily deny a client without deleting its key — a blocked
-client can't authenticate and any live connection is dropped on reload), and
-`valet clients remove <id>` (permanently revoke the key).
-
-Put the printed client config on the second machine (i.e. agent),
-set `[host].lan = true` and `[host].listen` on the trusted host.
-
-The client can then use the same commands through the default host:
-
-```bash
-valet ping
-valet --env AWS_PROFILE=prod run -- aws s3 ls
-valet sh 'aws s3 ls | head'
-valet repl
-```
-
-You can select host with `--host` option:
-```bash
-valet --host my-computer -- run ls
-```
-
-To revoke a LAN client, remove it from the trusted host config:
-
-```bash
-valet clients remove local-ai-box
-```
-
-The running `valet serve` process reloads the updated client registry
-automatically.
-
-The client config only contains host URLs and that client's identity key. Host
-secret sources, redaction salts, policy, and audit settings stay in the trusted
-host config. `ws://` is for trusted development LANs. (public internet relay
-support belongs to the future `wss://` transport in the future development.)
-
-WebSocket clients reconnect automatically with exponential backoff. The defaults
-are conservative and can be tuned in the client-only config:
-
-```toml
-[client]
-reconnect_max_retries = 5
-reconnect_backoff_seconds = 0.25
-reconnect_backoff_max_seconds = 3.0
-
-[hosts.my-computer]
-# Optional per-host overrides use the same keys.
-```
-
-If the socket drops while a command is already in flight, valet reconnects for
-the next prompt but does not silently replay that command.
 
 ### Interactive mode — a redacting shell
 
@@ -603,98 +394,100 @@ API_TOKEN=[REDACTED:secret:h:3bc13a30]
 (personal) personal valet> :quit
 ```
 
-The prompt shows `(workspace) <dir>`. **`cd` sticks** for the session,
-and is **jailed to the workspace** — `..` and symlinks can't climb above
-the workspace path (a bare `cd` returns to the workspace root). A compound line
-(`cd x && y`) is not intercepted: the `cd` there applies only to that
-subprocess, as in a real shell. Meta-commands are `:`-prefixed (`:help`, `:cwd`,
-`:shell`, `:workspaces`, `:secrets`, `:processes`, `:call`, `:quit`); everything
-else runs. `:workspaces` (or `:ws`) lists workspaces; `:workspaces set <id>`
-switches to another, resetting the cwd to its root and adopting its shell
-default.
-Use `:processes list` (or `:jobs`) to list subprocesses started by Valet, and
-`:processes kill <pid>` (or `:kill <pid>`) to terminate one of them. Ctrl-D
-also exits. Up/Down and Ctrl-P/Ctrl-N recall previously submitted commands.
-Press Tab to complete commands from `PATH` (and shell builtins) or files from the
-current directory. File candidates include a trailing `/` for directories. When
-there is more than one match, valet displays them in two columns; lists taller
-than the terminal are shown through `more`, where `q` returns to the prompt.
+The prompt shows `(workspace) <dir>`. A few behaviors worth knowing:
 
-## Config
+- **`cd` sticks** for the session and is **jailed to the workspace** — `..` and
+  symlinks can't climb above it (a bare `cd` returns to the root). A compound
+  line (`cd x && y`) isn't intercepted; that `cd` applies only to the subprocess,
+  as in a real shell.
+- **Meta-commands** are `:`-prefixed: `:help`, `:cwd`, `:shell`, `:workspaces`
+  (`:ws`; `set <id>` switches, resetting cwd and adopting that workspace's shell
+  default), `:secrets`, `:processes` (`:jobs` to list, `:kill <pid>` to stop a
+  valet subprocess), `:call`, `:quit`. Everything else runs.
+- **History & completion** — Up/Down (or Ctrl-P/Ctrl-N) recall past commands; Tab
+  completes commands and files. **Ctrl-D** exits.
 
-`config.toml` (never committed) sets the socket, the default workspace, and the
-secret sources valet loads so it can redact their values. See
-[`config.example.toml`](https://github.com/anelendata/valet/blob/main/valet/config.example.toml). Per command, valet also
-auto-loads `.env`/`.secrets` from the command's working directory, so a
-project's own secrets are redacted when you run there.
+### Multiple workspaces under one host
 
-### Choosing what to configure
+One host can serve several workspaces, each its own directory jail with its own
+policy and redaction. Manage them from the host:
 
-The knobs split into two families that do fundamentally different things:
-
-- **`[redaction]`** — *let the command run, scrub its **output**.* (masks content)
-- **`[policy]`** — *decide whether the command **runs at all**.* (blocks execution)
-
-| Knob | What it does | Use it when | Example |
-|---|---|---|---|
-| `redaction.secret_file_paths` | Loads secret files matching **glob patterns** and masks their content + values in *any* command's output. **Absolute** patterns (`~/.aws/**`) apply everywhere; **relative** ones (`.env`, `.secrets/**`) resolve against each command's cwd | Files/dirs trusted tools legitimately **use** — both fixed host creds and per-project secrets, in one list | `["~/.aws/**", ".env", ".secrets/**"]` |
-| `policy.deny_exec` | Refuses a command **by program name** (`allow_exec` flips to default-deny; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
-| `policy.deny_read` | Refuses a command that **names an existing file** matching a **glob** — nothing runs (also blocks a trusted tool that *receives* the file as an argument) | You want a file no tool should even **receive** — opt-in, **empty by default** | `["**/.env", "~/.aws/**"]` |
-| `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside the workspace path | Commands should stay within one project tree | `true` |
-| `audit.log_path` | Appends metadata-only JSON objects for requests; streamed execs get an immediate `started` event plus a final event | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
-
-By default, `[exec].shell` is `false`; `valet sh`, REPL shell mode, and direct
-shell executables such as `sh -c` are refused unless the host explicitly sets
-`shell = true`.
-
-**How a `secret_file_paths` pattern is located** — one list, but the pattern's
-form decides where it matches. An **absolute** or `~`-rooted pattern (`~/.aws/**`)
-is matched against the filesystem and applies to **every** command. A **relative**
-pattern (`.env`, `.secrets/**`, `**/.env`) is resolved **against each command's
-cwd**, so one line covers every project. A pattern may name a file, a directory
-(all files under it load), or a glob.
-
-**`secret_file_paths` vs `deny_read`** — the important pairing. A credentialed
-tool like the AWS CLI needs redaction, not a deny:
-
-| | `aws cloudformation list-stacks` (reads creds **internally**, output safe) | `cat ~/.aws/credentials` (a reveal) |
-|---|---|---|
-| `secret_file_paths = ["~/.aws/**"]` | ✅ runs; any leak masked | ✅ runs, content masked |
-| `deny_read = ["~/.aws/**"]` | ✅ runs (doesn't *name* the file) | ⛔ refused before running |
-
-Use **`secret_file_paths`** for files trusted commands must **use** (keeps them
-working, scrubs incidental leaks, and catches a program that opens the file
-without naming it) — this is the default, and it's the whole point of valet: *let
-an agent use privileged tools without seeing the secrets.* **`deny_read`**
-is a **hard block** — it refuses the command outright, so it also stops a trusted
-tool that takes the file as an argument (e.g. `mytool --creds .env`). That's why
-it is **empty by default**. Reach for it only when you would rather a command
-*fail* than trust redaction — for a value that a hijacked command could transform
-(e.g. base64-encode) before printing, which literal redaction cannot follow.
-
-> **Rule of thumb:** "a tool should *use* this secret, the agent shouldn't *see*
-> it" → `secret_file_paths` (the common case). "no tool should
-> even *receive* this file" → `deny_read` (opt-in). "this program shouldn't
-> run" → `policy.deny_exec`.
-
-### Default environment variables
-
-valet exports VALET_WORKSPACE=<real workspace root> into every command's
-environment (exactly like it already sets PWD and prepends <workspace>/bin).
-You can use it like:
-
-```
-# shell=true mode
-AWS_SHARED_CREDENTIALS_FILE=$VALET_WORKSPACE/.aws/credentials aws s3 ls
+```bash
+valet workspaces add personal ~/personal                  # add a workspace
+valet workspaces add personal ~/personal --make-default   # ...and make it default
+valet workspaces list                                     # * marks the default
+valet workspaces remove personal                          # drop the entry, keep the dir
 ```
 
-For the recurring case, set it once in config so you never retype it. Add an [exec].env table that valet applies to every command, expanding $VALET_WORKSPACE:
+Select one per command with `-w`, or switch inside the REPL with
+`:workspaces set <id>`:
 
+```bash
+valet -w personal run -- ls
+valet -w personal sh 'ls | grep foo'
 ```
-[exec.env]
-AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
-AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
+
+Per-workspace overrides of the shared `[exec]`/`[policy]`/`[redaction]` defaults,
+and the `[client].default_workspace` setting, are in
+[Configuration → Workspaces](docs/CONFIGURATION.md#workspaces-and-per-workspace-overrides).
+
+### Running from a node in the local network
+
+Agents on another machine on a trusted LAN can use the host over WebSocket.
+
+**On the host** — enable LAN and restart, then approve a client. `valet clients
+add` prints a client snippet and hot-reloads the daemon:
+
+```toml
+[host]
+lan = true
+listen = "0.0.0.0:8766"
 ```
+
+```bash
+valet clients add my-ai-box     # prints the snippet below
+valet clients list              # also: block / unblock / remove <id>
+```
+
+```toml
+[client]
+id = "my-ai-box"
+key = "xxxxxxxxxxxxxxxxxxxxxxxx"
+default_host = "my-computer"     # reconnect_* tuning keys omitted
+
+[hosts.my-computer]
+url = "ws://<host-lan-ip>:8766/rpc"
+```
+
+**On the client** — drop that snippet into the client's config, then run the same
+commands, resolved through the default host:
+
+```bash
+valet ping
+valet --env AWS_PROFILE=prod run -- aws s3 ls
+valet sh 'aws s3 ls | head'
+valet --host my-computer run -- ls         # target a host explicitly
+```
+
+Reconnect tuning and the full client-config reference are in
+[Configuration](docs/CONFIGURATION.md#client-and-hostsname--client-side).
+
+## Configuration
+
+`config.toml` (git-ignored, written by `valet init`) holds the socket, secret
+sources, policy, workspaces, and audit settings. Per command, valet also
+auto-loads `.env`/`.secrets` from the working directory, so a project's own
+secrets are redacted when you run there — no config change needed.
+
+The mental model is two families of knobs:
+
+- **`[redaction]`** — *let the command run, scrub its **output**.* (the default;
+  the whole point of valet)
+- **`[policy]`** — *decide whether the command **runs at all**.* (opt-in blocks)
+
+**→ Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)** — every
+section and key, plus the annotated
+[`config.example.toml`](https://github.com/anelendata/valet/blob/main/valet/config.example.toml).
 
 ## Guardrails
 
