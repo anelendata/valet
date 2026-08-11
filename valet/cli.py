@@ -61,6 +61,7 @@ from .workspace_config import (
     find_workspace,
     list_workspaces,
     normalize_workspace_id,
+    remove_workspace,
 )
 from .rpc import RpcError, ValetClient, resolve_target
 from .repl import Session, interact
@@ -1294,6 +1295,46 @@ def _cmd_workspace_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workspace_remove(args: argparse.Namespace) -> int:
+    path = Path(args.config) if args.config else default_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Run `valet init` first.", file=sys.stderr)
+        return 2
+
+    raw_id = args.workspace_id.strip()
+    if not raw_id:
+        print("valet workspaces remove: workspace id cannot be empty", file=sys.stderr)
+        return 2
+    try:
+        workspace_id = normalize_workspace_id(raw_id)
+    except ValueError as exc:
+        print(f"valet workspaces remove: {exc}", file=sys.stderr)
+        return 2
+
+    removed = remove_workspace(path, workspace_id)
+    if removed is None:
+        print(f"valet: workspace {workspace_id!r} was not found in {path}",
+              file=sys.stderr)
+        return 1
+
+    print(f"valet: removed workspace {removed.workspace_id!r} from {path}")
+    # The directory is deliberately left in place — valet never deletes it.
+    if removed.path:
+        shown = _home_relative(Path(os.path.expanduser(os.path.expandvars(removed.path))))
+        print(f"valet: the directory was left untouched: {shown}")
+        print("       delete it yourself if you no longer need it.")
+    if removed.was_default:
+        if removed.remaining:
+            print("valet: that was the default workspace; set a new default with "
+                  "`valet workspaces add <id> <dir> --make-default`.")
+        # With no workspaces left, `valet serve` already refuses to start (below).
+    if removed.remaining == 0:
+        print("valet: no workspaces remain; `valet serve` will refuse to start "
+              "until you add one.")
+    print("valet: `valet serve` reloads workspaces automatically.")
+    return 0
+
+
 def _cmd_workspace_list(args: argparse.Namespace) -> int:
     # In client mode (a remote host selected via --host or a client config's
     # default_host), list the remote host's workspaces over RPC. Otherwise read
@@ -1517,6 +1558,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="assume yes to prompts (replace an existing workspace, "
                              "create the directory)")
     ws_add.set_defaults(func=_cmd_workspace_add)
+    ws_remove = workspaces_sub.add_parser(
+        "remove", help="remove a workspace from the config (leaves the directory)")
+    ws_remove.add_argument("workspace_id", metavar="id", help="workspace id to remove")
+    ws_remove.set_defaults(func=_cmd_workspace_remove)
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
     run.add_argument("--cwd", default=argparse.SUPPRESS)

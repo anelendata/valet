@@ -594,6 +594,55 @@ def test_cli_workspace_add_make_default(tmp_path):
     assert load_config(cfg_path).default_workspace == "personal"
 
 
+def test_cli_workspace_remove_deletes_section_but_not_directory(tmp_path, capsys):
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {
+        "default": {"path": str(a)},
+        "extra": {"path": str(b), "lines": [
+            "[workspaces.extra.exec]", "shell = true",
+        ]},
+    })
+
+    rc = main(["-c", str(cfg_path), "workspaces", "remove", "extra"])
+
+    assert rc == 0
+    # Config entry (and its sub-table) is gone...
+    ws = resolve_workspaces(load_config(cfg_path))
+    assert "extra" not in ws and "default" in ws
+    text = cfg_path.read_text()
+    assert "[workspaces.extra" not in text
+    # ...but the directory is left in place, with a note telling the user.
+    assert b.is_dir()
+    out = capsys.readouterr().out
+    assert "left untouched" in out and str(b) in out
+
+
+def test_cli_workspace_remove_clears_default_pointer(tmp_path, capsys):
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {
+        "default": {"path": str(a)},
+        "keep": {"path": str(b)},
+    }, default="default")
+
+    rc = main(["-c", str(cfg_path), "workspaces", "remove", "default"])
+
+    assert rc == 0
+    assert load_config(cfg_path).default_workspace != "default"
+    assert "default workspace" in capsys.readouterr().out
+
+
+def test_cli_workspace_remove_missing_reports_not_found(tmp_path, capsys):
+    a = tmp_path / "a"; a.mkdir()
+    cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
+
+    rc = main(["-c", str(cfg_path), "workspaces", "remove", "nope"])
+
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err
+
+
 def test_cli_workspace_add_declined_creation_leaves_dir_absent(tmp_path, monkeypatch):
     a = tmp_path / "a"; a.mkdir()
     cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})

@@ -26,6 +26,14 @@ class WorkspaceAdd:
     made_default: bool
 
 
+@dataclass(frozen=True)
+class WorkspaceRemove:
+    workspace_id: str
+    path: str
+    was_default: bool
+    remaining: int
+
+
 def normalize_workspace_id(raw: str) -> str:
     """Coerce a workspace id into a config-safe bare-key form.
 
@@ -100,6 +108,35 @@ def add_workspace(
     return WorkspaceAdd(
         workspace_id=normalized, path=workspace_path, made_default=made_default
     )
+
+
+def remove_workspace(path: Path, workspace_id: str) -> WorkspaceRemove | None:
+    """Delete a ``[workspaces.<id>]`` section (and its sub-tables) from the config.
+
+    The workspace *directory on disk is left untouched* — only the config entry is
+    removed. If the removed workspace was the default, the ``default_workspace``
+    pointer is cleared too. Returns the removed entry, or None if not found.
+    """
+    text = path.read_text()
+    normalized = normalize_workspace_id(workspace_id)
+    default_id = _read_default_workspace(text)
+    for wid, start, end in _workspace_sections(text):
+        if wid != normalized:
+            continue
+        ws_path = _read_string_value(text[start:end], "path") or ""
+        was_default = wid == default_id
+        updated = text[:start] + text[end:]
+        if was_default:
+            updated = re.sub(
+                r"(?m)^[ \t]*default_workspace[ \t]*=.*\n?", "", updated, count=1)
+        updated = re.sub(r"\n{3,}", "\n\n", updated).rstrip() + "\n"
+        path.write_text(updated)
+        remaining = len(_workspace_sections(updated))
+        return WorkspaceRemove(
+            workspace_id=wid, path=ws_path,
+            was_default=was_default, remaining=remaining,
+        )
+    return None
 
 
 def _workspace_section(workspace_id: str, workspace_path: str) -> str:
