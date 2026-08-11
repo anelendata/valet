@@ -78,6 +78,8 @@ valet serve                                # leave this running
 In another terminal:
 
 ```bash
+. venv/bin/activate
+
 # Read the demo secret directly — you see the value:
 cat ~/ai-workspace/.secrets/demo.yaml
 # -> secret_key: "demo-only-not-meaningful-fiRzDlOBbSwF8qCgKlWulH35wNbKH"
