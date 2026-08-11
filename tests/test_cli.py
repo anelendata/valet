@@ -328,6 +328,25 @@ def test_doctor_warns_when_audit_log_inside_workspace(tmp_path, capsys):
     assert "audit log is inside the workspace" in out
 
 
+def test_doctor_abbreviates_home_in_paths(tmp_path, monkeypatch, capsys):
+    # doctor must not spell out the real home path / username.
+    home = tmp_path / "home"
+    ws = home / "proj"
+    ws.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    config = home / ".valet" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(_doctor_config(str(ws)))
+
+    rc = main(["-c", str(config), "doctor"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "~/proj" in out                # workspace path abbreviated
+    assert "~/.valet/config.toml" in out  # config path abbreviated
+    assert str(home) not in out           # real home path not disclosed
+
+
 def test_doctor_warns_when_workspace_is_home(tmp_path, capsys, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()

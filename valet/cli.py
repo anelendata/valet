@@ -213,6 +213,24 @@ def _home_relative(path: Path) -> str:
         return str(path)
 
 
+def _abbrev_home(path: str) -> str:
+    """Collapse a leading home prefix to ``~`` for display; other paths unchanged.
+
+    Keeps `valet doctor`/listings from spelling out the username and real home
+    layout. String-based (no realpath of the input) so it doesn't resolve the
+    path's own symlinks; matches either the literal or realpath'd home prefix.
+    """
+    if not path:
+        return path
+    home = os.path.expanduser("~")
+    for base in {home, os.path.realpath(home)}:
+        if path == base:
+            return "~"
+        if path.startswith(base + os.sep):
+            return "~/" + path[len(base) + 1:]
+    return path
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     path = _resolve_config_path(args)
     try:
@@ -226,7 +244,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _doctor_report(path: Path, cfg) -> bool:
     """Print the config summary and sandbox checks; return True if a check failed."""
     print("valet doctor\n")
-    print(f"  config file:  {path}")
+    print(f"  config file:  {_abbrev_home(str(path))}")
     workspaces = resolve_workspaces(cfg)
     print(f"  workspaces:   {len(workspaces)}")
 
@@ -253,7 +271,8 @@ def _doctor_workspace(path: Path, cfg, wid: str, wcfg) -> bool:
     workspace = _resolve_workspace(wcfg.exec.workspace)
     ws_note = "(unset)"
     if workspace:
-        ws_note = f"{workspace}  [{'exists' if os.path.isdir(workspace) else 'MISSING'}]"
+        state = "exists" if os.path.isdir(workspace) else "MISSING"
+        ws_note = f"{_abbrev_home(workspace)}  [{state}]"
     default_mark = " (default)" if wid == cfg.default_workspace else ""
     print()
     print(f"[workspaces.{wid}]{default_mark}")
@@ -265,21 +284,22 @@ def _doctor_workspace(path: Path, cfg, wid: str, wcfg) -> bool:
         f"deny_exec=+{len(wcfg.policy.deny_exec)}  "
         f"allow_exec={'(none)' if not wcfg.policy.allow_exec else ','.join(wcfg.policy.allow_exec)}"
     )
-    print(f"  sandbox:      {wcfg.exec.sandbox_profile or '(not configured)'}")
+    profile = wcfg.exec.sandbox_profile
+    print(f"  sandbox:      {_abbrev_home(profile) if profile else '(not configured)'}")
     print()
 
     warned = False
     home = os.path.realpath(os.path.expanduser("~"))
     if workspace and _within(home, workspace):
         detail = ("your home directory" if workspace == home
-                  else f"a parent of your home directory ({home})")
+                  else f"a parent of your home directory ({_abbrev_home(home)})")
         _doctor_line("WARN", f"workspace path is {detail} — very high risk: the "
                              "agent's blast radius is your whole home. Point it at a "
                              "dedicated project directory.")
         warned = True
 
     for label, where in _paths_inside_workspace(path, cfg, wcfg, workspace):
-        _doctor_line("WARN", f"{label} is inside the workspace ({where}); the "
+        _doctor_line("WARN", f"{label} is inside the workspace ({_abbrev_home(where)}); the "
                              "sandboxed agent can read it — keep it outside "
                              "the workspace path")
         warned = True
