@@ -1,50 +1,13 @@
 name: release
 
-# TestPyPI rehearsal: run this workflow manually (Actions -> release -> Run
-#   workflow). Publishes to test.pypi.org so you can rehearse before the real
-#   thing.
-# Real PyPI: push a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
-# Both use Trusted Publishing (OIDC) — no API token is stored in the repo.
+# Push a version tag (e.g. `git tag v0.0.1 && git push origin v0.0.1`) to build
+# and publish to PyPI via Trusted Publishing (OIDC) — no API token in the repo.
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -e ".[test]"
-      - run: python -m pytest -q
-
-  publish-testpypi:
-    # Manual runs rehearse against TestPyPI.
-    if: github.event_name == 'workflow_dispatch'
-    needs: test
-    runs-on: ubuntu-latest
-    environment: testpypi
-    permissions:
-      id-token: write   # required for Trusted Publishing
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install build
-      - run: python -m build
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true   # a repeat rehearsal of the same version won't fail
-
-  publish-pypi:
-    # A version tag publishes to real PyPI.
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+  publish:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
