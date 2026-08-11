@@ -1,50 +1,39 @@
 # valet — example config. Copy to config.toml (git-ignored) and edit.
+# Easiest: `valet init <workspace_dir>` writes ~/.valet/config.toml for you.
 #
-#   valet init <workspace_dir>   # writes ~/.valet/config.toml for you (recommended)
+# valet runs a command and returns its output with known secret VALUES scrubbed.
+# v0.2 is permissive — it runs almost any command. Two control families:
+#   [redaction] — command RUNS; its OUTPUT is scrubbed
+#   [policy]    — decide whether the command RUNS AT ALL
 #
-# or copy this file by hand and edit workspace + fingerprint_salt yourself:
-#   cp config.example.toml config.toml
-#
-# valet is a secret-redacting command runner: it runs a command and returns the
-# output with known secret VALUES scrubbed out. v0.2 is intentionally
-# permissive — it will run (almost) any command.
-#
-# Two families of controls do fundamentally different things:
-#   [redaction] — let the command RUN, scrub its OUTPUT (masks content)
-#   [policy]    — decide whether the command RUNS AT ALL (blocks execution)
-#
-# Rule of thumb:
-#   "a tool should USE this secret, agent shouldn't SEE it" (the common case,
-#     and valet's whole reason to exist)          -> redaction.secret_file_paths
-#   "no tool should even RECEIVE this file"        -> policy.deny_read
-#     (a hard block; also stops trusted tools from using it — opt in only)
-#   "this program shouldn't run"                   -> policy.deny
-# See the "Choosing what to configure" section in README.md for the full table.
+# Which to reach for:
+#   tool should USE a secret, agent shouldn't SEE it -> redaction.secret_file_paths
+#   no tool should even RECEIVE a file               -> policy.deny_read (opt-in)
+#   a program shouldn't run                          -> policy.deny_exec
+# See "Choosing what to configure" in README.md for the full table.
 
 [broker]
-# Unix-domain-socket the daemon listens on. Created 0600, owned by you, so the
-# OS is the access-control layer — no port, no token, no network surface.
+# Unix socket the daemon listens on (created 0600, owned by you — the OS is the
+# access control; no port, token, or network surface).
 socket_path = "~/.valet/broker.sock"
 
 # Hard wall-clock limit per command (seconds).
 timeout_seconds = 60
 
-# Optional. If set, redaction tags are stable across restarts. If left as
-# CHANGE_ME (or removed), valet generates an ephemeral salt at startup.
+# Optional. Set for redaction tags stable across restarts; left as CHANGE_ME (or
+# removed), valet generates an ephemeral salt at startup.
 fingerprint_salt = "CHANGE_ME_or_run_valet_init"
 
 [host]
-# Level 1 trusted-LAN WebSocket RPC host settings. The LAN listener is disabled
-# unless lan = true. Bind to 127.0.0.1 for local testing, or deliberately choose
-# a LAN interface such as 0.0.0.0 only on a trusted network.
+# Level 1 trusted-LAN WebSocket host. Disabled unless lan = true. Use 127.0.0.1
+# for local testing, or a LAN interface (e.g. 0.0.0.0) only on a trusted network.
 id = "my-computer"
 lan = false
 listen = "127.0.0.1:8766"
 
-# Client config lives in this same file. Every command except `valet serve`
-# reads its [client] and [hosts.<name>] sections from this config.toml by
-# default (override with -c, or $VALET_CLIENT_CONFIG for a separate file). With
-# no [hosts], client commands talk to the local daemon over the Unix socket.
+# Client config lives in this same file: every command except `valet serve` reads
+# [client] and [hosts.<name>] from here (override with -c / $VALET_CLIENT_CONFIG).
+# With no [hosts], client commands use the local daemon over the Unix socket.
 #
 # [client]
 # id = "my-computer"
@@ -54,132 +43,92 @@ listen = "127.0.0.1:8766"
 # reconnect_backoff_seconds = 0.25
 # reconnect_backoff_max_seconds = 3.0
 #
-# Name the section after the host's [host].id; host_id then defaults to it and
-# needs no separate line. Set host_id only to label the section differently.
+# Name [hosts.<name>] after the host's [host].id and host_id defaults to it.
 # [hosts.my-computer]
 # url = "ws://192.168.1.25:8766/rpc"
-# The reconnect keys can also be set under [hosts.<name>] to override one host.
 
 [identity.clients]
-# Approved Level 1 clients go here. Let valet generate and update this section:
+# Approved Level 1 clients. Let valet manage this section:
 #   valet clients add local-ai-box --url ws://192.168.1.25:8766/rpc
-#   valet clients list
-#   valet clients remove local-ai-box
-# Then put the printed client-only TOML snippet on the client machine and run
-# `valet serve` on this host.
-#
-# `valet serve` reloads changes to approved clients automatically. Restart only
-# when changing listener bind settings such as [host].lan or [host].listen.
+#   valet clients list / remove <id>
+# Put the printed client snippet on the client machine, then `valet serve` here.
+# `valet serve` reloads client changes automatically; restart only when changing
+# [host].lan or [host].listen.
 
 [audit]
-# Optional newline-delimited JSON audit log. Each line is one JSON object, so
-# the server can append safely without rewriting the whole file.
-#
-# The audit log records metadata such as caller, transport, command shape,
-# policy decision, exit code, duration, and redaction counts. It does not store
-# raw stdout/stderr or known secret values.
+# Optional newline-delimited JSON audit log (one object per line). Records
+# metadata — caller, transport, command shape, policy decision, exit code,
+# duration, redaction counts — never raw stdout/stderr or secret values.
 log_path = "~/.valet/audit.jsonl"
 
-# When running `valet serve` or `valet serve-lan`, also print each audit event
-# to the server console in a human-readable logging style.
+# Also print each audit event to the server console (human-readable) under
+# `valet serve` / `valet serve-lan`.
 console = true
 
 [exec]
-# Everything under [exec], [policy], and [redaction] is the DEFAULT for every
-# workspace. Each [workspaces.<id>] section (added with `valet workspaces add`)
-# can override exec/policy/redaction per key; anything it does not set falls back
-# to these defaults.
+# [exec], [policy], and [redaction] here are the DEFAULTS for every workspace;
+# each [workspaces.<id>] can override any key.
 #
-# This config ships with NO workspace. Add your first one after `valet init`:
+# This config ships with NO workspace. Add your first after `valet init`:
 #     valet workspaces add <id> <dir>
-# That creates a [workspaces.<id>] section, sets [exec].default_workspace to it,
-# and scaffolds the directory. `valet serve` refuses to start until one exists.
-#
-# default_workspace names the workspace a command runs in when none is named;
-# `valet workspaces add` manages it, so it is left unset here. Select another
-# workspace per command with `valet -w <id> run ...`, or `:workspaces set <id>`
-# in the REPL.
+# `valet serve` refuses to start until one exists. default_workspace (used when a
+# command names none) is managed by `valet workspaces add`, so it is left unset.
 #   default_workspace = "<id>"
 
-# Shell execution is disabled by default. Leave this false unless you trust all
-# clients of this host and need shell syntax such as pipes, globs, redirects, or
-# `&&`. Prefer `valet --env NAME=value run ...` for per-command env vars.
+# Shell execution off by default. Enable only if you trust all clients and need
+# pipes/globs/redirects/&&. Prefer `valet --env NAME=value run ...` for env vars.
 shell = false
 
-# Optional OS sandbox (macOS). Path to a sandbox-exec (.sb) profile; when set,
-# every command is run as `sandbox-exec -D WORKSPACE=<workspace> -f <profile>
-# <command>`, a real kernel boundary that command-line policy cannot provide.
-# Requires the workspace path to be set, and `sandbox-exec` on PATH. A ready
-# profile ships in contrib/sandbox-exec/workspace.sb — copy it somewhere stable
-# and point here. Leave unset to run commands without an OS sandbox.
+# Optional macOS OS sandbox: path to a sandbox-exec (.sb) profile. When set, every
+# command runs under `sandbox-exec`, a real kernel boundary policy can't provide.
+# Needs the workspace path set and `sandbox-exec` on PATH; a ready profile ships
+# in contrib/sandbox-exec/workspace.sb. Leave unset to run without an OS sandbox.
 #   sandbox_profile = "~/.valet/workspace.sb"
 
-# Every command's environment includes VALET_WORKSPACE = the workspace root, so
-# you can reference files inside the workspace from any subdirectory without a
-# fragile ../../.. path. Useful under the sandbox, where ~/.aws is unreadable:
-# copy credentials into the workspace and point the AWS CLI at them.
-#
-# [exec.env] sets default env vars for EVERY command ($VALET_WORKSPACE expands
-# to the workspace root); per-command env (inline `NAME=value` or --env) wins.
-# Example — then just run `AWS_PROFILE=tiny aws s3 ls ...`, no path needed:
+# Every command's env includes VALET_WORKSPACE = the workspace root, so you can
+# reference workspace files from any subdirectory without ../../.. paths.
+# [exec.env] sets default env vars for every command ($VALET_WORKSPACE expands);
+# per-command env (inline `NAME=value` or --env) wins.
 #   [exec.env]
 #   AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
 #   AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
 
 # ==== WORKSPACES =============================================================
-# A workspace is a dedicated directory the agent's commands are confined to, and
-# the root of the REPL's cd jail: `cd` sticks for the session but cannot climb
-# above it (.. and symlinks are resolved first). The workspace is presented as a
-# virtual root — it appears as "./" (a child as "./child") — and the real parent
-# path is stripped from all output during redaction, so `pwd` and any absolute
-# path under it never disclose the directories above. If the workspace root has
-# a `bin/` directory, it is prepended to PATH.
+# A workspace is a dedicated directory commands are confined to, and the REPL's
+# cd jail: `cd` cannot climb above it (.. and symlinks resolved first). It appears
+# as the virtual root "./", and the real parent path is stripped from all output.
+# A `bin/` at the root is prepended to PATH.
 #
-# Point each workspace at a dedicated project directory, NOT your home: the
-# workspace is the blast radius commands are confined to, so "~" would expose
-# your whole home.
+# Point each workspace at a project directory, NOT your home ("~" would expose
+# your whole home — the workspace is the blast radius).
 #
-# Add workspaces with the CLI (recommended) rather than editing by hand:
+# Add with the CLI (recommended); each `add` writes a section and scaffolds the
+# directory (bin/, tools/, skills/, projects/, tmp/, README.md):
 #     valet workspaces add work ~/work/project     # first one becomes default
 #     valet workspaces add personal ~/personal --make-default
 #     valet workspaces list
 #
-# Each `add` writes a section like the ones below and scaffolds the directory
-# (bin/, tools/, skills/, README.md). Per-key overrides of the [exec] / [policy]
-# / [redaction] defaults above go in optional sub-tables:
+# Per-key overrides of the [exec]/[policy]/[redaction] defaults go in sub-tables:
 #   [workspaces.personal]
 #   path = "~/personal"
-#
 #   [workspaces.personal.exec]
 #   shell = true
-#
 #   [workspaces.personal.policy]
-#   deny = ["rm"]
-#
+#   deny_exec = ["rm"]
 #   [workspaces.personal.redaction]
 #   extra_values = ["a-token-only-this-workspace-uses"]
 
 [redaction]
-# ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
+# ==== FAMILY 1: scrub OUTPUT (the command still runs) ====
 #
-# secret_file_paths: glob patterns naming the secret files/directories that
-# trusted commands legitimately USE. Their contents are masked from EVERY
-# command's output. Same glob syntax as policy.deny_read (** / * / ?), and
-# how a pattern is located depends on whether it is absolute or relative:
-#   - ABSOLUTE or ~-rooted ("~/.aws/**")  -> matched against the filesystem;
-#     applies to every command regardless of where it runs.
-#   - RELATIVE (".env", ".secrets/**", "**/.env") -> resolved against each
-#     command's working directory, so a project's own secrets are redacted when
-#     you run there, without listing every project.
-# A pattern may name a file, a directory (all files under it are loaded), or a
-# glob. For each matched file valet redacts:
-#   1. the ENTIRE file content as one blob — so `cat`/`less`/any full dump is
-#      masked wholesale, regardless of format (ini, .env, JSON, bare token, PEM);
-#   2. the individual structured values (KEY=VALUE / ini / json / yaml) — so a
-#      single secret leaking on its own (e.g. `echo $KEY`) is caught too.
-# Missing paths are skipped. Files over ~1 MB skip the whole-blob step but are
-# still parsed for values. (A recursive "**/" pattern walks the tree on every
-# command — cheap for a project dir, prefer a shallow pattern for huge trees.)
+# secret_file_paths: globs (** / * / ?) naming secret files/dirs that trusted
+# commands legitimately USE; their contents are masked from EVERY command's
+# output. ABSOLUTE / ~-rooted patterns match the filesystem (apply everywhere);
+# RELATIVE ones resolve against each command's cwd. A pattern may name a file, a
+# directory (all files under it), or a glob. For each match valet masks the whole
+# file content (so any full dump is caught) plus its structured values (KEY=VALUE
+# / ini / json / yaml). Missing paths skipped; files >1 MB skip the whole-blob
+# step. A "**/" pattern walks the tree per command — prefer shallow for huge trees.
 secret_file_paths = [
     "~/.aws/**",
     ".env", ".config/**", ".secrets/**", "secrets/**",
@@ -189,78 +138,50 @@ secret_file_paths = [
 # Extra literal strings to always redact (e.g. a token not stored in a file).
 extra_values = []
 
-# Heuristically mask values that *look* secret, even when valet does not know
-# the exact value (e.g. secrets a command fetched from a parameter store at
-# runtime, like `aws secretsmanager get-secret-value`). On by default. It masks:
-#   - the VALUE of an assignment whose KEY name looks sensitive
-#     (password / secret / token / api_key / credential / auth / ...),
-#   - the `value:` field of a key:/value: object pair (secrets-dump format), and
-#   - known token shapes (AWS/GitHub/GitLab/Slack/Stripe/Google, JWT, PEM).
-# The key name stays visible; only the value is masked. Set to false to keep
-# output verbatim.
+# Mask values that *look* secret even when valet doesn't know the exact value
+# (e.g. fetched at runtime). Covers the value of a sensitively-named key, the
+# `value:` of a key/value pair, and known token shapes (AWS/GitHub/Slack/Stripe/
+# Google, JWT, PEM). Key names stay visible. Set false to keep output verbatim.
 redact_suspected = true
 
-# OFF by default and noisy: mask long high-entropy tokens ANYWHERE in output,
-# even a bare string with no key name or known shape (e.g. a token a command
-# just prints on its own). It skips git SHAs / hashes (hex), UUIDs, decimal ids,
-# and filesystem paths, but will still sometimes mask base64 blobs or random-
-# looking IDs that are not secrets. Enable per environment if you need it.
+# OFF by default, noisy: mask long high-entropy tokens ANYWHERE, even a bare
+# string with no key name or known shape. Skips git SHAs/hashes, UUIDs, decimal
+# ids, and paths, but may still mask base64 blobs or random-looking non-secrets.
 redact_high_entropy = true
 
 [policy]
-# ==== FAMILY 2: block EXECUTION — decide whether the command runs at all ====
+# ==== FAMILY 2: block EXECUTION (decide whether a command runs) ====
 #
-# PERMISSIVE by default except for Valet's built-in dangerous command bans:
-# environment/process/system-control commands such as env/printenv/kill/pkill/
-# killall/ps/sudo/reboot, common shell executables when [exec].shell=false, and
-# valet itself. Use `valet processes list` and `valet processes kill <pid>` to
-# inspect or stop subprocesses started by Valet.
+# PERMISSIVE by default except valet's built-in bans (env/process/system control
+# like env/kill/sudo/reboot, shells when [exec].shell=false, and valet itself).
+# Inspect/stop subprocesses with `valet processes list` / `kill <pid>`.
 #
-# Everything below is additional local policy.
+# Command-line policy is best-effort static analysis, not a real boundary — for a
+# hard guarantee use the OS sandbox (see contrib/sandbox-exec/).
 #
-# Command-line policy is best-effort static analysis, not a real boundary: a
-# determined client can compute paths or use tools that read/write internally.
-# For a hard guarantee, run commands under an OS sandbox — see
-# contrib/sandbox-exec/ for a macOS prototype.
-#
-# allow_exec: an empty list means "allow everything not otherwise denied". Set a
-# non-empty list to switch to DEFAULT-DENY: only these command basenames may run
-# (cd/pushd/popd stay available for navigation). Strongest posture; opt in when
-# you know the exact tools the client needs, e.g. allow_exec = ["python", "ls", "cat"].
+# allow_exec: empty = allow everything not otherwise denied. A non-empty list
+# flips to DEFAULT-DENY: only these basenames run (cd/pushd/popd still allowed),
+# e.g. allow_exec = ["python", "ls", "cat"].
 allow_exec = []
 
-# deny_exec: additional program-name deny list (matched on the command's
-# basename), on top of the built-in dangerous-command bans. Use to forbid a whole
-# tool, e.g. deny_exec = ["rm", "npm"].
+# deny_exec: extra program-name bans (by basename) on top of the built-ins,
+# e.g. deny_exec = ["rm", "npm"].
 deny_exec = []
 
-# deny_read: glob patterns of files a command may not reference — valet refuses
-# to RUN a command that names an existing matching file. It is a HARD block,
-# all-or-nothing: it also stops a trusted tool from USING the file (e.g.
-# `mytool --creds .env`), which is the opposite of what valet is for. valet's
-# whole point is to let an agent use privileged tools WITHOUT seeing the secrets,
-# and redaction (FAMILY 1 above) is how that is achieved — the command runs and
-# the secret is scrubbed from its output. Secret files/directories are already
-# covered there via [redaction].secret_file_paths, so this list is EMPTY by
-# default. Reach for deny_read only for files no tool should even receive
-# — where you would rather the command fail than trust redaction (redaction
-# masks known literal values but cannot follow a value that is transformed, e.g.
-# base64-encoded, before being printed).
-# The analyzer is shell-aware: it splits on ; && || | and tracks cd, so
-# `cd dir; cat .env` is caught the same as `cat dir/.env`.
-# Supports ** (any depth), * and ?. Examples (opt in by uncommenting):
-#   "**/.env"          ban reading any .env, wherever it sits
-#   "**/.secrets/**"   ban anything under any .secrets directory
-#   "~/.aws/**"        ban anything under ~/.aws
+# deny_read: globs of files a command may not name — valet refuses to RUN it. A
+# HARD block that also stops a trusted tool from USING the file (`mytool --creds
+# .env`), the opposite of what valet is for; redaction (FAMILY 1) is the usual
+# answer and already covers secret files via secret_file_paths, so this is EMPTY
+# by default. Use it only for files no tool should even receive — where you'd
+# rather the command fail than trust redaction (which can't follow a value that is
+# transformed, e.g. base64-encoded, before printing). Shell-aware: splits on
+# ; && || | and tracks cd. Examples: "**/.env", "**/.secrets/**", "~/.aws/**".
 deny_read = []
 
-# DEFAULT ON. Refuse a command whose existing file/directory arguments, or
-# requested cwd, resolve outside [exec].workspace — including ../ paths and
-# symlinks that point outside. Best-effort command-line analysis, not an OS
-# sandbox: a command can still compute or open a path internally.
+# DEFAULT ON. Refuse a command whose existing path argument or cwd resolves
+# outside [exec].workspace (../ and symlinks included). Best-effort, not a sandbox.
 enforce_workspace_reads = true
 
-# DEFAULT ON. Refuse a command whose path-like argument (absolute, ~-rooted, or
-# containing a separator) resolves outside the workspace, even if it does not
-# exist yet — so a new file cannot be written outside. Same best-effort caveat.
+# DEFAULT ON. Refuse a command whose path-like argument resolves outside the
+# workspace even if it doesn't exist yet, so nothing is written outside.
 enforce_workspace_writes = true
