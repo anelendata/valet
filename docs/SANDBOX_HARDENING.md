@@ -14,6 +14,14 @@ authorization; OpenAI's Codex safety guidance combines sandboxing, command
 rules, managed configuration, approvals, network policy, and agent-aware
 telemetry.
 
+**valet is not a sandbox for itself.** It is a broker the agent calls, running as
+the same user from the same binary — so it cannot stop an agent with native host
+access from reading its config (`~/.valet/config.toml`, which holds the LAN
+client keys) or running its admin subcommands (`serve`, `doctor`, `clients`,
+`workspaces`). That boundary is the agent sandbox's job: deny reads of `~/.valet`
+and allow only `valet run`/`sh` (see the hardening guide). The agent reaches the
+daemon over the broker socket, so it never needs to read `~/.valet` directly.
+
 ## Claude Code setting example
 
 A ready-to-copy version of this file, already including the `~/.valet` and

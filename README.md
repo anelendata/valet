@@ -37,7 +37,7 @@ Benefits:
   - [Interactive shell (REPL)](#interactive-shell-repl)
   - [Audit logging](#audit-logging)
   - [Multi-transport: one host, many agents](#multi-transport-one-host-many-agents)
-- [Valet is not...](#valet-is-not)
+  - [Valet is not...](#valet-is-not)
 - [Before getting started](#before-getting-started)
   - [Recommended architecture](#recommended-architecture)
   - [Sandbox hardening](#sandbox-hardening)
@@ -248,7 +248,7 @@ The same `valet run` / `valet sh` / REPL commands work over either transport:
 Every request records its transport (`uds` or `lan`) in the audit log, so a
 shared host stays accountable.
 
-## Valet is not...
+### Valet is not...
 
 valet sits near several popular security and agent-infrastructure products, but
 it is a different layer:
@@ -272,7 +272,7 @@ valet is defense-in-depth, not a guarantee — see
 
 ### Recommended architecture
 
-valet is meant to be one layer in a larger agent safety design:
+Valet is meant to be one layer in a larger agent safety design:
 
 1. **Sandboxed agents** — the model runs where it cannot directly read secret
    files or freely reach privileged host resources.
@@ -284,35 +284,23 @@ valet is meant to be one layer in a larger agent safety design:
 5. **Audit/approval** — sensitive or mutating actions are logged and, when
    appropriate, require a human or higher-trust approval path.
 
-valet's current implementation focuses on **3. policy**, **4. redaction**, and
-the audit part of **5. audit/approval**. Human approval flows are still future
-work.
+valet's focuses on **3. policy**, **4. redaction**, and **5. audit/approval**.
 
 Valet relies on **1. agent sandboxes** and **2. least-privilege credentials** as
-complementary layers. Those layers are the operator's responsibility. Valet can
-help enforce an authorization and redaction boundary, but it cannot protect
-against negligent setup, over-broad host credentials, disabled sandboxes, or
-approving a dangerous action without understanding its blast radius.
+complementary layers. Those layers are the operator's responsibility.
 
-**WARNING:** valet is intentionally permissive today. Raw command execution is
-dangerously powerful when the host has credentials with write, delete, deploy,
-or payment privileges.
+Valet can help enforce an authorization and redaction boundary, but it cannot
+protect against negligent setup, over-broad host credentials, disabled sandboxes
+, or approving a dangerous action without understanding its blast radius.
 
 ### Sandbox hardening
 
-The agent runtime should be hardened before Valet is added. Treat Valet as the
-privileged broker, not as the only safety control.
+Valet can run without hardening Claude Code, Codex, or other coding agents.
+However, it is strongly recommended to harden the agent sandbox before you let
+AI agents use your computer via Valet. Treat Valet as the privileged broker,
+not as the only safety control.
 
-**valet is not a sandbox for itself.** It is a broker the agent calls, running as
-the same user from the same binary — so it cannot stop an agent with native host
-access from reading its config (`~/.valet/config.toml`, which holds the LAN
-client keys) or running its admin subcommands (`serve`, `doctor`, `clients`,
-`workspaces`). That boundary is the agent sandbox's job: deny reads of `~/.valet`
-and allow only `valet run`/`sh` (see the hardening guide). The agent reaches the
-daemon over the broker socket, so it never needs to read `~/.valet` directly.
-
-**IMPROTANT**: Follow [Sandbox Hardening Guide](https://github.com/anelendata/valet/blob/main/docs/SANDBOX_HARDENING.md)
-before installing valet!
+Follow [Sandbox Hardening Guide](https://github.com/anelendata/valet/blob/main/docs/SANDBOX_HARDENING.md) before installing valet.
 
 ## Install & run
 
