@@ -45,8 +45,13 @@ from .client_config import (
     unset_client_default_workspace,
     write_new_client_config,
 )
-from .config import default_config_path, load_config, resolve_workspaces
-from .errors import ValetError, ValidationError
+from .config import (
+    client_fallback_broker_config,
+    default_config_path,
+    load_config,
+    resolve_workspaces,
+)
+from .errors import ConfigError, ValetError, ValidationError
 from .host_config import (
     client_config_snippet,
     find_client_identity,
@@ -492,8 +497,21 @@ def _connect(args: argparse.Namespace) -> tuple[ValetClient, object, object | No
         force_local=args.local,
         client_config_path=args.config,
     )
-    cfg = load_config(args.config) if not target.is_remote else None
+    cfg = None if target.is_remote else _local_broker_config(args)
     return ValetClient(target, cfg), target, cfg
+
+
+def _local_broker_config(args: argparse.Namespace):
+    """Broker config for a local (UDS) client — just to learn the socket path.
+
+    Falls back to the default socket when the host config can't be read (a
+    hardened sandbox may deny it): an unprivileged client only needs to reach
+    the daemon over the well-known socket, which the sandbox grants separately.
+    """
+    try:
+        return load_config(args.config)
+    except (ConfigError, OSError):
+        return client_fallback_broker_config()
 
 
 def _cmd_repl(args: argparse.Namespace) -> int:

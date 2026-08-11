@@ -19,10 +19,41 @@ from .errors import ConfigError
 
 DEFAULT_CONFIG_ENV = "VALET_CONFIG"
 DEFAULT_CONFIG_NAME = "config.toml"
+DEFAULT_SOCKET_NAME = "broker.sock"
 
 
 def _expand(path: str) -> str:
     return os.path.expanduser(os.path.expandvars(path))
+
+
+def _path_exists(path: Path) -> bool:
+    """``Path.exists()`` that treats a denied ``stat()`` as "not visible".
+
+    A hardened agent sandbox can deny ``stat()`` on the host config path; then
+    ``exists()`` raises ``PermissionError`` instead of returning ``False``.
+    Treating that as not-usable lets an unprivileged client fall back (default
+    socket, empty client config) instead of crashing before it can connect.
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def default_socket_path() -> str:
+    """The well-known broker socket path, used when the config can't be read."""
+    return _expand(f"~/.valet/{DEFAULT_SOCKET_NAME}")
+
+
+def client_fallback_broker_config() -> "BrokerConfig":
+    """Minimal broker config for a local (UDS) client that can't read the host
+    config. Only ``socket_path`` is meaningful client-side; the daemon enforces
+    everything else. Lets a sandboxed client reach the daemon over the known
+    socket without needing read access to ``~/.valet/config.toml``."""
+    return BrokerConfig(
+        socket_path=default_socket_path(), timeout_seconds=60,
+        fingerprint_salt="",
+    )
 
 
 @dataclass(frozen=True)
@@ -174,14 +205,14 @@ def default_config_path() -> Path:
     user = Path(_expand(f"~/.valet/{DEFAULT_CONFIG_NAME}"))
     repo = Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_NAME
     for candidate in (user, repo):
-        if candidate.exists():
+        if _path_exists(candidate):
             return candidate
     return user
 
 
 def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     cfg_path = Path(path) if path is not None else default_config_path()
-    if not cfg_path.exists():
+    if not _path_exists(cfg_path):
         raise ConfigError(
             f"config not found at {cfg_path}. Run `valet init` to create it "
             f"(or set {DEFAULT_CONFIG_ENV})."
@@ -191,6 +222,10 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
             raw = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"config is not valid TOML: {exc}") from exc
+    except OSError as exc:
+        # File is present but unreadable (e.g. a sandbox denies it). Surface a
+        # clean ConfigError so client callers can fall back instead of crashing.
+        raise ConfigError(f"config at {cfg_path} could not be read: {exc}") from exc
 
     broker = raw.get("broker", {})
     exec_ = raw.get("exec", {})

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .config import default_config_path
+from .config import _path_exists, default_config_path
 from .errors import ConfigError
 
 DEFAULT_CLIENT_CONFIG_ENV = "VALET_CLIENT_CONFIG"
@@ -65,7 +65,7 @@ def load_client_config(
     required: bool = False,
 ) -> ClientConfig:
     cfg_path = Path(path) if path is not None else default_client_config_path()
-    if not cfg_path.exists():
+    if not _path_exists(cfg_path):
         if required:
             raise ConfigError(f"client config not found at {cfg_path}")
         return ClientConfig(path=cfg_path, id="", key="", default_host="",
@@ -75,6 +75,13 @@ def load_client_config(
             raw = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"client config is not valid TOML: {exc}") from exc
+    except OSError:
+        # Present but unreadable (sandbox-denied). An unprivileged client does
+        # not need it — treat as empty so startup can fall back to the socket.
+        if required:
+            raise ConfigError(f"client config at {cfg_path} could not be read")
+        return ClientConfig(path=cfg_path, id="", key="", default_host="",
+                            hosts={}, default_workspace="")
 
     client = raw.get("client", {})
     client_id = str(client.get("id", ""))

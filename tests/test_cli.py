@@ -1,6 +1,59 @@
+import argparse
 from pathlib import Path
 
+import pytest
+
 from valet.cli import main
+
+
+def _deny_stat_on_config(monkeypatch):
+    """Make Path.exists() raise PermissionError for `config.toml` (as a hardened
+    sandbox does by denying stat), leaving other paths untouched."""
+    real = Path.exists
+
+    def patched(self):
+        if self.name == "config.toml":
+            raise PermissionError(1, "Operation not permitted")
+        return real(self)
+
+    monkeypatch.setattr(Path, "exists", patched)
+
+
+def test_config_discovery_survives_denied_stat(monkeypatch):
+    # Regression: a sandbox denies stat() on ~/.valet/config.toml, so exists()
+    # raises PermissionError. Client-side discovery must not crash with it.
+    import valet.config as C
+    import valet.client_config as CC
+    from valet.errors import ConfigError
+
+    _deny_stat_on_config(monkeypatch)
+
+    assert C.default_config_path().name == "config.toml"      # no crash
+    cc = CC.load_client_config()                              # no crash
+    assert cc.id == "" and cc.default_host == ""              # treated as absent
+    with pytest.raises(ConfigError):                          # clean, not PermissionError
+        C.load_config()
+
+
+def test_connect_local_falls_back_to_default_socket_when_config_denied(monkeypatch):
+    import valet.cli as cli
+
+    _deny_stat_on_config(monkeypatch)
+    args = argparse.Namespace(config=None, host=None, local=True)
+    cfg = cli._local_broker_config(args)
+
+    assert cfg.socket_path.replace("\\", "/").endswith("/.valet/broker.sock")
+
+
+def test_status_does_not_crash_when_config_stat_denied(monkeypatch, capsys):
+    # `valet status` with a denied host config and no daemon must report
+    # unreachable cleanly, never surface an uncaught PermissionError.
+    _deny_stat_on_config(monkeypatch)
+
+    rc = main(["status"])
+
+    assert rc == 0
+    assert "connection status" in capsys.readouterr().out
 
 
 def test_example_config_is_packaged_and_parses():
