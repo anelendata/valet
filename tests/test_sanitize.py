@@ -46,6 +46,26 @@ def test_backstop_masks_email_addresses():
     assert out == "Contact [REDACTED:email] or [REDACTED:email]."
 
 
+def test_secret_file_paths_are_not_masked_only_their_contents():
+    # A secret file's PATH is not itself secret (the agent can list it); masking
+    # it is meaningless noise. Only the file's contents (a known value) are hidden.
+    red = Redactor.build(["swy-session-tok-abcdef123456"], salt="s")
+    out = red.redact(
+        "updated ./projects/safeway/.secrets/swy_shared_session.txt "
+        "token=swy-session-tok-abcdef123456"
+    )
+    assert "./projects/safeway/.secrets/swy_shared_session.txt" in out
+    assert "secret_path" not in out and "env_path" not in out
+    assert "swy-session-tok-abcdef123456" not in out
+
+
+def test_home_aws_credential_path_is_still_de_identified():
+    red = Redactor.build([], salt="s")
+    out = red.redact("loaded /Users/alice/.aws/credentials profile default")
+    assert "/Users/alice/.aws/credentials" not in out
+    assert "[REDACTED:aws_path]" in out
+
+
 def test_suspected_can_be_disabled():
     red = Redactor.build([], salt="s", suspected=False)
     out = red.redact("DB_PASSWORD=plaintextsecret")

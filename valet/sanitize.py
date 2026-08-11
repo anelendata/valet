@@ -32,11 +32,15 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL),
      "[REDACTED:pem]"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[REDACTED:aws_key_id]"),
-    # secret paths under a home dir
+    # A home-dir credential path de-identifies the username (and works even in
+    # non-workspace mode, where the home->~ rewrite is off). NOT a general
+    # secret-file-path mask: the *paths* of secret files (.secrets/, .env, ...)
+    # are not themselves secret — the agent can list them — and masking them just
+    # turns useful output like "updated .secrets/token.txt" into noise. The
+    # file *contents* are what matter, and those are handled by value redaction
+    # (secret_file_paths), not here.
     (re.compile(r"/(?:home|Users)/[^/\s\"']+/\.aws/[^\s\"':]+"),
      "[REDACTED:aws_path]"),
-    (re.compile(r"/[^\s\"':]*/\.secrets\b"), "[REDACTED:secret_path]"),
-    (re.compile(r"/[^\s\"':]*/\.env\b"), "[REDACTED:env_path]"),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
      "[REDACTED:email]"),
     # bare 12-digit AWS account id (after ARNs already consumed)
