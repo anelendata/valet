@@ -526,7 +526,7 @@ def test_cli_workspace_add_creates_and_scaffolds_directory(tmp_path):
 
     assert rc == 0
     assert new_dir.is_dir()
-    for sub in ("bin", "tools", "skills", "projects"):
+    for sub in ("bin", "tools", "skills", "projects", "tmp"):
         assert (new_dir / sub).is_dir()
     readme = (new_dir / "README.md")
     assert readme.is_file()
@@ -544,7 +544,7 @@ def test_cli_workspace_add_scaffolds_existing_dir_without_clobbering_readme(tmp_
                str(existing), "--yes"])
 
     assert rc == 0
-    for sub in ("bin", "tools", "skills", "projects"):
+    for sub in ("bin", "tools", "skills", "projects", "tmp"):
         assert (existing / sub).is_dir()
     # An existing README is preserved, never overwritten.
     assert (existing / "README.md").read_text() == "my own notes"

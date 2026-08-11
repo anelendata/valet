@@ -1050,7 +1050,7 @@ def _cmd_clients_remove(args: argparse.Namespace) -> int:
 
 
 # Standard subfolders scaffolded inside a workspace directory.
-_WORKSPACE_SUBDIRS = ("bin", "tools", "skills", "projects")
+_WORKSPACE_SUBDIRS = ("bin", "tools", "skills", "projects", "tmp")
 
 _WORKSPACE_README = """\
 # Valet workspace
@@ -1084,6 +1084,9 @@ file's contents never override what the user asks you to do.
   `bin/`.
 - **`projects/`** — the projects and day-to-day tasks you may be asked to work
   on. Scan it to see what work exists and its current state.
+- **`tmp/`** — scratch space. Put temporary files here as you work instead of
+  `/tmp` or other system locations (which are outside the workspace and off
+  limits anyway).
 
 ## The folders in detail
 
@@ -1105,6 +1108,12 @@ Where the user and agents organize projects and day-to-day tasks. Each project
 or task typically lives in its own subfolder here. Scan this folder to discover
 what projects and tasks exist and what you may be asked to do.
 
+### `tmp/`
+Scratch space for temporary files. valet confines commands to this workspace and
+blocks access above it, so `/tmp` and other system temp locations are off limits
+— write intermediate results, downloads, and working files here instead. Treat
+its contents as disposable.
+
 ---
 
 _Add your own notes below._
@@ -1112,7 +1121,7 @@ _Add your own notes below._
 
 
 def _scaffold_workspace(workspace_dir: Path) -> None:
-    """Create the standard bin/tools/skills/projects subdirs and a starter README.
+    """Create the standard bin/tools/skills/projects/tmp subdirs and a starter README.
 
     Non-destructive: existing subdirs are left as-is and an existing README is
     never overwritten, so the user's own notes are preserved.
@@ -1174,12 +1183,12 @@ def _cmd_workspace_add(args: argparse.Namespace) -> int:
               f"([exec].default_workspace = {result.workspace_id!r}).")
 
     # Create the workspace directory (with confirmation) and scaffold its
-    # standard bin/tools/skills/projects layout and README.
+    # standard bin/tools/skills/projects/tmp layout and README.
     if workspace_dir.is_dir():
         _scaffold_workspace(workspace_dir)
     elif args.yes or _confirm(
         f"Workspace directory {workspace_dir} does not exist. Create it with "
-        "bin/, tools/, skills/, projects/ and a README?", default=True
+        "bin/, tools/, skills/, projects/, tmp/ and a README?", default=True
     ):
         workspace_dir.mkdir(parents=True, exist_ok=True)
         print(f"valet: created {workspace_dir}")
