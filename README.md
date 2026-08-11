@@ -55,10 +55,10 @@ Benefits:
   - [Tests](#tests)
 
 More...
-- [Roadmap](./docs/ROADMAP.md)
-- [Threat model](./docs/THREAT_MODEL.md)
-- [Google Workspace CLI (`gws`) through valet](./docs/google-workspace-cli.md)
-- [Set up a workspace-wide Python venv](./docs/workspace-python-venv.md)
+- [Roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md)
+- [Threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md)
+- [Google Workspace CLI (`gws`) through valet](https://github.com/anelendata/valet/blob/main/docs/google-workspace-cli.md)
+- [Set up a workspace-wide Python venv](https://github.com/anelendata/valet/blob/main/docs/workspace-python-venv.md)
 
 
 ## Quick demo
@@ -318,7 +318,7 @@ redaction, and approval boundary around privileged actions.
 ## Before getting started
 
 valet is defense-in-depth, not a guarantee — see
-[Threat model](./docs/THREAT_MODEL.md) for what it does and doesn't stop.
+[Threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md) for what it does and doesn't stop.
 
 ### Recommended architecture
 
@@ -361,7 +361,7 @@ client keys) or running its admin subcommands (`serve`, `doctor`, `clients`,
 and allow only `valet run`/`sh` (see the hardening guide). The agent reaches the
 daemon over the broker socket, so it never needs to read `~/.valet` directly.
 
-**IMPROTANT**: Follow [Sandbox Hardening Guide](./docs/SANDBOX_HARDENING.md)
+**IMPROTANT**: Follow [Sandbox Hardening Guide](https://github.com/anelendata/valet/blob/main/docs/SANDBOX_HARDENING.md)
 before installing valet!
 
 ## Install & run
@@ -624,7 +624,7 @@ than the terminal are shown through `more`, where `q` returns to the prompt.
 
 `config.toml` (never committed) sets the socket, the default workspace, and the
 secret sources valet loads so it can redact their values. See
-[`config.example.toml`](valet/config.example.toml). Per command, valet also
+[`config.example.toml`](https://github.com/anelendata/valet/blob/main/valet/config.example.toml). Per command, valet also
 auto-loads `.env`/`.secrets` from the command's working directory, so a
 project's own secrets are redacted when you run there.
 

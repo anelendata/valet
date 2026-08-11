@@ -3,6 +3,12 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.6 — 2026-08-10
+
+- Docs: fixed broken links on the PyPI project page. README links to `docs/*`
+  and the bundled example config now use absolute GitHub URLs, since PyPI can't
+  resolve relative repo paths.
+
 ## 0.0.5 — 2026-08-10
 
 - **Fixed:** normal client commands (`valet`, `valet status`, `valet run`)
