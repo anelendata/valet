@@ -187,6 +187,7 @@ Merge these into the baseline above (keep the `.env`/`.secrets`/`.aws` denials):
   "permissions": {
     "deny": [
       "Read(~/.valet/**)",
+      "Bash(~/.valet/**)",
       "Bash(valet serve:*)",
       "Bash(valet doctor:*)",
       "Bash(valet init:*)",
@@ -203,14 +204,20 @@ Merge these into the baseline above (keep the `.env`/`.secrets`/`.aws` denials):
   },
   "sandbox": {
     "filesystem": {
-      "denyRead": ["~/.valet", "~/.valet/**"]
+      "denyRead": ["~/.valet/config.toml"]
     }
   }
 }
 ```
 
-The broker socket stays reachable through `sandbox.network.allowUnixSockets`
-(`~/.valet/broker.sock`), which is unaffected by the `denyRead` above.
+The tool-level `permissions.deny` entries (`Read`/`Bash`) can be broad
+(`~/.valet/**`) — they gate Claude's Read/Bash tools and never touch the socket.
+For the **OS sandbox** `filesystem.denyRead`, target `~/.valet/config.toml`
+specifically rather than the whole `~/.valet` directory: on macOS Seatbelt a
+directory-wide `denyRead` can also block `~/.valet/broker.sock`, and the agent
+reaches the daemon through that socket (granted by
+`sandbox.network.allowUnixSockets`). Add `~/.valet/audit.jsonl` too if you keep
+the audit log there.
 
 ### Codex
 
@@ -219,8 +226,7 @@ Add `~/.valet` to `deny_read` and reject the admin subcommands:
 ```toml
 [permissions.filesystem]
 deny_read = [
-  "~/.valet",
-  "~/.valet/**",
+  "~/.valet/config.toml",   # add ~/.valet/audit.jsonl too if you keep the log there
 ]
 
 [rules]
@@ -228,6 +234,9 @@ prefix_rules = [
   { pattern = [{ token = "valet" }, { any_of = ["serve", "doctor", "init", "clients", "workspaces", "call"] }], decision = "reject", justification = "valet admin/introspection subcommands are for the host operator, not the agent." },
 ]
 ```
+
+As with Claude Code, deny the config file specifically rather than the whole
+`~/.valet` directory so the sandbox does not block the broker socket.
 
 Keep the existing `prompt` rule on bare `valet` so anything not matched still
 requires approval.
