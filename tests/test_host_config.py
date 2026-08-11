@@ -101,9 +101,12 @@ def test_serve_uses_configured_host_daemon(tmp_path, monkeypatch):
     assert called["config_path"] == path
 
 
-def test_clients_add_updates_host_config(tmp_path, capsys):
+def test_clients_add_updates_host_config(tmp_path, capsys, monkeypatch):
     path = tmp_path / "config.toml"
     _config(path)
+    # Pin IP detection off so the placeholder is deterministic regardless of the
+    # host running the tests.
+    monkeypatch.setattr("valet.cli._detect_lan_ip", lambda: None)
 
     rc = main(["-c", str(path), "clients", "add", "local box"])
 
@@ -118,6 +121,32 @@ def test_clients_add_updates_host_config(tmp_path, capsys):
     assert "[hosts.test-host]" in out
     assert "host_id" not in out
     assert 'url = "ws://<host-lan-ip>:8766/rpc"' in out
+
+
+def test_clients_add_fills_detected_lan_ip(tmp_path, capsys, monkeypatch):
+    path = tmp_path / "config.toml"
+    _config(path)
+    # A wildcard-bound host fills the detected LAN IP into the client snippet.
+    monkeypatch.setattr("valet.cli._detect_lan_ip", lambda: "192.168.1.42")
+
+    rc = main(["-c", str(path), "clients", "add", "local box"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert 'url = "ws://192.168.1.42:8766/rpc"' in out
+
+
+def test_clients_add_url_flag_overrides_detection(tmp_path, capsys, monkeypatch):
+    path = tmp_path / "config.toml"
+    _config(path)
+    # An explicit --url always wins, even when detection would succeed.
+    monkeypatch.setattr("valet.cli._detect_lan_ip", lambda: "192.168.1.42")
+
+    rc = main(["-c", str(path), "clients", "add", "local box",
+               "--url", "ws://valet.example:9999/rpc"])
+
+    assert rc == 0
+    assert 'url = "ws://valet.example:9999/rpc"' in capsys.readouterr().out
 
 
 def test_clients_add_rotates_existing_with_yes(tmp_path):
@@ -222,7 +251,7 @@ def test_reloaded_config_updates_broker_and_websocket_server_state(cfg):
     ws_server = _FakeWsServer(cfg)
     new_cfg = dataclasses.replace(
         cfg,
-        policy=dataclasses.replace(cfg.policy, deny=("echo",)),
+        policy=dataclasses.replace(cfg.policy, deny_exec=("echo",)),
         identity=IdentityConfig(
             clients={"new-client": ClientIdentity(key="new-key")}
         ),

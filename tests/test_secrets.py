@@ -50,3 +50,44 @@ def test_load_secret_values_masks_yaml_value(tmp_path):
     src.write_text("api_token: yaml-loaded-secret-value\n")
     values = load_secret_values([str(src)])
     assert "yaml-loaded-secret-value" in values
+
+
+def test_load_secret_values_expands_directory_recursively(tmp_path):
+    # A directory source loads every file beneath it — this is what lets a
+    # *directory* of secrets (e.g. `.secrets/`) be redacted, not just a file
+    # literally named `.secrets`.
+    d = tmp_path / "secretdir"
+    (d / "nested").mkdir(parents=True)
+    (d / "session.txt").write_text("swy-session-9f83ab21c4d5e6f7a8b90\n")
+    (d / "nested" / "extra.env").write_text("API_KEY=abcd1234efgh5678ijkl9012\n")
+
+    values = load_secret_values([str(d)])
+
+    assert "swy-session-9f83ab21c4d5e6f7a8b90" in values
+    assert "abcd1234efgh5678ijkl9012" in values
+
+
+def test_load_secret_values_expands_recursive_glob(tmp_path):
+    d = tmp_path / "secretdir"
+    (d / "nested").mkdir(parents=True)
+    (d / "nested" / "deep.txt").write_text("token-value-deep-abcdef123456\n")
+
+    values = load_secret_values([str(d / "**")])
+
+    assert "token-value-deep-abcdef123456" in values
+
+
+def test_load_secret_values_shallow_glob_skips_nested(tmp_path):
+    d = tmp_path / "secretdir"
+    (d / "nested").mkdir(parents=True)
+    (d / "top.txt").write_text("top-secret-value-abcdef123456\n")
+    (d / "nested" / "deep.txt").write_text("deep-secret-value-abcdef123456\n")
+
+    values = load_secret_values([str(d / "*")])
+
+    assert "top-secret-value-abcdef123456" in values
+    assert "deep-secret-value-abcdef123456" not in values
+
+
+def test_load_secret_values_tolerates_missing_source(tmp_path):
+    assert load_secret_values([str(tmp_path / "does-not-exist.txt")]) == []

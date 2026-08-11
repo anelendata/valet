@@ -44,10 +44,12 @@ class ExecConfig:
 
 @dataclass(frozen=True)
 class RedactionConfig:
-    # Files whose *values* are loaded and blocked from all output.
-    secret_sources: tuple[str, ...] = ()
-    # Filenames auto-loaded from each command's cwd (e.g. project .env/.secrets).
-    cwd_secret_files: tuple[str, ...] = (".env", ".secrets")
+    # Glob patterns naming secret files whose contents are loaded and masked from
+    # all output. Same syntax as policy.deny_read. An absolute or ~-rooted
+    # pattern (e.g. "~/.aws/**") is matched against the filesystem and applies to
+    # every command; a relative pattern (e.g. ".env", ".secrets/**", "**/.env")
+    # is resolved against each command's working directory.
+    secret_file_paths: tuple[str, ...] = (".env", ".secrets")
     # Extra literal strings to always redact.
     extra_values: tuple[str, ...] = ()
     # Heuristically mask values that *look* secret (sensitive key names, known
@@ -60,12 +62,12 @@ class RedactionConfig:
 
 @dataclass(frozen=True)
 class PolicyConfig:
-    # Empty allow == allow everything not otherwise denied. Set a non-empty list
-    # to switch to default-deny: only these command names may run.
-    allow: tuple[str, ...] = ()
-    deny: tuple[str, ...] = ()
+    # Empty allow_exec == allow everything not otherwise denied. Set a non-empty
+    # list to switch to default-deny: only these command names may run.
+    allow_exec: tuple[str, ...] = ()
+    deny_exec: tuple[str, ...] = ()
     # Glob patterns of files a command may not reference (supports ** / * / ?).
-    deny_read_paths: tuple[str, ...] = ()
+    deny_read: tuple[str, ...] = ()
     # Confine command-line paths to the workspace. Both default on: reads reject
     # existing paths outside it, writes reject path-like targets outside it.
     enforce_workspace_reads: bool = True
@@ -299,13 +301,9 @@ def _parse_exec_table(table: dict, base: ExecConfig, *, path: object) -> ExecCon
 
 def _parse_redaction_table(table: dict, base: RedactionConfig) -> RedactionConfig:
     return RedactionConfig(
-        secret_sources=(
-            tuple(_expand(s) for s in table["secret_sources"])
-            if "secret_sources" in table else base.secret_sources
-        ),
-        cwd_secret_files=(
-            tuple(table["cwd_secret_files"])
-            if "cwd_secret_files" in table else base.cwd_secret_files
+        secret_file_paths=(
+            tuple(table["secret_file_paths"])
+            if "secret_file_paths" in table else base.secret_file_paths
         ),
         extra_values=(
             tuple(table["extra_values"])
@@ -318,11 +316,14 @@ def _parse_redaction_table(table: dict, base: RedactionConfig) -> RedactionConfi
 
 def _parse_policy_table(table: dict, base: PolicyConfig) -> PolicyConfig:
     return PolicyConfig(
-        allow=tuple(table["allow"]) if "allow" in table else base.allow,
-        deny=tuple(table["deny"]) if "deny" in table else base.deny,
-        deny_read_paths=(
-            tuple(table["deny_read_paths"])
-            if "deny_read_paths" in table else base.deny_read_paths
+        allow_exec=(
+            tuple(table["allow_exec"]) if "allow_exec" in table else base.allow_exec
+        ),
+        deny_exec=(
+            tuple(table["deny_exec"]) if "deny_exec" in table else base.deny_exec
+        ),
+        deny_read=(
+            tuple(table["deny_read"]) if "deny_read" in table else base.deny_read
         ),
         enforce_workspace_reads=bool(
             table.get("enforce_workspace_reads", base.enforce_workspace_reads)

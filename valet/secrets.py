@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import configparser
 import json
+import os
 import re
+from glob import glob, has_magic
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import yaml
 
@@ -179,17 +181,41 @@ def _load_one(path: Path) -> list[str]:
     return values
 
 
+def _expand_source(src: str) -> Iterator[str]:
+    """Resolve one configured source to the concrete files it names.
+
+    A plain file path is yielded as-is (``_load_one`` tolerates a missing one).
+    A glob pattern (``.secrets/**``) expands recursively to its file matches, and
+    a directory is walked for every file beneath it — so a *directory* of secrets
+    (e.g. ``.secrets/``) has all its contents loaded into the redactor, not just
+    a file that happens to be named ``.secrets``.
+    """
+    if has_magic(src):
+        for match in glob(src, recursive=True):
+            if os.path.isfile(match):
+                yield match
+        return
+    if os.path.isdir(src):
+        for root, _dirs, files in os.walk(src):
+            for name in files:
+                yield os.path.join(root, name)
+        return
+    yield src
+
+
 def load_secret_values(sources: Iterable[str]) -> list[str]:
     """Return the de-duplicated, redaction-worthy secret values from sources.
 
-    For each source, both the whole file content and its structured values are
+    Each source may be a file, a glob, or a directory (see ``_expand_source``).
+    For every file, both the whole file content and its structured values are
     collected. Longest first, so that when one value contains another (e.g. the
     whole-file blob contains an individual value) the longer, more specific
     redaction is applied first.
     """
     found: set[str] = set()
     for src in sources:
-        for value in _load_one(Path(src)):
-            if _keep(value):
-                found.add(value.strip() if isinstance(value, str) else str(value))
+        for path in _expand_source(src):
+            for value in _load_one(Path(path)):
+                if _keep(value):
+                    found.add(value.strip() if isinstance(value, str) else str(value))
     return sorted(found, key=len, reverse=True)

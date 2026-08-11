@@ -35,6 +35,7 @@ import secrets as _secrets
 import shutil
 import subprocess
 import sys
+from glob import has_magic
 from pathlib import Path
 
 from .client_config import (
@@ -236,8 +237,8 @@ def _doctor_workspace(path: Path, cfg, wid: str, wcfg) -> bool:
     print(
         f"  policy:       reads={_onoff(wcfg.policy.enforce_workspace_reads)} "
         f"writes={_onoff(wcfg.policy.enforce_workspace_writes)}  "
-        f"deny=+{len(wcfg.policy.deny)}  "
-        f"allow={'(none)' if not wcfg.policy.allow else ','.join(wcfg.policy.allow)}"
+        f"deny_exec=+{len(wcfg.policy.deny_exec)}  "
+        f"allow_exec={'(none)' if not wcfg.policy.allow_exec else ','.join(wcfg.policy.allow_exec)}"
     )
     print(f"  sandbox:      {wcfg.exec.sandbox_profile or '(not configured)'}")
     print()
@@ -299,8 +300,13 @@ def _paths_inside_workspace(config_path: Path, cfg, wcfg, workspace: str) -> lis
         candidates.append(("sandbox profile", wcfg.exec.sandbox_profile))
     if cfg.audit.log_path:
         candidates.append(("audit log", cfg.audit.log_path))
-    for src in wcfg.redaction.secret_sources:
-        candidates.append(("secret source", str(src)))
+    for pattern in wcfg.redaction.secret_file_paths:
+        resolved = os.path.expanduser(os.path.expandvars(pattern))
+        # Only a concrete absolute file is a fixed "secret source" that could sit
+        # inside the workspace by mistake; relative names (a project's own .env)
+        # are expected there, and globs have no single location.
+        if os.path.isabs(resolved) and not has_magic(resolved):
+            candidates.append(("secret source", resolved))
     return [(label, p) for label, p in candidates if _within(p, workspace)]
 
 
@@ -1260,10 +1266,33 @@ def _workspace_list_remote(args: argparse.Namespace, host_name: str) -> int:
     return 0
 
 
+def _detect_lan_ip() -> str | None:
+    """Best-effort primary LAN IPv4 of this host.
+
+    Opens a UDP socket toward a public address and reads back the local address
+    the OS would route through — no packet is actually sent, so this needs no
+    network access. Returns None (and the caller keeps a placeholder) if the IP
+    can't be determined or looks like loopback.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    return ip if ip and not ip.startswith("127.") else None
+
+
 def _default_lan_url(listen: str) -> str:
     host, port = listen.rsplit(":", 1) if ":" in listen else (listen, "8766")
+    # A wildcard bind (0.0.0.0/::) doesn't name a reachable address, so fill in
+    # the host's detected LAN IP; fall back to a placeholder if detection fails.
     if host in ("", "0.0.0.0", "::"):
-        host = "<host-lan-ip>"
+        host = _detect_lan_ip() or "<host-lan-ip>"
     return f"ws://{host}:{port}/rpc"
 
 

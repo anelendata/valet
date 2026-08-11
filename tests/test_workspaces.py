@@ -1,10 +1,13 @@
 """Multiple workspaces under one host: config, broker routing, CLI, REPL."""
+import dataclasses
+
 import pytest
 
-from valet.broker import Broker
+from valet.broker import Broker, Workspace
 from valet.cli import main
 from valet.config import load_config, resolve_workspaces
 from valet.errors import ConfigError
+from valet.policy import Policy
 from valet.repl import Session, prompt_for, run_command
 from valet.workspace_config import add_workspace, find_workspace, list_workspaces
 
@@ -19,7 +22,7 @@ def _write_config(path, workspaces, *, default="default", extra=""):
         "shell = false",
         "",
         "[policy]",
-        'deny = ["curl"]',
+        'deny_exec = ["curl"]',
         "",
         extra,
     ]
@@ -41,18 +44,18 @@ def test_defaults_apply_and_overrides_win(tmp_path):
         "default": {"path": str(a)},
         "personal": {"path": str(b), "lines": [
             "[workspaces.personal.exec]", "shell = true",
-            "[workspaces.personal.policy]", 'deny = ["rm"]',
+            "[workspaces.personal.policy]", 'deny_exec = ["rm"]',
         ]},
     })
 
     cfg = load_config(cfg_path)
     ws = resolve_workspaces(cfg)
 
-    # Shared [policy].deny=curl reaches both; personal overrides deny with rm.
+    # Shared [policy].deny_exec=curl reaches both; personal overrides it with rm.
     assert ws["default"].exec.shell is False
-    assert ws["default"].policy.deny == ("curl",)
+    assert ws["default"].policy.deny_exec == ("curl",)
     assert ws["personal"].exec.shell is True
-    assert ws["personal"].policy.deny == ("rm",)
+    assert ws["personal"].policy.deny_exec == ("rm",)
     assert ws["personal"].exec.workspace == str(b)
 
 
@@ -156,7 +159,7 @@ def two_ws_broker(tmp_path):
         "default": {"path": str(a)},
         "personal": {"path": str(b), "lines": [
             "[workspaces.personal.exec]", "shell = true",
-            "[workspaces.personal.policy]", 'deny = ["rm"]',
+            "[workspaces.personal.policy]", 'deny_exec = ["rm"]',
         ]},
     })
     return Broker(load_config(cfg_path)), a, b
@@ -453,6 +456,58 @@ def test_workspace_info_when_no_readme(cfg):
     resp = Broker(cfg).handle({"op": "workspace_info"})
     assert resp["ok"] and resp["has_readme"] is False
     assert resp["readme"] is None
+
+
+def test_redactor_masks_token_from_cwd_secrets_directory(cfg, workspace):
+    # The intended replacement for a hard `.secrets` deny: a directory of secrets
+    # named in secret_file_paths has its contents loaded into the redactor, so a
+    # command that emits the token gets it masked instead of being blocked.
+    secrets = workspace / "secretbox"
+    secrets.mkdir()
+    (secrets / "session.txt").write_text("swy-session-9f83ab21c4d5e6f7a8b90\n")
+    redaction = dataclasses.replace(cfg.redaction, secret_file_paths=("secretbox",))
+    ws = Workspace(
+        "w", cfg.exec, redaction,
+        Policy.from_config(cfg.policy, cfg.exec.workspace),
+        cfg.fingerprint_salt,
+    )
+
+    redactor = ws.redactor_for(str(workspace))
+    masked = redactor.redact("token is swy-session-9f83ab21c4d5e6f7a8b90 here")
+
+    assert "swy-session-9f83ab21c4d5e6f7a8b90" not in masked
+
+
+def test_secret_file_paths_absolute_pattern_applies_to_any_cwd(cfg, workspace, tmp_path):
+    # An absolute pattern is filesystem-matched and must mask regardless of the
+    # command's cwd (applies to every command, wherever it runs).
+    creds = tmp_path / "outside" / "creds.txt"
+    creds.parent.mkdir()
+    creds.write_text("absolute-secret-token-abcdef123456\n")
+    redaction = dataclasses.replace(cfg.redaction, secret_file_paths=(str(creds),))
+    ws = Workspace("w", cfg.exec, redaction,
+                   Policy.from_config(cfg.policy, cfg.exec.workspace),
+                   cfg.fingerprint_salt)
+
+    masked = ws.redactor_for(str(workspace)).redact("val absolute-secret-token-abcdef123456 x")
+
+    assert "absolute-secret-token-abcdef123456" not in masked
+
+
+def test_secret_file_paths_recursive_relative_glob_resolves_against_cwd(cfg, workspace):
+    # A relative `**/creds.env` pattern resolves against the command's cwd and
+    # catches a nested secret file (relative patterns are cwd-rooted, glob-capable).
+    nested = workspace / "sub" / "proj"
+    nested.mkdir(parents=True)
+    (nested / "creds.env").write_text("API_KEY=nested-env-secret-abcdef123456\n")
+    redaction = dataclasses.replace(cfg.redaction, secret_file_paths=("**/creds.env",))
+    ws = Workspace("w", cfg.exec, redaction,
+                   Policy.from_config(cfg.policy, cfg.exec.workspace),
+                   cfg.fingerprint_salt)
+
+    masked = ws.redactor_for(str(workspace)).redact("k nested-env-secret-abcdef123456 z")
+
+    assert "nested-env-secret-abcdef123456" not in masked
 
 
 def test_workspace_info_unknown_workspace_is_rejected(cfg):

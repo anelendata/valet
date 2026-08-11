@@ -338,7 +338,7 @@ In the host,
 valet init                              # create ~/.valet/config.toml
                                         # (macOS: + OS sandbox), then a health check. y/n prompts.
 valet workspaces add work ~/work/project  # add your first workspace (becomes default)
-$EDITOR ~/.valet/config.toml            # set secret_sources, tune policy, etc.
+$EDITOR ~/.valet/config.toml            # set secret_file_paths, tune policy, etc.
 
 valet serve                             # start the daemon (keep this shell open)
 valet doctor                            # re-check config health anytime
@@ -375,7 +375,7 @@ default_workspace = "default"      # used when no workspace is named
 shell = false                      # default for all workspaces
 
 [policy]
-deny = ["curl"]                    # denied in every workspace
+deny_exec = ["curl"]               # denied in every workspace
 
 [workspaces.default]
 path = "~/work/project"
@@ -385,7 +385,7 @@ path = "~/personal"
 [workspaces.personal.exec]
 shell = true                       # overrides the [exec] default, personal only
 [workspaces.personal.policy]
-deny = ["rm"]                      # replaces the shared deny list for personal
+deny_exec = ["rm"]                 # replaces the shared deny list for personal
 ```
 
 Manage them from the host:
@@ -575,10 +575,9 @@ The knobs split into two families that do fundamentally different things:
 
 | Knob | What it does | Use it when | Example |
 |---|---|---|---|
-| `redaction.secret_sources` | Loads specific files **by absolute path** and masks their content + values in *any* command's output | You have **fixed, known** secret files that trusted tools legitimately **use** | `~/.aws/credentials` |
-| `redaction.cwd_secret_files` | Same, but **by filename**, auto-loaded from **whatever dir the command runs in** | Per-**project** secrets that live in each project dir | `.env`, `.secrets` |
-| `policy.deny` | Refuses a command **by program name** (`allow` reserved; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
-| `policy.deny_read_paths` | Refuses a command that **names an existing file** matching a **glob** — nothing runs | You want to flatly **ban revealing** a file's content | `["**/.env", "~/.aws/**"]` |
+| `redaction.secret_file_paths` | Loads secret files matching **glob patterns** and masks their content + values in *any* command's output. **Absolute** patterns (`~/.aws/**`) apply everywhere; **relative** ones (`.env`, `.secrets/**`) resolve against each command's cwd | Files/dirs trusted tools legitimately **use** — both fixed host creds and per-project secrets, in one list | `["~/.aws/**", ".env", ".secrets/**"]` |
+| `policy.deny_exec` | Refuses a command **by program name** (`allow_exec` flips to default-deny; empty = allow all) | You want to forbid a **whole tool** | `["curl", "rm"]` |
+| `policy.deny_read` | Refuses a command that **names an existing file** matching a **glob** — nothing runs (also blocks a trusted tool that *receives* the file as an argument) | You want a file no tool should even **receive** — opt-in, **empty by default** | `["**/.env", "~/.aws/**"]` |
 | `policy.enforce_workspace_reads` | Refuses existing command-line paths or an explicit `cwd` outside the workspace path | Commands should stay within one project tree | `true` |
 | `audit.log_path` | Appends metadata-only JSON objects for requests; streamed execs get an immediate `started` event plus a final event | You want a durable record of what valet allowed, denied, or rejected | `~/.valet/audit.jsonl` |
 
@@ -586,29 +585,35 @@ By default, `[exec].shell` is `false`; `valet sh`, REPL shell mode, and direct
 shell executables such as `sh -c` are refused unless the host explicitly sets
 `shell = true`.
 
-**`secret_sources` vs `cwd_secret_files`** — both feed the same redactor; the
-difference is only *how the file is located*. `secret_sources` is one fixed
-path, masked in **every** command's output. `cwd_secret_files` is a **name**
-resolved **relative to each command's cwd**, so one line covers all projects.
+**How a `secret_file_paths` pattern is located** — one list, but the pattern's
+form decides where it matches. An **absolute** or `~`-rooted pattern (`~/.aws/**`)
+is matched against the filesystem and applies to **every** command. A **relative**
+pattern (`.env`, `.secrets/**`, `**/.env`) is resolved **against each command's
+cwd**, so one line covers every project. A pattern may name a file, a directory
+(all files under it load), or a glob.
 
-**`secret_sources` vs `deny_read_paths`** — the important pairing. A credentialed
-tool like the AWS CLI needs both:
+**`secret_file_paths` vs `deny_read`** — the important pairing. A credentialed
+tool like the AWS CLI needs redaction, not a deny:
 
 | | `aws cloudformation list-stacks` (reads creds **internally**, output safe) | `cat ~/.aws/credentials` (a reveal) |
 |---|---|---|
-| `secret_sources = ["~/.aws/credentials"]` | ✅ runs; any leak masked | ✅ runs, content masked |
-| `deny_read_paths = ["~/.aws/**"]` | ✅ runs (doesn't *name* the file) | ⛔ refused before running |
+| `secret_file_paths = ["~/.aws/**"]` | ✅ runs; any leak masked | ✅ runs, content masked |
+| `deny_read = ["~/.aws/**"]` | ✅ runs (doesn't *name* the file) | ⛔ refused before running |
 
-Use **`secret_sources`** for files trusted commands must **use** (keeps them
+Use **`secret_file_paths`** for files trusted commands must **use** (keeps them
 working, scrubs incidental leaks, and catches a program that opens the file
-without naming it). Use **`deny_read_paths`** to flatly forbid **displaying** a
-file (`cat`/`less`/`grep`) — all-or-nothing, but only for files named on the
-command line. They're complementary: the ban stops the obvious `cat`, redaction
-scrubs whatever slips through another way.
+without naming it) — this is the default, and it's the whole point of valet: *let
+an agent use privileged tools without seeing the secrets.* **`deny_read`**
+is a **hard block** — it refuses the command outright, so it also stops a trusted
+tool that takes the file as an argument (e.g. `mytool --creds .env`). That's why
+it is **empty by default**. Reach for it only when you would rather a command
+*fail* than trust redaction — for a value that a hijacked command could transform
+(e.g. base64-encode) before printing, which literal redaction cannot follow.
 
-> **Rule of thumb:** "a command should be able to *use* this file" →
-> `secret_sources` / `cwd_secret_files`. "no one should *see* this file" →
-> `deny_read_paths`. "this program shouldn't run" → `policy.deny`.
+> **Rule of thumb:** "a tool should *use* this secret, the agent shouldn't *see*
+> it" → `secret_file_paths` (the common case). "no tool should
+> even *receive* this file" → `deny_read` (opt-in). "this program shouldn't
+> run" → `policy.deny_exec`.
 
 ### Default environment variables
 
@@ -662,7 +667,7 @@ pytest
 ```
 
 The suite covers: commands run and their output is captured; known secret
-values (from `secret_sources`, cwd `.env`/`.secrets`, and `extra_values`) are
+values (from `secret_file_paths` and `extra_values`) are
 redacted from stdout and stderr; the pattern backstop masks ARNs/account
 IDs/keys; nonzero exits and missing binaries are reported; unknown ops, missing
 `cmd`, and bad `cwd` are rejected; the deny list blocks a command; streamed

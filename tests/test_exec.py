@@ -317,7 +317,7 @@ def test_bare_single_string_secret_file_is_redacted(cfg, workspace, tmp_path):
     c = dataclasses.replace(
         cfg,
         redaction=dataclasses.replace(
-            cfg.redaction, secret_sources=(str(token_file),)),
+            cfg.redaction, secret_file_paths=(str(token_file),)),
     )
     resp = Broker(c).handle(
         {"op": "exec", "cmd": "cat auth_token.txt", "cwd": str(workspace)}
@@ -339,7 +339,7 @@ def test_whole_file_content_masked_as_one_blob(cfg, workspace, tmp_path):
     c = dataclasses.replace(
         cfg,
         redaction=dataclasses.replace(
-            cfg.redaction, secret_sources=(str(creds),)),
+            cfg.redaction, secret_file_paths=(str(creds),)),
     )
     resp = Broker(c).handle(
         {"op": "exec", "cmd": "cat credentials", "cwd": str(workspace)}

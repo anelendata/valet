@@ -272,10 +272,18 @@ class Workspace:
         return self.real_from_virtual(raw_cwd, root)
 
     def redactor_for(self, cwd: Optional[str], *, extra_values=()) -> Redactor:
-        sources = list(self.redaction.secret_sources)
-        if cwd:
-            for name in self.redaction.cwd_secret_files:
-                sources.append(os.path.join(cwd, name))
+        # Each secret_file_paths entry is a glob (like deny_read). An
+        # absolute / ~-rooted pattern applies to every command; a relative one is
+        # resolved against this command's cwd. load_secret_values then expands the
+        # globs/directories to concrete files and masks their contents.
+        sources = []
+        for pattern in self.redaction.secret_file_paths:
+            resolved = os.path.expanduser(os.path.expandvars(pattern))
+            if os.path.isabs(resolved):
+                sources.append(resolved)
+            elif cwd:
+                sources.append(os.path.join(cwd, resolved))
+            # A relative pattern with no cwd can't be located; skip it.
         values = load_secret_values(sources)
         # Config-listed literals are always masked; env values (e.g. an inline
         # `NAME=value` prefix or --env) are masked only if long enough to look

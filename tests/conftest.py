@@ -41,8 +41,9 @@ def cfg(workspace, secret_file):
         fingerprint_salt="test-salt-fixed",
         exec=ExecConfig(workspace=str(workspace), shell=True),
         redaction=RedactionConfig(
-            secret_sources=(str(secret_file),),
-            cwd_secret_files=("env_values_test", "secret_values_test"),
+            secret_file_paths=(
+                str(secret_file), "env_values_test", "secret_values_test",
+            ),
             extra_values=(),
         ),
         policy=PolicyConfig(),

@@ -1123,7 +1123,7 @@ carry the constraints. Available now:
   command input or output target, including shell redirects. This guard is
   hard-coded and cannot be relaxed in `config.toml`; completion also hides the
   filename.
-- **wildcard file bans** (`deny_read_paths`) — glob patterns (`**`, `*`, `?`) of
+- **wildcard file bans** (`deny_read`) — glob patterns (`**`, `*`, `?`) of
   files a command may not reference; valet refuses to run a command that names
   an existing matching file, so its content is never revealed. `**/.env` bans
   reading any `.env` anywhere; `~/.aws/**` bans anything under `~/.aws`. The
@@ -1144,8 +1144,8 @@ carry the constraints. Available now:
 
 Still to come:
 
-  as `deny_read_paths` and is not an OS sandbox.
-- **command allow list** (`allow`, empty = allow all today) becomes a strict
+  as `deny_read` and is not an OS sandbox.
+- **command allow list** (`allow_exec`, empty = allow all today) becomes a strict
   allowlist when populated.
 - **workspace write-jail** (`enforce_workspace_writes`) will forbid writes
   outside the configured `workspace`.

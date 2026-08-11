@@ -66,8 +66,8 @@ cost and conspicuousness of a leak — not an airtight seal.
 
 ## Why redaction is stronger than a regex scrubber
 
-valet can read the credential files the agent cannot, so for each file listed in
-`secret_sources` it redacts **the entire file content as one blob** *and* the
+valet can read the credential files the agent cannot, so for each file matched by
+`secret_file_paths` it redacts **the entire file content as one blob** *and* the
 individual structured values ([`valet/secrets.py`](../valet/secrets.py) →
 [`valet/sanitize.py`](../valet/sanitize.py)):
 
@@ -103,7 +103,7 @@ returns with `AWS_PROFILE=tiny` intact and every secret value replaced by
 
 This is precision-first: a secret with a non-suggestive key name *and* a
 non-standard shape can still slip through, which is exactly why the exact
-value-firewall and the `deny_read_paths` bans exist. Set `redact_suspected =
+value-firewall and the `deny_read` bans exist. Set `redact_suspected =
 false` to keep output verbatim.
 
 For the remaining case — a **bare** unknown secret with no key name and no known

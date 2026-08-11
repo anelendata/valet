@@ -14,14 +14,14 @@ def test_permissive_by_default(cfg):
 
 
 def test_deny_list_blocks_command(cfg):
-    denied = dataclasses.replace(cfg, policy=PolicyConfig(deny=("curl",)))
+    denied = dataclasses.replace(cfg, policy=PolicyConfig(deny_exec=("curl",)))
     resp = Broker(denied).handle({"op": "exec", "cmd": "curl http://example.com"})
     assert resp["ok"] is False
     assert resp["error_class"] == "PolicyDenied"
 
 
 def test_deny_matches_basename_of_argv(cfg):
-    denied = dataclasses.replace(cfg, policy=PolicyConfig(deny=("rm",)))
+    denied = dataclasses.replace(cfg, policy=PolicyConfig(deny_exec=("rm",)))
     resp = Broker(denied).handle(
         {"op": "exec", "cmd": ["/bin/rm", "-rf", "x"], "shell": False}
     )
@@ -30,7 +30,7 @@ def test_deny_matches_basename_of_argv(cfg):
 
 
 def test_non_denied_command_still_runs(cfg):
-    denied = dataclasses.replace(cfg, policy=PolicyConfig(deny=("curl",)))
+    denied = dataclasses.replace(cfg, policy=PolicyConfig(deny_exec=("curl",)))
     resp = Broker(denied).handle({"op": "exec", "cmd": "echo fine"})
     assert resp["ok"] is True
 
@@ -95,7 +95,7 @@ def test_recon_and_network_commands_are_denied_by_default(cfg):
 # --- allow-list (default-deny when non-empty) --------------------------------
 
 def _allow_cfg(cfg, allow):
-    return dataclasses.replace(cfg, policy=PolicyConfig(allow=allow))
+    return dataclasses.replace(cfg, policy=PolicyConfig(allow_exec=allow))
 
 
 def test_empty_allow_list_permits_any_non_denied_command(cfg):
@@ -239,14 +239,14 @@ def test_config_toml_protection_cannot_be_disabled_in_policy(cfg):
     assert resp["error_class"] == "PolicyDenied"
 
 
-# --- deny_read_paths (wildcard file bans) ------------------------------------
+# --- deny_read (wildcard file bans) ------------------------------------------
 
 def _deny_paths_cfg(cfg, patterns):
-    # These tests exercise deny_read_paths in a scratch dir outside the fixture
+    # These tests exercise deny_read in a scratch dir outside the fixture
     # workspace, so the (now default-on) workspace jail is disabled here to keep
     # the two features under independent test.
     return dataclasses.replace(cfg, policy=PolicyConfig(
-        deny_read_paths=patterns,
+        deny_read=patterns,
         enforce_workspace_reads=False,
         enforce_workspace_writes=False,
     ))

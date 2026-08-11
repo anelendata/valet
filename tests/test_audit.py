@@ -55,7 +55,7 @@ def test_audit_log_records_policy_denial(cfg, tmp_path):
     c = dataclasses.replace(
         cfg,
         audit=AuditConfig(log_path=str(audit_log)),
-        policy=dataclasses.replace(cfg.policy, deny=("curl",)),
+        policy=dataclasses.replace(cfg.policy, deny_exec=("curl",)),
     )
 
     resp = Broker(c).handle(

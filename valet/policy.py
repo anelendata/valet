@@ -5,8 +5,8 @@ processes, shells, or valet itself. Additional policy constraints are configured
 with:
 
   - built-in dangerous command bans — process/system control and valet itself.
-  - ``deny`` — additional program-name deny list (e.g. ``curl``, ``rm``).
-  - ``deny_read_paths`` — glob patterns of files a command may not reference,
+  - ``deny_exec`` — additional program-name deny list (e.g. ``curl``, ``rm``).
+  - ``deny_read`` — glob patterns of files a command may not reference,
     so it cannot reveal their content. Supports ``**`` (any depth), ``*``, and
     ``?``. Example: ``**/.env`` bans reading any ``.env`` no matter where it
     sits; ``~/.aws/**`` bans anything under ``~/.aws``.
@@ -96,9 +96,9 @@ def _is_config_name(path: str) -> bool:
 class Policy:
     workspace: Optional[str] = None
     allow_shell: bool = False
-    allow: tuple[str, ...] = ()
-    deny: tuple[str, ...] = ()
-    deny_read_paths: tuple[str, ...] = ()
+    allow_exec: tuple[str, ...] = ()
+    deny_exec: tuple[str, ...] = ()
+    deny_read: tuple[str, ...] = ()
     enforce_workspace_reads: bool = False
     enforce_workspace_writes: bool = False
 
@@ -113,12 +113,12 @@ class Policy:
         return cls(
             workspace=workspace,
             allow_shell=allow_shell,
-            allow=tuple(cfg.allow),
-            deny=tuple(cfg.deny),
+            allow_exec=tuple(cfg.allow_exec),
+            deny_exec=tuple(cfg.deny_exec),
             # Expand ~ / $VARS in patterns up front so absolute patterns like
             # ~/.aws/** compare against real absolute paths.
-            deny_read_paths=tuple(
-                os.path.expanduser(os.path.expandvars(p)) for p in cfg.deny_read_paths
+            deny_read=tuple(
+                os.path.expanduser(os.path.expandvars(p)) for p in cfg.deny_read
             ),
             enforce_workspace_reads=cfg.enforce_workspace_reads,
             enforce_workspace_writes=cfg.enforce_workspace_writes,
@@ -144,13 +144,13 @@ class Policy:
             if not self.allow_shell and command in SHELL_COMMANDS:
                 raise PolicyError("shell execution is disabled")
 
-            # A non-empty allow list flips to default-deny. Navigation builtins
-            # are exempt so `cd`/`pushd` still work inside an allowed session.
-            if self.allow and command and not is_navigation:
-                if command not in _casefold_names(self.allow):
+            # A non-empty allow_exec list flips to default-deny. Navigation
+            # builtins are exempt so `cd`/`pushd` still work in an allowed session.
+            if self.allow_exec and command and not is_navigation:
+                if command not in _casefold_names(self.allow_exec):
                     raise PolicyError("command is not on the allow list")
 
-            if command in _casefold_names(BUILTIN_DENY + self.deny):
+            if command in _casefold_names(BUILTIN_DENY + self.deny_exec):
                 raise PolicyError("command is on the deny list")
 
             for tok in sub[1:]:
@@ -158,7 +158,7 @@ class Policy:
                     raise PolicyError("command references a path outside the workspace")
                 if self.enforce_workspace_writes and self._is_write_outside_workspace(tok, effective_cwd):
                     raise PolicyError("command targets a path outside the workspace")
-                if self.deny_read_paths:
+                if self.deny_read:
                     if self._is_denied_path(tok, effective_cwd):
                         raise PolicyError("command references a denied path")
 
@@ -185,7 +185,7 @@ class Policy:
         abspath = os.path.abspath(path)
         return any(
             _compile(pattern).match(abspath) is not None
-            for pattern in self.deny_read_paths
+            for pattern in self.deny_read
         )
 
     def _is_protected_config_path(self, token: str, cwd: Optional[str]) -> bool:

@@ -14,10 +14,11 @@
 #   [policy]    — decide whether the command RUNS AT ALL (blocks execution)
 #
 # Rule of thumb:
-#   "a command should be able to USE this file"  -> redaction.secret_sources
-#                                                   / redaction.cwd_secret_files
-#   "no one should SEE this file"                -> policy.deny_read_paths
-#   "this program shouldn't run"                 -> policy.deny
+#   "a tool should USE this secret, agent shouldn't SEE it" (the common case,
+#     and valet's whole reason to exist)          -> redaction.secret_file_paths
+#   "no tool should even RECEIVE this file"        -> policy.deny_read
+#     (a hard block; also stops trusted tools from using it — opt in only)
+#   "this program shouldn't run"                   -> policy.deny
 # See the "Choosing what to configure" section in README.md for the full table.
 
 [broker]
@@ -161,28 +162,28 @@ shell = false
 [redaction]
 # ==== FAMILY 1: scrub OUTPUT — the command still runs, its output is masked ====
 #
-# secret_sources: fixed secret files (by ABSOLUTE path) that trusted commands
-# legitimately USE. Masked in EVERY command's output no matter where it runs.
-# For each, valet redacts:
-#   1. the ENTIRE file content as one blob — so `cat`/`less`/any full dump of the
-#      file is masked wholesale, regardless of format (ini, .env, JSON, a bare
-#      token, a PEM key, ...); and
-#   2. the individual structured values (KEY=VALUE / ini / json) — so a single
-#      secret leaking on its own (e.g. `echo $KEY`) is caught even without the
-#      surrounding file.
-# Missing files are skipped. Files over ~1 MB skip the whole-blob step but are
-# still parsed for values.
-secret_sources = [
-    "~/.aws/credentials",
-    "~/.aws/config",
-]
-
-# cwd_secret_files: like secret_sources but by FILENAME, auto-loaded from each
-# command's working directory — so a project's own .env/.secrets are redacted
-# when you run there, without listing every project. One line covers all of them.
-cwd_secret_files = [
-    ".env", ".config", ".secrets", "secrets",
-    ".passwords", "passwords", ".ssh", ".aws",
+# secret_file_paths: glob patterns naming the secret files/directories that
+# trusted commands legitimately USE. Their contents are masked from EVERY
+# command's output. Same glob syntax as policy.deny_read (** / * / ?), and
+# how a pattern is located depends on whether it is absolute or relative:
+#   - ABSOLUTE or ~-rooted ("~/.aws/**")  -> matched against the filesystem;
+#     applies to every command regardless of where it runs.
+#   - RELATIVE (".env", ".secrets/**", "**/.env") -> resolved against each
+#     command's working directory, so a project's own secrets are redacted when
+#     you run there, without listing every project.
+# A pattern may name a file, a directory (all files under it are loaded), or a
+# glob. For each matched file valet redacts:
+#   1. the ENTIRE file content as one blob — so `cat`/`less`/any full dump is
+#      masked wholesale, regardless of format (ini, .env, JSON, bare token, PEM);
+#   2. the individual structured values (KEY=VALUE / ini / json / yaml) — so a
+#      single secret leaking on its own (e.g. `echo $KEY`) is caught too.
+# Missing paths are skipped. Files over ~1 MB skip the whole-blob step but are
+# still parsed for values. (A recursive "**/" pattern walks the tree on every
+# command — cheap for a project dir, prefer a shallow pattern for huge trees.)
+secret_file_paths = [
+    "~/.aws/**",
+    ".env", ".config/**", ".secrets/**", "secrets/**",
+    ".passwords/**", "passwords/**", ".ssh/**", ".aws/**",
 ]
 
 # Extra literal strings to always redact (e.g. a token not stored in a file).
@@ -222,39 +223,36 @@ redact_high_entropy = true
 # For a hard guarantee, run commands under an OS sandbox — see
 # contrib/sandbox-exec/ for a macOS prototype.
 #
-# An empty allow list means "allow everything not otherwise denied". Set a
+# allow_exec: an empty list means "allow everything not otherwise denied". Set a
 # non-empty list to switch to DEFAULT-DENY: only these command basenames may run
 # (cd/pushd/popd stay available for navigation). Strongest posture; opt in when
-# you know the exact tools the client needs, e.g. allow = ["python", "ls", "cat"].
-allow = []
+# you know the exact tools the client needs, e.g. allow_exec = ["python", "ls", "cat"].
+allow_exec = []
 
-# Additional program-name deny list (matched on the command's basename), on top
-# of the built-in dangerous-command bans. Use to forbid a whole tool, e.g.
-# deny = ["rm", "npm"].
-deny = []
+# deny_exec: additional program-name deny list (matched on the command's
+# basename), on top of the built-in dangerous-command bans. Use to forbid a whole
+# tool, e.g. deny_exec = ["rm", "npm"].
+deny_exec = []
 
-# deny_read_paths: glob patterns of files a command may not reference — valet
-# refuses to run a command that names an existing matching file, so its content
-# is never revealed. Use this to flatly forbid DISPLAYING a file (cat/less/grep);
-# it is all-or-nothing, and only catches files named on the command line.
-# (Contrast with redaction.secret_sources above, which lets the command run and
-# scrubs the output — use that for files trusted tools must USE.)
+# deny_read: glob patterns of files a command may not reference — valet refuses
+# to RUN a command that names an existing matching file. It is a HARD block,
+# all-or-nothing: it also stops a trusted tool from USING the file (e.g.
+# `mytool --creds .env`), which is the opposite of what valet is for. valet's
+# whole point is to let an agent use privileged tools WITHOUT seeing the secrets,
+# and redaction (FAMILY 1 above) is how that is achieved — the command runs and
+# the secret is scrubbed from its output. Secret files/directories are already
+# covered there via [redaction].secret_file_paths, so this list is EMPTY by
+# default. Reach for deny_read only for files no tool should even receive
+# — where you would rather the command fail than trust redaction (redaction
+# masks known literal values but cannot follow a value that is transformed, e.g.
+# base64-encoded, before being printed).
 # The analyzer is shell-aware: it splits on ; && || | and tracks cd, so
 # `cd dir; cat .env` is caught the same as `cat dir/.env`.
-# Supports ** (any depth), * and ?. Examples:
+# Supports ** (any depth), * and ?. Examples (opt in by uncommenting):
 #   "**/.env"          ban reading any .env, wherever it sits
 #   "**/.secrets/**"   ban anything under any .secrets directory
 #   "~/.aws/**"        ban anything under ~/.aws
-deny_read_paths = [
-  "**/.env",
-  "**/.config/**",
-  "**/.secrets/**",
-  "**/secrets/**",
-  "**/.passwords/**",
-  "**/passwords/**",
-  "~/.ssh/**",
-  "~/.aws/**",
-]
+deny_read = []
 
 # DEFAULT ON. Refuse a command whose existing file/directory arguments, or
 # requested cwd, resolve outside [exec].workspace — including ../ paths and
