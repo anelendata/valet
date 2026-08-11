@@ -1,0 +1,41 @@
+# Example managed Codex requirements for running an agent alongside valet.
+# Copy to /etc/codex/requirements.toml (root-owned; users cannot weaken these).
+# See ../../docs/SANDBOX_HARDENING.md for the rationale. Codex's config schema
+# evolves — verify against OpenAI's current Codex docs before production use.
+
+allowed_approval_policies = ["untrusted", "on-request"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]
+allowed_web_search_modes = ["cached"]
+
+[permissions.filesystem]
+deny_read = [
+  # Secret files the agent must never read directly.
+  "/**/.env",
+  "/**/.env/**",
+  "/**/.secrets",
+  "/**/.secrets/**",
+  "/**/.*secrets*",
+  "/**/.*secrets*/**",
+  "/**/.aws",
+  "/**/.aws/**",
+  # valet's own config holds the LAN client keys + workspace paths. The agent
+  # reaches the daemon over the broker socket, so it never needs to read this.
+  # Deny the file (not the whole .valet dir) so the socket stays reachable.
+  "/**/.valet/config.toml",
+  # Uncomment if you keep the audit log there:
+  # "/**/.valet/audit.jsonl",
+]
+
+[rules]
+prefix_rules = [
+  # Reject valet's admin/introspection subcommands — host-operator only (serve
+  # can replace the daemon, clients/workspaces widen access, doctor prints host
+  # paths). Must precede the general valet rule so it matches first.
+  { pattern = [{ token = "valet" }, { any_of = ["serve", "doctor", "init", "clients", "workspaces", "call"] }], decision = "reject", justification = "valet admin/introspection subcommands are host-operator only." },
+  # Everything else through valet (run/sh/status/info) still requires approval.
+  # To auto-approve run/sh, add an "approve" rule for them ABOVE this line (check
+  # the exact decision keyword against your Codex version first).
+  { pattern = [{ token = "valet" }], decision = "prompt", justification = "valet can run privileged host-side commands." },
+  # Shell entry points always require approval.
+  { pattern = [{ any_of = ["bash", "sh", "zsh"] }], decision = "prompt", justification = "Require explicit approval for shell entry points." },
+]

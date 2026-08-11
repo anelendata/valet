@@ -16,6 +16,10 @@ telemetry.
 
 ## Claude Code setting example
 
+A ready-to-copy version of this file, already including the `~/.valet` and
+subcommand protections from the last section, is at
+[`contrib/claude-code/settings.json`](../contrib/claude-code/settings.json).
+
 For Claude Code on macOS, put the local hardening baseline in
 `~/.claude/settings.json`. Keep the secret denials in place, enable the Bash
 sandbox, make sandbox startup fail closed, and allow only the exact valet Unix
@@ -97,6 +101,10 @@ company baseline, prefer Claude Code managed settings over user settings so the
 agent cannot weaken the policy locally.
 
 ## Codex setting example
+
+A ready-to-copy version, already including the `/**/.valet/config.toml` deny and
+the valet subcommand rules, is at
+[`contrib/codex/requirements.toml`](../contrib/codex/requirements.toml).
 
 For Codex, put non-negotiable local requirements in
 `/etc/codex/requirements.toml` on macOS/Linux (or the equivalent managed

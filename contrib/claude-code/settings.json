@@ -1,0 +1,72 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(//**/.env)",
+      "Read(//**/.env/**)",
+      "Edit(//**/.env)",
+      "Edit(//**/.env/**)",
+      "Bash(//**/.env)",
+      "Bash(//**/.env/**)",
+      "Read(//**/.secrets)",
+      "Read(//**/.secrets/**)",
+      "Edit(//**/.secrets)",
+      "Edit(//**/.secrets/**)",
+      "Bash(//**/.secrets)",
+      "Bash(//**/.secrets/**)",
+      "Read(~/.aws)",
+      "Read(~/.aws/**)",
+      "Edit(~/.aws)",
+      "Edit(~/.aws/**)",
+      "Bash(~/.aws)",
+      "Bash(~/.aws/**)",
+      "Read(~/.valet/**)",
+      "Bash(~/.valet/**)",
+      "Bash(valet serve:*)",
+      "Bash(valet doctor:*)",
+      "Bash(valet init:*)",
+      "Bash(valet clients:*)",
+      "Bash(valet workspaces:*)",
+      "Bash(valet call:*)"
+    ],
+    "allow": [
+      "Bash(valet run:*)",
+      "Bash(valet sh:*)",
+      "Bash(valet status:*)",
+      "Bash(valet info:*)"
+    ]
+  },
+  "disableBypassPermissionsMode": "disable",
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": false,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": [
+        "/**/.env",
+        "/**/.env/**",
+        "/**/.secrets",
+        "/**/.secrets/**",
+        "/**/.*secrets*",
+        "/**/.*secrets*/**",
+        "~/.aws",
+        "~/.aws/**",
+        "~/.valet/config.toml"
+      ]
+    },
+    "network": {
+      "allowUnixSockets": [
+        "~/.valet/broker.sock"
+      ]
+    },
+    "credentials": {
+      "files": [
+        {
+          "path": "~/.aws",
+          "mode": "deny"
+        }
+      ]
+    }
+  },
+  "agentPushNotifEnabled": true
+}
