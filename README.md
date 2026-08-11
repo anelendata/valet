@@ -347,7 +347,7 @@ valet doctor                              # re-check config health anytime
 Keep the config, sandbox profile, audit log, and secret sources **outside** the
 workspace — anything inside it is readable (and, when jailed there, writable) by
 the agent. `valet doctor` warns when they aren't. Full setup of secrets, policy,
-and redaction lives in [Configuration](docs/CONFIGURATION.md).
+and redaction lives in [Configuration](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md).
 
 ### Run commands through valet
 
@@ -417,7 +417,7 @@ valet -w personal sh 'ls | grep foo'
 
 Per-workspace overrides of the shared `[exec]`/`[policy]`/`[redaction]` defaults,
 and the `[client].default_workspace` setting, are in
-[Configuration → Workspaces](docs/CONFIGURATION.md#workspaces-and-per-workspace-overrides).
+[Configuration → Workspaces](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md#workspaces-and-per-workspace-overrides).
 
 ### Running from a node in the local network
 
@@ -458,7 +458,7 @@ valet --host my-computer run -- ls         # target a host explicitly
 ```
 
 Reconnect tuning and the full client-config reference are in
-[Configuration](docs/CONFIGURATION.md#client-and-hostsname--client-side).
+[Configuration](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md#client-and-hostsname--client-side).
 
 ## Configuration
 
@@ -473,7 +473,7 @@ The mental model is two families of knobs:
   the whole point of valet)
 - **`[policy]`** — *decide whether the command **runs at all**.* (opt-in blocks)
 
-**→ Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)** — every
+**→ Full reference: [docs/CONFIGURATION.md](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md)** — every
 section and key, plus the annotated
 [`config.example.toml`](https://github.com/anelendata/valet/blob/main/valet/config.example.toml).
 
@@ -548,7 +548,7 @@ which credentials its tools use at all. Give each workspace its own scoped,
 least-privilege credential set — a dedicated AWS profile, a fine-grained GitHub
 token, a per-workspace SSH key — instead of your personal `~/.aws`, `~/.config`,
 and `~/.ssh`. See [How to separate credentials for
-workspaces](docs/separate-creds.md).
+workspaces](https://github.com/anelendata/valet/blob/main/docs/separate-creds.md).
 
 For the layers around all this — sandboxing the agent runtime and keeping an
 audit trail of what it ran — see [Sandbox hardening](#sandbox-hardening) and
