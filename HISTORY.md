@@ -3,6 +3,23 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.5 — 2026-08-10
+
+- **Fixed:** normal client commands (`valet`, `valet status`, `valet run`)
+  crashed with an uncaught `PermissionError` inside a hardened agent sandbox that
+  denies `stat()` on `~/.valet/config.toml`. Config discovery now treats a denied
+  stat as "not visible", and local (UDS) client mode falls back to the default
+  broker socket, so an unprivileged client connects without needing to read the
+  host config. Host/admin subcommands stay blocked by the sandbox.
+- Added `valet clients block <id>` / `unblock <id>` to temporarily deny a client
+  without deleting its key, and documented `valet clients remove <id>`.
+- Added `valet workspaces remove <id>` (removes the config entry; leaves the
+  directory on disk for you to delete).
+- `valet doctor` collapses the home prefix to `~` in reported paths.
+- Docs: a sandbox-hardening section on protecting valet's own config and admin
+  subcommands, ready-to-copy `contrib/claude-code` and `contrib/codex` configs,
+  and an Install & run refresh for the PyPI release.
+
 ## 0.0.4 — 2026-08-10
 
 - `valet workspaces list` now collapses the home prefix to `~` in local mode, so
