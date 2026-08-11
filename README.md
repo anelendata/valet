@@ -353,6 +353,14 @@ or payment privileges.
 The agent runtime should be hardened before Valet is added. Treat Valet as the
 privileged broker, not as the only safety control.
 
+**valet is not a sandbox for itself.** It is a broker the agent calls, running as
+the same user from the same binary — so it cannot stop an agent with native host
+access from reading its config (`~/.valet/config.toml`, which holds the LAN
+client keys) or running its admin subcommands (`serve`, `doctor`, `clients`,
+`workspaces`). That boundary is the agent sandbox's job: deny reads of `~/.valet`
+and allow only `valet run`/`sh` (see the hardening guide). The agent reaches the
+daemon over the broker socket, so it never needs to read `~/.valet` directly.
+
 **IMPROTANT**: Follow [Sandbox Hardening Guide](./docs/SANDBOX_HARDENING.md)
 before installing valet!
 

@@ -155,6 +155,83 @@ Codex configuration changes over time. Read OpenAI's official Codex
 documentation for the complete and current settings before using this in a
 production or high-risk environment.
 
+## Protect valet's own config and admin subcommands
+
+valet is a broker the agent *calls* — it is **not a sandbox around the agent**,
+and it cannot defend itself from an agent that has native host access. The same
+`valet` binary that serves `run`/`sh` also exposes admin and introspection
+subcommands, and its config holds the LAN client keys. valet cannot tell "this
+invocation is the operator" from "this is the agent" — same user, same binary —
+so this boundary must be enforced by the agent runtime, not by valet.
+
+Two things to lock down:
+
+**1. Deny reading `~/.valet`.** `~/.valet/config.toml` contains the approved
+**client keys** (LAN auth secrets — reading them lets the agent authenticate as
+an approved client) and every workspace path. The agent reaches the daemon over
+the broker *socket* (`allowUnixSockets`), so it never needs filesystem read
+access to `~/.valet` — deny it. Denying the read does **not** block the socket;
+those are different boundaries, exactly like the `.env`/`.secrets` denials above.
+
+**2. Allow only `run`/`sh` (plus read-only `status`/`info`); deny the admin
+subcommands.** `valet serve` can replace the daemon, `valet clients add` can
+approve new access, `valet workspaces add` can widen the jail, and `valet doctor`
+prints host paths. The agent only needs to *run commands through* valet.
+
+### Claude Code
+
+Merge these into the baseline above (keep the `.env`/`.secrets`/`.aws` denials):
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Read(~/.valet/**)",
+      "Bash(valet serve:*)",
+      "Bash(valet doctor:*)",
+      "Bash(valet init:*)",
+      "Bash(valet clients:*)",
+      "Bash(valet workspaces:*)",
+      "Bash(valet call:*)"
+    ],
+    "allow": [
+      "Bash(valet run:*)",
+      "Bash(valet sh:*)",
+      "Bash(valet status:*)",
+      "Bash(valet info:*)"
+    ]
+  },
+  "sandbox": {
+    "filesystem": {
+      "denyRead": ["~/.valet", "~/.valet/**"]
+    }
+  }
+}
+```
+
+The broker socket stays reachable through `sandbox.network.allowUnixSockets`
+(`~/.valet/broker.sock`), which is unaffected by the `denyRead` above.
+
+### Codex
+
+Add `~/.valet` to `deny_read` and reject the admin subcommands:
+
+```toml
+[permissions.filesystem]
+deny_read = [
+  "~/.valet",
+  "~/.valet/**",
+]
+
+[rules]
+prefix_rules = [
+  { pattern = [{ token = "valet" }, { any_of = ["serve", "doctor", "init", "clients", "workspaces", "call"] }], decision = "reject", justification = "valet admin/introspection subcommands are for the host operator, not the agent." },
+]
+```
+
+Keep the existing `prompt` rule on bare `valet` so anything not matched still
+requires approval.
+
 ## References
 
 - [Claude Code Agent SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions)
