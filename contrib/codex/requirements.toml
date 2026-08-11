@@ -31,10 +31,10 @@ prefix_rules = [
   # Reject valet's admin/introspection subcommands — host-operator only (serve
   # can replace the daemon, clients/workspaces widen access, doctor prints host
   # paths). Must precede the general valet rule so it matches first.
-  { pattern = [{ token = "valet" }, { any_of = ["serve", "doctor", "init", "clients", "workspaces", "call"] }], decision = "reject", justification = "valet admin/introspection subcommands are host-operator only." },
+  { pattern = [{ token = "valet" }, { any_of = ["serve", "doctor", "init", "clients", "workspaces", "call"] }], decision = "forbidden", justification = "valet admin/introspection subcommands are host-operator only." },
   # Everything else through valet (run/sh/status/info) still requires approval.
-  # To auto-approve run/sh, add an "approve" rule for them ABOVE this line (check
-  # the exact decision keyword against your Codex version first).
+  # To auto-approve run/sh instead, add a rule with decision = "allow" for them
+  # ABOVE this line. (Codex decisions are: allow, prompt, forbidden.)
   { pattern = [{ token = "valet" }], decision = "prompt", justification = "valet can run privileged host-side commands." },
   # Shell entry points always require approval.
   { pattern = [{ any_of = ["bash", "sh", "zsh"] }], decision = "prompt", justification = "Require explicit approval for shell entry points." },

@@ -239,9 +239,13 @@ deny_read = [
 
 [rules]
 prefix_rules = [
-  { pattern = [{ token = "valet" }, { any_of = ["serve", "doctor", "init", "clients", "workspaces", "call"] }], decision = "reject", justification = "valet admin/introspection subcommands are for the host operator, not the agent." },
+  { pattern = [{ token = "valet" }, { any_of = ["serve", "doctor", "init", "clients", "workspaces", "call"] }], decision = "forbidden", justification = "valet admin/introspection subcommands are for the host operator, not the agent." },
 ]
 ```
+
+Codex `decision` accepts `allow`, `prompt`, or `forbidden` (there is no
+`reject`). To auto-approve `valet run`/`sh` instead of prompting, add a rule with
+`decision = "allow"` for them above the general `valet` rule.
 
 As with Claude Code, deny the config file specifically rather than the whole
 `~/.valet` directory so the sandbox does not block the broker socket.
