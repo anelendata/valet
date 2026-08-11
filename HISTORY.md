@@ -3,6 +3,13 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.8 — 2026-08-11
+
+- Docs: fixed broken doc links on the PyPI project page. Five README links added
+  in 0.0.7 (the Configuration and separate-credentials references) were relative
+  paths, which PyPI can't resolve; they now use absolute GitHub URLs like the
+  rest of the README.
+
 ## 0.0.7 — 2026-08-11
 
 - **Added:** after you enable the LAN host, `valet init` now asks whether another
