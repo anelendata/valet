@@ -226,7 +226,7 @@ Add `~/.valet` to `deny_read` and reject the admin subcommands:
 ```toml
 [permissions.filesystem]
 deny_read = [
-  "~/.valet/config.toml",   # add ~/.valet/audit.jsonl too if you keep the log there
+  "/**/.valet/config.toml",   # add /**/.valet/audit.jsonl too if you keep the log there
 ]
 
 [rules]
