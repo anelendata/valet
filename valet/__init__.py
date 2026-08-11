@@ -9,7 +9,7 @@ command allow/deny lists and a workspace write-jail are layered on later via
 ``valet/policy.py``. Redaction is always on.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.0.7"
 
 # Values shorter than this are never treated as secret material to redact,
 # so that trivial values ("1", "true", "us-east-1") don't blank out output.

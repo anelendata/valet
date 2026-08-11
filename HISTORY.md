@@ -3,6 +3,21 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.7 — 2026-08-11
+
+- **Added:** after you enable the LAN host, `valet init` now asks whether another
+  computer on your LAN should be able to connect — setting `[host].listen` to
+  `0.0.0.0:8766` on yes, or leaving it at `127.0.0.1:8766` (this machine only).
+  Either way, you can change it later in the `[host]` section.
+- **Fixed:** the runtime version (`__version__` and the REPL banner) was out of
+  sync with the published package version; both now report the release version.
+- Docs: added a full command reference (`docs/COMMANDS.md`) and a complete
+  configuration reference (`docs/CONFIGURATION.md`, extracted from the README as
+  a per-key guide); added a guide to separating credentials per workspace
+  (`docs/separate-creds.md`); reworked "Guardrails" into "Agent orientation and
+  guardrails", documenting how a bare `valet` / `valet status` self-orients an
+  agent; and streamlined the Install & run section and the introduction.
+
 ## 0.0.6 — 2026-08-10
 
 - Docs: fixed broken links on the PyPI project page. README links to `docs/*`
