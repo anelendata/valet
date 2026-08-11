@@ -93,6 +93,9 @@ class HostConfig:
 @dataclass(frozen=True)
 class ClientIdentity:
     key: str
+    # Temporarily deny this client without removing its key. Auth is refused and
+    # any live connection is dropped on reload; clear it to restore access.
+    blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -390,5 +393,6 @@ def _load_client_identities(raw: object) -> dict[str, ClientIdentity]:
             continue
         # The section name is the client id used for auth lookup. A legacy
         # ``name`` field is tolerated for backward compatibility but ignored.
-        clients[str(client_id)] = ClientIdentity(key=key)
+        clients[str(client_id)] = ClientIdentity(
+            key=key, blocked=bool(value.get("blocked", False)))
     return clients

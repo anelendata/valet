@@ -216,6 +216,61 @@ def test_clients_remove_missing_client_reports_not_found(tmp_path, capsys):
     assert "not found" in capsys.readouterr().err
 
 
+def test_clients_block_and_unblock_roundtrip(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    _config(path)
+    assert main(["-c", str(path), "clients", "add", "local box"]) == 0
+    capsys.readouterr()
+
+    assert main(["-c", str(path), "clients", "block", "local box"]) == 0
+    assert load_config(path).identity.clients["local-box"].blocked is True
+    # The key is preserved, and the listing flags the block.
+    assert load_config(path).identity.clients["local-box"].key
+    capsys.readouterr()
+    assert main(["-c", str(path), "clients", "list"]) == 0
+    assert "BLOCKED" in capsys.readouterr().out
+
+    assert main(["-c", str(path), "clients", "unblock", "local box"]) == 0
+    assert load_config(path).identity.clients["local-box"].blocked is False
+
+
+def test_clients_block_missing_client_reports_not_found(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    _config(path)
+
+    rc = main(["-c", str(path), "clients", "block", "missing"])
+
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_blocked_client_auth_is_rejected():
+    from valet.config import ClientIdentity
+    from valet.server_ws import auth_rejection_reason
+
+    ident = ClientIdentity(key="k", blocked=True)
+    reason = auth_rejection_reason(
+        {"type": "auth.response"}, "codex", ident, "sig", "host", "nonce")
+    assert reason == "client identity is blocked"
+
+
+def test_reload_disconnects_newly_blocked_client(cfg):
+    old_cfg = _identity_cfg(cfg, ["keep", "naughty"])
+    new_cfg = dataclasses.replace(
+        cfg,
+        identity=IdentityConfig(clients={
+            "keep": ClientIdentity(key="key-keep"),
+            "naughty": ClientIdentity(key="key-naughty", blocked=True),
+        }),
+    )
+    broker = Broker(old_cfg, audit_to_console=False)
+    ws_server = _FakeWsServer(old_cfg)
+
+    _apply_reloaded_config(broker, ws_server, new_cfg)
+
+    assert ws_server.disconnect_calls == [({"naughty"}, None)]
+
+
 def test_clients_add_rejects_empty_id(tmp_path, capsys):
     path = tmp_path / "config.toml"
     _config(path)

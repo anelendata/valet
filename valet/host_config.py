@@ -24,6 +24,7 @@ class ClientKeyUpdate:
 class ClientIdentityEntry:
     client_id: str
     has_key: bool
+    blocked: bool = False
 
 
 def generate_client_key() -> str:
@@ -57,6 +58,7 @@ def list_client_identities(path: Path) -> list[ClientIdentityEntry]:
         entries.append(ClientIdentityEntry(
             client_id=client_id,
             has_key=bool(_read_string_value(body, "key")),
+            blocked=_read_bool_value(body, "blocked"),
         ))
     return entries
 
@@ -94,6 +96,31 @@ def remove_client_identity(path: Path, client_id: str) -> ClientIdentityEntry | 
         updated = re.sub(r"\n{3,}", "\n\n", updated).rstrip() + "\n"
         path.write_text(updated)
         return entry
+    return None
+
+
+def set_client_blocked(
+    path: Path, client_id: str, blocked: bool
+) -> ClientIdentityEntry | None:
+    """Set or clear ``blocked`` on a client identity, keeping its key.
+
+    Returns the updated entry, or None if the client id is not found.
+    """
+    text = path.read_text()
+    normalized = normalize_client_id(client_id)
+    existing_id, existed = _find_client_identity(text, normalized)
+    if not existed or existing_id is None:
+        return None
+    for section_id, start, end in _identity_sections(text):
+        if section_id != existing_id:
+            continue
+        new_body = _set_blocked_in_section(text[start:end], blocked)
+        path.write_text(text[:start] + new_body + text[end:])
+        return ClientIdentityEntry(
+            client_id=section_id,
+            has_key=bool(_read_string_value(new_body, "key")),
+            blocked=blocked,
+        )
     return None
 
 
@@ -164,6 +191,32 @@ def _read_string_value(text: str, key: str) -> str | None:
     if not match:
         return None
     return bytes(match.group(1), "utf-8").decode("unicode_escape")
+
+
+def _read_bool_value(text: str, key: str) -> bool:
+    match = re.search(rf"(?m)^\s*{re.escape(key)}\s*=\s*(true|false)\s*$", text)
+    return bool(match and match.group(1) == "true")
+
+
+_BLOCKED_LINE_RE = re.compile(r"(?m)^[ \t]*blocked[ \t]*=[ \t]*(?:true|false)[ \t]*\n?")
+
+
+def _set_blocked_in_section(body: str, blocked: bool) -> str:
+    """Return the section body with a ``blocked = true`` line set or removed."""
+    body = _BLOCKED_LINE_RE.sub("", body)  # drop any existing blocked line first
+    if not blocked:
+        return body
+    # Insert `blocked = true` right after the key line so the section stays tidy.
+    out: list[str] = []
+    inserted = False
+    for line in body.splitlines(keepends=True):
+        out.append(line)
+        if not inserted and re.match(r"[ \t]*key[ \t]*=", line):
+            out.append("blocked = true\n")
+            inserted = True
+    if not inserted:  # no key line (shouldn't happen) — append at the end
+        out.append("blocked = true\n")
+    return "".join(out)
 
 
 def _toml_key(value: str) -> str:

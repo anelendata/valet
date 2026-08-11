@@ -53,6 +53,7 @@ from .host_config import (
     list_client_identities,
     normalize_client_id,
     remove_client_identity,
+    set_client_blocked,
     upsert_client_identity,
 )
 from .workspace_config import (
@@ -1043,8 +1044,49 @@ def _cmd_clients_list(args: argparse.Namespace) -> int:
         return 0
     for entry in sorted(entries, key=lambda item: item.client_id):
         key_state = "key=set" if entry.has_key else "key=missing"
-        print(f"{entry.client_id}\t{key_state}")
+        status = "\tBLOCKED" if entry.blocked else ""
+        print(f"{entry.client_id}\t{key_state}{status}")
     return 0
+
+
+def _cmd_clients_set_blocked(args: argparse.Namespace, *, blocked: bool) -> int:
+    verb = "block" if blocked else "unblock"
+    path = Path(args.config) if args.config else default_config_path()
+    if not path.exists():
+        print(f"valet: {path} not found. Run `valet init` first.", file=sys.stderr)
+        return 2
+
+    raw_id = args.client_id.strip()
+    if not raw_id:
+        print(f"valet clients {verb}: client id cannot be empty", file=sys.stderr)
+        return 2
+    try:
+        client_id = normalize_client_id(raw_id)
+    except ValueError as exc:
+        print(f"valet clients {verb}: {exc}", file=sys.stderr)
+        return 2
+
+    entry = set_client_blocked(path, client_id, blocked)
+    if entry is None:
+        print(f"valet: client {client_id!r} was not found in {path}", file=sys.stderr)
+        return 1
+    if blocked:
+        print(f"valet: blocked client {entry.client_id!r} in {path}")
+        print("It can no longer authenticate; unblock with "
+              f"`valet clients unblock {entry.client_id}`.")
+    else:
+        print(f"valet: unblocked client {entry.client_id!r} in {path}")
+    print("valet: `valet serve` reloads this automatically (and drops any live "
+          "connection for a blocked client).")
+    return 0
+
+
+def _cmd_clients_block(args: argparse.Namespace) -> int:
+    return _cmd_clients_set_blocked(args, blocked=True)
+
+
+def _cmd_clients_unblock(args: argparse.Namespace) -> int:
+    return _cmd_clients_set_blocked(args, blocked=False)
 
 
 def _cmd_clients_remove(args: argparse.Namespace) -> int:
@@ -1447,7 +1489,15 @@ def build_parser() -> argparse.ArgumentParser:
     clients_add.add_argument("--url", default=None,
                              help="WebSocket URL to print in the client snippet")
     clients_add.set_defaults(func=_cmd_clients_add)
-    clients_remove = clients_sub.add_parser("remove", help="remove an approved client key")
+    clients_block = clients_sub.add_parser(
+        "block", help="temporarily deny a client without removing its key")
+    clients_block.add_argument("client_id", metavar="id", help="client id to block")
+    clients_block.set_defaults(func=_cmd_clients_block)
+    clients_unblock = clients_sub.add_parser(
+        "unblock", help="restore access for a blocked client")
+    clients_unblock.add_argument("client_id", metavar="id", help="client id to unblock")
+    clients_unblock.set_defaults(func=_cmd_clients_unblock)
+    clients_remove = clients_sub.add_parser("remove", help="permanently remove an approved client key")
     clients_remove.add_argument("client_id", metavar="id", help="client id to remove")
     clients_remove.set_defaults(func=_cmd_clients_remove)
 

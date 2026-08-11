@@ -145,15 +145,18 @@ def _disconnect_removed_clients(
     old_cfg: BrokerConfig,
     new_cfg: BrokerConfig,
 ) -> None:
-    """Drop live LAN connections whose identity was removed on reload.
+    """Drop live LAN connections whose identity was removed or blocked on reload.
 
-    Each removed client gets a final revocation message before its socket is
+    Each affected client gets a final revocation message before its socket is
     closed; the tear-down is recorded in the audit log.
     """
     removed = set(old_cfg.identity.clients) - set(new_cfg.identity.clients)
-    if not removed:
+    blocked = {cid for cid, ident in new_cfg.identity.clients.items()
+               if getattr(ident, "blocked", False)}
+    targets = removed | blocked
+    if not targets:
         return
-    revoked = ws_server.disconnect_clients(removed)
+    revoked = ws_server.disconnect_clients(targets)
     for client_id in revoked:
         broker.audit_security_rejection(
             op="auth",

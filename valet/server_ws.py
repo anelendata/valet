@@ -76,6 +76,8 @@ def auth_rejection_reason(response, client_id, identity, signature, host_id, non
         return "missing client_id"
     if identity is None:
         return "client identity is not approved"
+    if getattr(identity, "blocked", False):
+        return "client identity is blocked"
     if not verify_signature(identity.key, host_id, nonce, client_id, signature):
         return "signature verification failed"
     return None
