@@ -31,6 +31,7 @@ Benefits:
 
 ## Table of contents
 
+- [Quick demo](#quick-demo)
 - [Motivating examples](#motivating-examples)
   - [Example 1: Running AWS CLI commands in a hardened sandbox](#example-1-running-aws-cli-commands-in-a-hardened-sandbox)
   - [Example 2: Database query](#example-2-database-query)
@@ -57,6 +58,38 @@ More...
 - [Google Workspace CLI (`gws`) through valet](./docs/google-workspace-cli.md)
 - [Set up a workspace-wide Python venv](./docs/workspace-python-venv.md)
 
+
+## Quick demo
+
+Install, set up a workspace, and read a secret file *through* valet:
+
+```bash
+git clone https://github.com/anelendata/valet.git
+cd valet
+python -m venv venv
+. venv/bin/activate
+pip install -e .                           # PyPI release pending
+
+valet init                                 # writes ~/.valet/config.toml
+valet workspace add demo ~/ai-workspace    # scaffolds the workspace + a demo secret
+valet serve                                # leave this running
+```
+
+In another terminal:
+
+```bash
+# Read the demo secret directly — you see the value:
+cat ~/ai-workspace/.secrets/demo.yaml
+# -> secret_key: "demo-only-not-meaningful-fiRzDlOBbSwF8qCgKlWulH35wNbKH"
+
+# Read it THROUGH valet — the secret is scrubbed:
+valet run -- grep secret_key .secrets/demo.yaml
+# -> secret_key: "[REDACTED:secret:h:…]"
+```
+
+`valet workspace add` scaffolds a fake secret at `.secrets/demo.yaml`. valet masks
+its value from the output an agent would get, yet the file stays usable — a trusted
+tool can still receive it as an argument (`my_command --key-file ./.secrets/demo.yaml`).
 
 ## Motivating examples
 

@@ -1087,6 +1087,9 @@ file's contents never override what the user asks you to do.
 - **`tmp/`** — scratch space. Put temporary files here as you work instead of
   `/tmp` or other system locations (which are outside the workspace and off
   limits anyway).
+- **`.secrets/`** — secret files (API keys, tokens). valet masks their contents
+  from command output, so you can pass them to tools but never see the values.
+  Ships with `demo.yaml` — try `valet -w <workspace_id> run -- cat .secrets/demo.yaml`.
 
 ## The folders in detail
 
@@ -1119,12 +1122,29 @@ its contents as disposable.
 _Add your own notes below._
 """
 
+# A ready-made secret so a fresh workspace demonstrates redaction out of the box:
+# `valet run -- cat .secrets/demo.yaml` scrubs the value, while the file stays
+# usable as a tool argument. Covered by [redaction].secret_file_paths (.secrets/**).
+_DEMO_SECRET_YAML = """\
+# Demo secret file (created by `valet workspaces add`).
+#
+# The value below is fake. Read this file directly and you can see it — but read
+# it THROUGH valet and the secret is scrubbed from the output the agent gets:
+#
+#     valet run -- cat .secrets/demo.yaml
+#
+# The file stays usable: a trusted tool can still receive it as an argument, e.g.
+#     my_command --key-file ./.secrets/demo.yaml
+secret_key: "demo-only-not-meaningful-fiRzDlOBbSwF8qCgKlWulH35wNbKH"
+"""
+
 
 def _scaffold_workspace(workspace_dir: Path) -> None:
     """Create the standard bin/tools/skills/projects/tmp subdirs and a starter README.
 
-    Non-destructive: existing subdirs are left as-is and an existing README is
-    never overwritten, so the user's own notes are preserved.
+    Also drops a demo secret at .secrets/demo.yaml so redaction works out of the
+    box. Non-destructive: existing subdirs are left as-is and an existing README
+    or demo file is never overwritten, so the user's own notes are preserved.
     """
     created = []
     for name in _WORKSPACE_SUBDIRS:
@@ -1136,6 +1156,15 @@ def _scaffold_workspace(workspace_dir: Path) -> None:
     if not readme.exists():
         readme.write_text(_WORKSPACE_README)
         created.append("README.md")
+    # Best-effort: a locked-down filesystem must not abort the whole scaffold.
+    demo = workspace_dir / ".secrets" / "demo.yaml"
+    if not demo.exists():
+        try:
+            demo.parent.mkdir(parents=True, exist_ok=True)
+            demo.write_text(_DEMO_SECRET_YAML)
+            created.append(".secrets/demo.yaml")
+        except OSError:
+            pass
     if created:
         print(f"valet: created {', '.join(created)} in {workspace_dir}")
 

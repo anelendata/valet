@@ -550,6 +550,24 @@ def test_cli_workspace_add_scaffolds_existing_dir_without_clobbering_readme(tmp_
     assert (existing / "README.md").read_text() == "my own notes"
 
 
+def test_scaffold_demo_secret_is_redactable(tmp_path):
+    # The scaffolded .secrets/demo.yaml must actually demonstrate redaction: its
+    # value is masked when the file is loaded as a secret source. (Written to a
+    # plain path here — the test sandbox blocks creating literal `.secrets` dirs.)
+    from valet.cli import _DEMO_SECRET_YAML
+    from valet.secrets import load_secret_values
+    from valet.sanitize import Redactor
+
+    assert "secret_key" in _DEMO_SECRET_YAML
+    f = tmp_path / "demo.yaml"
+    f.write_text(_DEMO_SECRET_YAML)
+    red = Redactor.build(load_secret_values([str(f)]), salt="s")
+
+    out = red.redact(_DEMO_SECRET_YAML)
+    assert "demo-only-not-meaningful-fiRzDlOBbSwF8qCgKlWulH35wNbKH" not in out
+    assert "REDACTED" in out
+
+
 def test_cli_workspace_add_make_default(tmp_path):
     a = tmp_path / "a"; a.mkdir()
     cfg_path = _write_config(tmp_path / "config.toml", {"default": {"path": str(a)}})
