@@ -403,6 +403,21 @@ def test_cli_workspace_list(tmp_path, capsys):
     assert "* default" in out and str(a) in out
 
 
+def test_cli_workspace_list_hides_home_prefix(tmp_path, monkeypatch, capsys):
+    # The local lister must not spell out the real home path / username.
+    home = tmp_path / "home"
+    (home / "ws").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    cfg_path = _write_config(tmp_path / "config.toml",
+                             {"default": {"path": str(home / "ws")}})
+
+    assert main(["-c", str(cfg_path), "workspaces", "list"]) == 0
+
+    out = capsys.readouterr().out
+    assert "~/ws" in out
+    assert str(home) not in out  # real home path is not disclosed
+
+
 def test_cli_workspace_list_remote_queries_daemon(monkeypatch, capsys):
     # In client mode (remote host), `workspaces list` lists the remote host's
     # workspaces over RPC — paths are not disclosed.

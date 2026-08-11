@@ -1284,7 +1284,12 @@ def _workspace_list_local(args: argparse.Namespace) -> int:
     for wid in sorted(workspaces):
         wcfg = workspaces[wid]
         marker = "*" if wid == cfg.default_workspace else " "
-        print(f"{marker} {wid}\t{wcfg.exec.workspace or '(no path)'}")
+        # Collapse the home prefix to ~ so the listing doesn't spell out the
+        # username / real home layout (consistent with the rest of valet's
+        # output, and with the remote lister that discloses no path at all).
+        ws = wcfg.exec.workspace
+        shown = _home_relative(Path(ws)) if ws else "(no path)"
+        print(f"{marker} {wid}\t{shown}")
     return 0
 
 
