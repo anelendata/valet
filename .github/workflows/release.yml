@@ -1,17 +1,17 @@
 name: release
 
-# Push a version tag (e.g. `git tag v0.0.1 && git push origin v0.0.1`) to build
-# and publish to PyPI via Trusted Publishing (OIDC) — no API token in the repo.
+# Push a version tag (e.g. `git tag v0.0.1 && git push origin v0.0.1`) to build,
+# install-test, and publish to PyPI via Trusted Publishing (OIDC) — no API token.
+#
+# Flow: build -> smoke (install-test the built artifacts; gates publish) ->
+# publish -> verify (install the published package from PyPI).
 on:
   push:
     tags: ["v*"]
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write   # required for Trusted Publishing
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,4 +19,91 @@ jobs:
           python-version: "3.11"
       - run: pip install build
       - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Install the built wheel AND sdist in a clean venv and prove they work, before
+  # anything is published. Catches missing package data (the 0.0.2 regression),
+  # a version that doesn't match the tag, and a broken command path.
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        artifact: ["*.whl", "*.tar.gz"]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Install ${{ matrix.artifact }} in a clean venv
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/venv/bin/pip" install --upgrade pip
+          "$RUNNER_TEMP/venv/bin/pip" install dist/${{ matrix.artifact }}
+      - name: Runtime version matches the tag
+        run: |
+          python -c "import os, valet; want = os.environ['GITHUB_REF_NAME'].removeprefix('v'); assert valet.__version__ == want, f'{valet.__version__} != {want}'; print('version OK:', valet.__version__)"
+          valet --help >/dev/null && echo "valet --help: OK"
+      - name: Bundled data files are present
+        run: |
+          for f in config.example.toml workspace.sb; do
+            python -c "import importlib.resources as r, sys; sys.exit(0 if (r.files('valet')/'$f').is_file() else 1)" \
+              && echo "bundled: $f" || { echo "MISSING: $f"; exit 1; }
+          done
+      - name: Functional smoke test (init -> workspace -> serve -> redact)
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          printf 'y\ny\nn\n' | valet init          # create dir, create config, decline LAN
+          valet workspaces add demo "$HOME/ws" --yes
+          valet serve >"$RUNNER_TEMP/serve.log" 2>&1 &
+          SERVE=$!
+          for i in $(seq 1 30); do valet run -- true >/dev/null 2>&1 && break; sleep 1; done
+          out="$(valet run -- grep secret_key .secrets/demo.yaml)"
+          echo "$out"
+          echo "$out" | grep -q 'REDACTED' || { echo "secret was NOT redacted"; cat "$RUNNER_TEMP/serve.log"; kill "$SERVE" 2>/dev/null || true; exit 1; }
+          kill "$SERVE" 2>/dev/null || true
+          echo "functional smoke: OK"
+
+  publish:
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Confirm the real, published package installs from PyPI. The simple index lags
+  # the upload behind a CDN, so retry for a few minutes before failing.
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install from PyPI (retry for index propagation)
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          python -m venv "$RUNNER_TEMP/pv"
+          "$RUNNER_TEMP/pv/bin/pip" install --upgrade pip >/dev/null
+          for i in $(seq 1 15); do
+            if "$RUNNER_TEMP/pv/bin/pip" install --no-cache-dir "valet-ai==$V"; then ok=1; break; fi
+            echo "-- not on the index yet (attempt $i); waiting 20s…"; sleep 20
+          done
+          [ "${ok:-}" = 1 ] || { echo "valet-ai==$V never became installable from PyPI"; exit 1; }
+          "$RUNNER_TEMP/pv/bin/python" -c "import valet, os; want = os.environ['GITHUB_REF_NAME'].removeprefix('v'); assert valet.__version__ == want, f'{valet.__version__} != {want}'; print('PyPI install OK:', valet.__version__)"
