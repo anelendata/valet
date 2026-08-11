@@ -495,10 +495,10 @@ def test_init_activates_sandbox_on_macos(tmp_path, monkeypatch):
     assert any(line.strip().startswith("sandbox_profile =") for line in text.splitlines())
 
 
-def test_init_enables_lan_when_confirmed(tmp_path, monkeypatch):
+def test_init_enables_lan_local_only_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr("valet.cli.sys.platform", "linux")
-    # create valet dir, create config, ENABLE the LAN host
-    monkeypatch.setattr("builtins.input", _answers("y", "y", "y"))
+    # create valet dir, create config, ENABLE the LAN host, DECLINE remote access
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "y", "n"))
     monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
     config = tmp_path / "valet" / "config.toml"
 
@@ -506,7 +506,25 @@ def test_init_enables_lan_when_confirmed(tmp_path, monkeypatch):
 
     assert rc == 0
     from valet.config import load_config
-    assert load_config(config).host.lan is True
+    cfg = load_config(config)
+    assert cfg.host.lan is True
+    assert cfg.host.listen == "127.0.0.1:8766"
+
+
+def test_init_opens_lan_to_other_machines_when_confirmed(tmp_path, monkeypatch):
+    monkeypatch.setattr("valet.cli.sys.platform", "linux")
+    # create valet dir, create config, ENABLE the LAN host, ALLOW remote access
+    monkeypatch.setattr("builtins.input", _answers("y", "y", "y", "y"))
+    monkeypatch.setattr("valet.cli._doctor_report", lambda path, cfg: False)
+    config = tmp_path / "valet" / "config.toml"
+
+    rc = main(["-c", str(config), "init"])
+
+    assert rc == 0
+    from valet.config import load_config
+    cfg = load_config(config)
+    assert cfg.host.lan is True
+    assert cfg.host.listen == "0.0.0.0:8766"
 
 
 def test_init_leaves_lan_off_when_declined(tmp_path, monkeypatch):
@@ -519,4 +537,6 @@ def test_init_leaves_lan_off_when_declined(tmp_path, monkeypatch):
 
     assert rc == 0
     from valet.config import load_config
-    assert load_config(config).host.lan is False
+    cfg = load_config(config)
+    assert cfg.host.lan is False
+    assert cfg.host.listen == "127.0.0.1:8766"

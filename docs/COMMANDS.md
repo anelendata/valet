@@ -200,9 +200,12 @@ valet init
 Create `~/.valet/config.toml` from the bundled example (use `-c PATH` to write it
 elsewhere) with a stable redaction salt, and — on macOS — offer to install the
 `sandbox-exec` profile. Prompts (y/n) for the macOS OS sandbox and the LAN host.
-It defines **no** workspace and won't overwrite an existing config; add your
-first workspace with [`workspaces add`](#workspaces-add). Ends with a health
-check.
+If you enable the LAN host, it then asks whether another computer on your LAN
+should be able to connect: **yes** sets `[host].listen` to `0.0.0.0:8766`, **no**
+leaves it at `127.0.0.1:8766` (this machine only) — either way you can change it
+later in the `[host]` section. It defines **no** workspace and won't overwrite an
+existing config; add your first workspace with
+[`workspaces add`](#workspaces-add). Ends with a health check.
 
 ### `doctor`
 

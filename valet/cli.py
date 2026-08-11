@@ -182,10 +182,29 @@ def _init_lan_host(text: str) -> str:
         print("valet: warning: could not find the [host].lan line to enable; "
               "set it by hand.", file=sys.stderr)
         return text
-    print("valet: enabled [host].lan. It listens on 127.0.0.1:8766 by default; to")
-    print("accept connections from other machines, set [host].listen to a LAN")
-    print("interface (e.g. 0.0.0.0:8766) and add clients with `valet clients add`.")
-    return enabled
+    text = enabled
+    print("valet: enabled [host].lan.")
+
+    print()
+    print("By default the host listens on 127.0.0.1:8766 — reachable only from")
+    print("this machine. To let another computer on your LAN (e.g. a separate AI")
+    print("box) connect, it must listen on a LAN interface (0.0.0.0:8766).")
+    if _confirm("Allow another computer on your LAN to connect "
+                "(listen on 0.0.0.0:8766)?", default=False):
+        listened, ln = re.subn(
+            r'(?m)^(\s*listen\s*=\s*).*$', r'\1"0.0.0.0:8766"', text)
+        if ln == 0:
+            print("valet: warning: could not find the [host].listen line; set it "
+                  "by hand.", file=sys.stderr)
+        else:
+            text = listened
+            print("valet: set [host].listen to 0.0.0.0:8766.")
+    else:
+        print("valet: leaving [host].listen at 127.0.0.1:8766 (this machine only).")
+
+    print("\nYou can change the bind address anytime in the [host] section of the")
+    print("config. Add clients with `valet clients add`.")
+    return text
 
 
 def _confirm(prompt: str, *, default: bool) -> bool:
