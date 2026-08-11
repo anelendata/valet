@@ -180,8 +180,8 @@ def load_config(path: Optional[str | os.PathLike] = None) -> BrokerConfig:
     cfg_path = Path(path) if path is not None else default_config_path()
     if not cfg_path.exists():
         raise ConfigError(
-            f"config not found at {cfg_path}. Copy config.example.toml to "
-            f"config.toml (or set {DEFAULT_CONFIG_ENV})."
+            f"config not found at {cfg_path}. Run `valet init` to create it "
+            f"(or set {DEFAULT_CONFIG_ENV})."
         )
     try:
         with open(cfg_path, "rb") as fh:

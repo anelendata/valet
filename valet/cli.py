@@ -193,11 +193,15 @@ def _confirm(prompt: str, *, default: bool) -> bool:
 
 
 def _example_config_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "config.example.toml"
+    # Shipped inside the package (see [tool.setuptools.package-data]) so it is
+    # found both from a source checkout and from an installed wheel.
+    return Path(__file__).resolve().parent / "config.example.toml"
 
 
 def _workspace_sb_source() -> Path:
-    return Path(__file__).resolve().parent.parent / "contrib" / "sandbox-exec" / "workspace.sb"
+    # Packaged copy of contrib/sandbox-exec/workspace.sb (kept in sync; see the
+    # drift test) so `valet init` finds it when installed from a wheel.
+    return Path(__file__).resolve().parent / "workspace.sb"
 
 
 def _home_relative(path: Path) -> str:
@@ -991,7 +995,7 @@ def _cmd_client_default_workspace_unset(args: argparse.Namespace) -> int:
 def _cmd_clients_add(args: argparse.Namespace) -> int:
     path = Path(args.config) if args.config else default_config_path()
     if not path.exists():
-        print(f"valet: {path} not found. Copy config.example.toml first:",
+        print(f"valet: {path} not found. Run `valet init` first.",
               file=sys.stderr)
         return 2
 
@@ -1029,7 +1033,7 @@ def _cmd_clients_add(args: argparse.Namespace) -> int:
 def _cmd_clients_list(args: argparse.Namespace) -> int:
     path = Path(args.config) if args.config else default_config_path()
     if not path.exists():
-        print(f"valet: {path} not found. Copy config.example.toml first:",
+        print(f"valet: {path} not found. Run `valet init` first.",
               file=sys.stderr)
         return 2
 
@@ -1046,7 +1050,7 @@ def _cmd_clients_list(args: argparse.Namespace) -> int:
 def _cmd_clients_remove(args: argparse.Namespace) -> int:
     path = Path(args.config) if args.config else default_config_path()
     if not path.exists():
-        print(f"valet: {path} not found. Copy config.example.toml first:",
+        print(f"valet: {path} not found. Run `valet init` first.",
               file=sys.stderr)
         return 2
 

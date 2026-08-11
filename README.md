@@ -64,11 +64,9 @@ More...
 Install, set up a workspace, and read a secret file *through* valet:
 
 ```bash
-git clone https://github.com/anelendata/valet.git
-cd valet
 python -m venv venv
 . venv/bin/activate
-pip install -e .                           # PyPI release pending
+pip install valet-ai
 
 valet init                                 # writes ~/.valet/config.toml
 valet workspace add demo ~/ai-workspace    # scaffolds the workspace + a demo secret
@@ -597,7 +595,7 @@ than the terminal are shown through `more`, where `q` returns to the prompt.
 
 `config.toml` (never committed) sets the socket, the default workspace, and the
 secret sources valet loads so it can redact their values. See
-[`config.example.toml`](config.example.toml). Per command, valet also
+[`config.example.toml`](valet/config.example.toml). Per command, valet also
 auto-loads `.env`/`.secrets` from the command's working directory, so a
 project's own secrets are redacted when you run there.
 

@@ -1,4 +1,32 @@
+from pathlib import Path
+
 from valet.cli import main
+
+
+def test_example_config_is_packaged_and_parses():
+    # Regression: `valet init` reads this file, which must ship inside the wheel
+    # and be resolvable from an installed package (not only a source checkout).
+    import valet
+    from valet.cli import _example_config_path
+    from valet.config import load_config
+
+    p = _example_config_path()
+    assert p.exists(), f"example config not shipped at {p}"
+    assert p.parent == Path(valet.__file__).resolve().parent
+    load_config(str(p))  # valid TOML valet can parse
+
+
+def test_sandbox_profile_packaged_and_matches_contrib():
+    from valet.cli import _workspace_sb_source
+
+    packaged = _workspace_sb_source()
+    assert packaged.exists(), f"sandbox profile not shipped at {packaged}"
+    contrib = (Path(__file__).resolve().parents[1]
+               / "contrib" / "sandbox-exec" / "workspace.sb")
+    if contrib.exists():  # present in a source checkout, absent in a wheel
+        assert packaged.read_bytes() == contrib.read_bytes(), (
+            "valet/workspace.sb drifted from contrib/sandbox-exec/workspace.sb"
+        )
 
 
 class _FakeTarget:

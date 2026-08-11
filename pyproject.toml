@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "valet-ai"
-version = "0.0.1"
+version = "0.0.2"
 description = "A local secret-redacting command runner: run a command, get output with secrets scrubbed."
 requires-python = ">=3.11"
 readme = "README.md"
@@ -33,6 +33,11 @@ valet = "valet.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["valet*"]
+
+[tool.setuptools.package-data]
+# Ship the example config and the macOS sandbox profile inside the wheel so
+# `valet init` finds them when installed (not just from a source checkout).
+valet = ["config.example.toml", "workspace.sb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
