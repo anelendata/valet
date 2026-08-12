@@ -204,3 +204,189 @@ def test_secret_index_ttl_picks_up_a_brand_new_file(tmp_path):
     later = idx.values_for(sources)
     assert "first-secret-abcdef123456" in later
     assert "second-secret-zyxwvu987654" in later
+
+
+# ---- pruned recursive-glob expansion ----------------------------------------
+
+def _ref_glob_files(pattern):
+    """Reference: plain recursive glob, files only (what we must not under-match)."""
+    from glob import glob
+    return sorted(m for m in glob(pattern, recursive=True) if os.path.isfile(m))
+
+
+def _build_plain_tree(base):
+    """A tree with only non-hidden, non-pruned intermediate dirs."""
+    (base / "top.txt").write_text("t")
+    (base / "creds").mkdir()
+    (base / "creds" / "a.txt").write_text("a")
+    (base / "creds" / "sub").mkdir()
+    (base / "creds" / "sub" / "b.txt").write_text("b")
+    proj = base / "proj" / "x"
+    (proj / "creds").mkdir(parents=True)
+    (proj / "creds" / "c.txt").write_text("c")
+    (proj / "x.env").write_text("e")
+
+
+def test_pruned_expand_matches_glob_on_plain_tree(tmp_path):
+    # With no hidden intermediate dirs and no pruned dirs, the pruned expander
+    # must return EXACTLY what glob(recursive=True) returns — proving the
+    # outer-recursion reimplementation preserves matching.
+    from valet.secrets import _expand_source
+
+    _build_plain_tree(tmp_path)
+    for pat in [
+        str(tmp_path / "**" / "creds" / "**"),
+        str(tmp_path / "**" / "x.env"),
+        str(tmp_path / "**"),
+        str(tmp_path / "creds" / "**"),
+    ]:
+        assert sorted(_expand_source(pat)) == _ref_glob_files(pat), pat
+
+
+def test_pruned_expand_skips_prune_dirs(tmp_path):
+    from valet.secrets import _expand_source
+
+    _build_plain_tree(tmp_path)
+    leak = tmp_path / "node_modules" / "creds" / "leak.txt"
+    leak.parent.mkdir(parents=True)
+    leak.write_text("x")
+
+    pat = str(tmp_path / "**" / "creds" / "**")
+    got = sorted(_expand_source(pat))
+    assert str(leak) in _ref_glob_files(pat)          # glob would crawl it
+    assert str(leak) not in got                       # we prune node_modules
+    assert set(got) == set(_ref_glob_files(pat)) - {str(leak)}
+
+
+def test_pruned_expand_keeps_dir_named_in_pattern(tmp_path):
+    # A dir in the prune set is NOT pruned when the pattern names it explicitly.
+    from valet.secrets import _expand_source
+
+    leak = tmp_path / "node_modules" / "creds" / "leak.txt"
+    leak.parent.mkdir(parents=True)
+    leak.write_text("x")
+
+    pat = str(tmp_path / "**" / "node_modules" / "**")
+    assert str(leak) in sorted(_expand_source(pat))
+
+
+def test_pruned_expand_descends_hidden_intermediate_dirs(tmp_path):
+    # glob's ** skips hidden dirs; our walk descends them, so a secret dir nested
+    # under a hidden dir is caught (a safe superset of glob).
+    from valet.secrets import _expand_source
+
+    secret = tmp_path / ".config" / "app" / "creds" / "s.txt"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("x")
+
+    pat = str(tmp_path / "**" / "creds" / "**")
+    assert str(secret) in sorted(_expand_source(pat))
+    assert str(secret) not in _ref_glob_files(pat)    # glob misses it
+
+
+def test_pruned_expand_matches_glob_on_random_trees(tmp_path):
+    # Differential fuzz: on random trees with no hidden/pruned dirs, the pruned
+    # expander must equal glob for several pattern shapes. Guards against a tree
+    # depth/shape where the reimplemented recursion under- or over-matches.
+    import random
+
+    from valet.secrets import _expand_source
+
+    rng = random.Random(1234)
+    names = ["a", "b", "c", "d", "proj", "src", "note-com"]
+    for t in range(25):
+        root = tmp_path / f"t{t}"
+        root.mkdir()
+        # Grow a handful of random directories and drop files (some in `creds/`).
+        dirs = [root]
+        for _ in range(rng.randint(3, 12)):
+            parent = rng.choice(dirs)
+            child = parent / rng.choice(names)
+            child.mkdir(exist_ok=True)
+            dirs.append(child)
+            if rng.random() < 0.5:
+                (child / f"f{rng.randint(0, 4)}.txt").write_text("x")
+            if rng.random() < 0.4:
+                c = child / "creds"
+                c.mkdir(exist_ok=True)
+                (c / f"s{rng.randint(0, 3)}.txt").write_text("x")
+                (c / "note.env").write_text("x")
+
+        for pat in [
+            str(root / "**" / "creds" / "**"),
+            str(root / "**" / "note.env"),
+            str(root / "**" / "*.txt"),
+            str(root / "**"),
+        ]:
+            assert sorted(_expand_source(pat)) == _ref_glob_files(pat), (t, pat)
+
+
+def _ref_glob_union(patterns):
+    out = set()
+    for p in patterns:
+        out.update(_ref_glob_files(p))
+    return sorted(out)
+
+
+def test_expand_all_grouped_matches_glob_union_on_plain_tree(tmp_path):
+    # The grouped single-walk fast path must return the same files as running
+    # each pattern through glob separately (plain tree: no hidden/pruned dirs).
+    from valet.secrets import _expand_all
+
+    _build_plain_tree(tmp_path)
+    sources = [
+        str(tmp_path / "**" / "creds" / "**"),   # dir anchor
+        str(tmp_path / "**" / "x.env"),          # file anchor
+    ]
+    assert sorted(_expand_all(sources)) == _ref_glob_union(sources)
+
+
+def test_expand_all_grouped_prunes_and_dedupes(tmp_path):
+    from valet.secrets import _expand_all
+
+    _build_plain_tree(tmp_path)
+    leak = tmp_path / "node_modules" / "creds" / "leak.txt"
+    leak.parent.mkdir(parents=True)
+    leak.write_text("x")
+    # Overlapping patterns (creds dir anchor + a broad .txt file set) must not
+    # double-count, and the pruned dir must be excluded from the dir-anchor walk.
+    sources = [
+        str(tmp_path / "**" / "creds" / "**"),
+        str(tmp_path / "**" / "a.txt"),
+    ]
+    got = sorted(_expand_all(sources))
+    assert got == sorted(set(got))                 # de-duped
+    assert str(leak) not in got                    # node_modules pruned
+
+
+def test_expand_all_grouped_matches_glob_union_on_random_trees(tmp_path):
+    # Differential fuzz for the grouped path: many patterns, one walk == union of
+    # per-pattern globs, across random shapes.
+    import random
+
+    from valet.secrets import _expand_all
+
+    rng = random.Random(99)
+    names = ["a", "b", "c", "proj", "src", "note-com"]
+    for t in range(20):
+        root = tmp_path / f"t{t}"
+        root.mkdir()
+        dirs = [root]
+        for _ in range(rng.randint(3, 12)):
+            parent = rng.choice(dirs)
+            child = parent / rng.choice(names)
+            child.mkdir(exist_ok=True)
+            dirs.append(child)
+            if rng.random() < 0.5:
+                (child / f"f{rng.randint(0, 4)}.txt").write_text("x")
+            if rng.random() < 0.4:
+                c = child / "creds"
+                c.mkdir(exist_ok=True)
+                (c / f"s{rng.randint(0, 3)}.txt").write_text("x")
+                (c / "note.env").write_text("x")
+
+        sources = [
+            str(root / "**" / "creds" / "**"),
+            str(root / "**" / "note.env"),
+        ]
+        assert sorted(_expand_all(sources)) == _ref_glob_union(sources), (t, sources)

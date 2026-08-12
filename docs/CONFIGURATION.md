@@ -270,9 +270,14 @@ One list, but the pattern's **form** decides where it matches:
 `.secrets/` directory *directly at the cwd*; a **nested** one (say
 `skills/foo/.secrets/token`) is **not** covered, so its contents would leak in
 output. Prefix with `**/` (`**/.secrets/**`) to match `.secrets/` at **any**
-depth — this is why the shipped defaults use `**/`. The trade-off is that a `**/`
-pattern walks the whole tree per command; for a huge workspace, list the specific
-subtrees instead.
+depth — this is why the shipped defaults use `**/`.
+
+To keep `**/` cheap, valet **caches** the scan per workspace (reused across
+commands until an indexed secret file changes, and refreshed at least every few
+seconds so new files are still picked up) and **prunes** well-known huge
+non-secret directories (`.git`, `node_modules`, `.venv`, `__pycache__`, caches,
+…) from the walk. A directory you name explicitly in a pattern is never pruned.
+For an enormous tree you can still narrow patterns to specific subtrees.
 
 A pattern may name a file, a directory (all files under it load), or a glob. For
 each match valet masks the whole file content (so any full dump is caught) **plus**
