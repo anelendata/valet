@@ -6,7 +6,7 @@ explodes into tens of thousands of values. This builds one automaton over all
 those values and masks them in a SINGLE pass over the output (O(output), plus the
 matches), independent of the number of values, with the same coverage.
 
-Toggled from :mod:`valet.sanitize` via ``USE_AHO_CORASICK``. It is used only for
+Selected from :mod:`valet.sanitize` via ``AHO_CORASICK``. It is used only for
 *short* values; a handful of very long values (whole-file blobs, PEM keys) are
 still handled by the plain ``in``/``replace`` loop there, so the trie never has
 to hold megabyte-long patterns.
@@ -20,6 +20,43 @@ from __future__ import annotations
 
 from collections import deque
 from typing import Callable, Iterable
+
+try:  # optional C-accelerated backend; install the `speedups` extra to use it.
+    import ahocorasick as _pyahocorasick
+except ImportError:  # pragma: no cover - exercised only where it isn't installed
+    _pyahocorasick = None
+
+HAS_PYAHOCORASICK = _pyahocorasick is not None
+
+
+def _apply_spans(text: str, spans: list[tuple[int, int]],
+                 tag: Callable[[str], str]) -> str:
+    """Replace the (possibly overlapping) match spans, longest coverage kept.
+
+    Shared by every backend so they produce byte-identical output: overlapping
+    spans merge into one replaced region, separated spans stay distinct, and each
+    replaced region is passed to ``tag`` as its matched substring.
+    """
+    if not spans:
+        return text
+    spans.sort()
+    merged: list[tuple[int, int]] = [spans[0]]
+    for start, end in spans[1:]:
+        m_start, m_end = merged[-1]
+        if start <= m_end:  # overlap -> extend the current masked span
+            merged[-1] = (m_start, max(m_end, end))
+        else:
+            merged.append((start, end))
+
+    out: list[str] = []
+    pos = 0
+    for start, end in merged:
+        if pos < start:
+            out.append(text[pos:start])
+        out.append(tag(text[start:end + 1]))
+        pos = end + 1
+    out.append(text[pos:])
+    return "".join(out)
 
 
 class _Node:
@@ -97,23 +134,35 @@ class AhoCorasick:
                 best[i] = node.length
 
         spans = [(i - best[i] + 1, i) for i in range(n) if best[i]]
-        if not spans:
-            return text
-        spans.sort()
-        merged: list[tuple[int, int]] = [spans[0]]
-        for start, end in spans[1:]:
-            m_start, m_end = merged[-1]
-            if start <= m_end:  # overlap -> extend the current masked span
-                merged[-1] = (m_start, max(m_end, end))
-            else:
-                merged.append((start, end))
+        return _apply_spans(text, spans, tag)
 
-        out: list[str] = []
-        pos = 0
-        for start, end in merged:
-            if pos < start:
-                out.append(text[pos:start])
-            out.append(tag(text[start:end + 1]))
-            pos = end + 1
-        out.append(text[pos:])
-        return "".join(out)
+
+class PyAhoCorasick:
+    """Same interface as :class:`AhoCorasick`, backed by the ``pyahocorasick`` C
+    extension. Selected by setting ``sanitize.AHO_CORASICK = PyAhoCorasick``;
+    construction raises if the extension isn't installed. Produces byte-identical
+    output to the in-house backend (same :func:`_apply_spans`).
+    """
+
+    def __init__(self, patterns: Iterable[str]) -> None:
+        if _pyahocorasick is None:
+            raise RuntimeError(
+                "pyahocorasick is not installed; `pip install valet-ai[speedups]` "
+                "or set sanitize.AHO_CORASICK back to the in-house AhoCorasick."
+            )
+        automaton = _pyahocorasick.Automaton()
+        count = 0
+        for pattern in patterns:
+            if pattern:
+                automaton.add_word(pattern, len(pattern))  # payload = length
+                count += 1
+        self._empty = count == 0
+        if not self._empty:
+            automaton.make_automaton()
+        self._automaton = automaton
+
+    def replace(self, text: str, tag: Callable[[str], str]) -> str:
+        if self._empty or not text:
+            return text
+        spans = [(end - length + 1, end) for end, length in self._automaton.iter(text)]
+        return _apply_spans(text, spans, tag)

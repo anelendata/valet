@@ -24,40 +24,50 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .heuristics import redact_high_entropy, redact_suspected
-from .multimatch import AhoCorasick
+from .multimatch import AhoCorasick, PyAhoCorasick
 
-# Hard switch (no config yet — flip to compare) for the exact-value redaction
-# layer. True uses an Aho-Corasick automaton so masking many values is one pass
-# over the output instead of one pass per value; False uses the plain
-# in/replace loop. Coverage is identical either way.
-USE_AHO_CORASICK = True
+# Hard switch (no config yet — reassign to compare) for the exact-value redaction
+# backend. It holds the matcher builder to use, or None:
+#   AhoCorasick    -> in-house pure-Python automaton (default; no dependency)
+#   PyAhoCorasick  -> the pyahocorasick C extension (needs the `speedups` extra)
+#   None           -> the plain in/replace loop, one pass per value
+# Every backend masks the same values with byte-identical output; they differ
+# only in speed. A builder takes an iterable of patterns and returns an object
+# with `.replace(text, tag)`.
+AHO_CORASICK = AhoCorasick
 
-# Values longer than this stay on the naive in/replace path even when AC is on:
-# there are few of them (whole-file blobs, PEM keys), a long needle fails fast,
-# and keeping them out of the trie avoids megabyte-long branches.
+# Values longer than this stay on the naive in/replace path even when a backend
+# is selected: there are few of them (whole-file blobs, PEM keys), a long needle
+# fails fast, and keeping them out of the automaton avoids megabyte-long entries.
 _AC_MAX_PATTERN_LEN = 256
 
 # Cache the per-value-set split + automaton so it is built once, not per command.
-# Keyed by the (already de-duped, sorted) secret_values tuple.
-_AC_PREP_CACHE: "dict[tuple[str, ...], tuple[tuple[str, ...], AhoCorasick | None]]" = {}
+# Keyed by (backend, sorted secret_values) so switching backends is clean.
+_AC_PREP_CACHE: dict = {}
 _AC_PREP_LOCK = threading.Lock()
 _AC_PREP_MAX = 8
 
 
-def _prepare_matcher(secret_values: tuple[str, ...]) -> "tuple[tuple[str, ...], AhoCorasick | None]":
-    """Split values into long (naive) + short (AC automaton), cached per set."""
+def _prepare_matcher(secret_values: tuple[str, ...]):
+    """Split values into long (naive) + short (automaton), cached per set+backend.
+
+    Returns ``(long_values, matcher_or_None)`` where ``matcher`` handles the short
+    values via the selected ``AHO_CORASICK`` backend.
+    """
+    backend = AHO_CORASICK
+    key = (backend, secret_values)
     with _AC_PREP_LOCK:
-        hit = _AC_PREP_CACHE.get(secret_values)
+        hit = _AC_PREP_CACHE.get(key)
     if hit is not None:
         return hit
     long_values = tuple(v for v in secret_values if len(v) > _AC_MAX_PATTERN_LEN)
     short_values = [v for v in secret_values if len(v) <= _AC_MAX_PATTERN_LEN]
-    automaton = AhoCorasick(short_values) if short_values else None
-    prepared = (long_values, automaton)
+    matcher = backend(short_values) if (backend is not None and short_values) else None
+    prepared = (long_values, matcher)
     with _AC_PREP_LOCK:
         if len(_AC_PREP_CACHE) >= _AC_PREP_MAX:
             _AC_PREP_CACHE.clear()
-        _AC_PREP_CACHE[secret_values] = prepared
+        _AC_PREP_CACHE[key] = prepared
     return prepared
 
 # --- generic backstop patterns ------------------------------------------------
@@ -148,13 +158,13 @@ class Redactor:
         # Layer 1: exact known secret values → tagged with a stable fingerprint
         # so distinct secrets stay distinguishable without being revealed.
         if self.secret_values:
-            if USE_AHO_CORASICK:
-                long_values, automaton = _prepare_matcher(self.secret_values)
+            if AHO_CORASICK is not None:
+                long_values, matcher = _prepare_matcher(self.secret_values)
                 for value in long_values:  # few; longest-first order preserved
                     if value in text:
                         text = text.replace(value, self._secret_tag(value))
-                if automaton is not None:
-                    text = automaton.replace(text, self._secret_tag)
+                if matcher is not None:
+                    text = matcher.replace(text, self._secret_tag)
             else:
                 for value in self.secret_values:
                     if value and value in text:

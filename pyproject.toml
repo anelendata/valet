@@ -22,6 +22,8 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+# C-accelerated redaction matcher; set sanitize.AHO_CORASICK = PyAhoCorasick.
+speedups = ["pyahocorasick>=2.3"]
 
 [project.urls]
 Homepage = "https://github.com/anelendata/valet"
