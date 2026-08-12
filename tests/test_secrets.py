@@ -1,4 +1,6 @@
 """Secret-value extraction, including YAML sources."""
+import os
+
 from valet.secrets import _from_yaml, _parse_text, load_secret_values
 
 
@@ -87,6 +89,47 @@ def test_load_secret_values_shallow_glob_skips_nested(tmp_path):
 
     assert "top-secret-value-abcdef123456" in values
     assert "deep-secret-value-abcdef123456" not in values
+
+
+def test_recursive_glob_matches_nested_secret_dir(tmp_path):
+    # Regression: a secret dir nested under the workspace (e.g.
+    # skills/foo/.secrets/) must be covered. A bare "dir/**" only matches at the
+    # top level, which previously let a nested secret leak; a "**/"-prefixed
+    # pattern matches the dir at any depth. (Uses a generic dir name so it runs
+    # under sandboxes that deny creating literal `.secrets`.)
+    top = tmp_path / "creds"
+    nested = tmp_path / "skills" / "foo" / "creds"
+    top.mkdir(parents=True)
+    nested.mkdir(parents=True)
+    (top / "top.txt").write_text("top-secret-abcdef123456\n")
+    (nested / "session.txt").write_text("nested-secret-abcdef123456\n")
+
+    shallow = load_secret_values([str(tmp_path / "creds" / "**")])
+    assert "top-secret-abcdef123456" in shallow
+    assert "nested-secret-abcdef123456" not in shallow          # the footgun
+
+    recursive = load_secret_values([str(tmp_path / "**" / "creds" / "**")])
+    assert "top-secret-abcdef123456" in recursive
+    assert "nested-secret-abcdef123456" in recursive            # now covered
+
+
+def test_example_config_relative_secret_paths_are_recursive():
+    # Guard the shipped default: every RELATIVE secret_file_paths entry must be
+    # "**/"-prefixed so nested secret dirs are covered. Absolute / ~-rooted
+    # patterns are exempt (they match the filesystem directly).
+    import tomllib
+
+    from valet.cli import _example_config_path
+
+    raw = tomllib.loads(_example_config_path().read_text())
+    paths = raw["redaction"]["secret_file_paths"]
+    relative = [p for p in paths if not (os.path.isabs(p) or p.startswith("~"))]
+    assert relative, "expected some relative secret_file_paths in the example"
+    offenders = [p for p in relative if not p.startswith("**/")]
+    assert not offenders, (
+        f"relative secret_file_paths must start with '**/' to cover nested "
+        f"secret dirs; offenders: {offenders}"
+    )
 
 
 def test_load_secret_values_tolerates_missing_source(tmp_path):

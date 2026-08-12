@@ -134,11 +134,17 @@ shell = false
 # directory (all files under it), or a glob. For each match valet masks the whole
 # file content (so any full dump is caught) plus its structured values (KEY=VALUE
 # / ini / json / yaml). Missing paths skipped; files >1 MB skip the whole-blob
-# step. A "**/" pattern walks the tree per command — prefer shallow for huge trees.
+# step.
+#
+# NOTE the leading "**/" on the relative patterns: a bare ".secrets/**" matches
+# ONLY a .secrets/ directory at the cwd, so a nested one (e.g.
+# skills/foo/.secrets/token) would NOT be covered and its contents would leak.
+# "**/.secrets/**" matches .secrets/ at any depth. The "**/" walks the tree per
+# command, so for a huge workspace prefer listing the specific subtrees instead.
 secret_file_paths = [
     "~/.aws/**", "~/.config/**",
-    ".env", ".config/**", ".secrets/**", "secrets/**",
-    ".passwords/**", "passwords/**", ".ssh/**", ".aws/**",
+    "**/.env", "**/.config/**", "**/.secrets/**", "**/secrets/**",
+    "**/.passwords/**", "**/passwords/**", "**/.ssh/**", "**/.aws/**",
 ]
 
 # Extra literal strings to always redact (e.g. a token not stored in a file).

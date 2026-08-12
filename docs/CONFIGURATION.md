@@ -241,9 +241,9 @@ Family 1 — the command runs; its **output** is scrubbed.
 ```toml
 [redaction]
 secret_file_paths = [
-    "~/.aws/**",
-    ".env", ".config/**", ".secrets/**", "secrets/**",
-    ".passwords/**", "passwords/**", ".ssh/**", ".aws/**",
+    "~/.aws/**", "~/.config/**",
+    "**/.env", "**/.config/**", "**/.secrets/**", "**/secrets/**",
+    "**/.passwords/**", "**/passwords/**", "**/.ssh/**", "**/.aws/**",
 ]
 extra_values = []
 redact_suspected = true
@@ -263,14 +263,21 @@ One list, but the pattern's **form** decides where it matches:
 
 - An **absolute** or `~`-rooted pattern (`~/.aws/**`) is matched against the
   filesystem and applies to **every** command.
-- A **relative** pattern (`.env`, `.secrets/**`, `**/.env`) is resolved **against
+- A **relative** pattern (`**/.secrets/**`, `**/.env`) is resolved **against
   each command's cwd**, so one line covers every project.
+
+**Depth matters — this is a common footgun.** A bare `.secrets/**` matches only a
+`.secrets/` directory *directly at the cwd*; a **nested** one (say
+`skills/foo/.secrets/token`) is **not** covered, so its contents would leak in
+output. Prefix with `**/` (`**/.secrets/**`) to match `.secrets/` at **any**
+depth — this is why the shipped defaults use `**/`. The trade-off is that a `**/`
+pattern walks the whole tree per command; for a huge workspace, list the specific
+subtrees instead.
 
 A pattern may name a file, a directory (all files under it load), or a glob. For
 each match valet masks the whole file content (so any full dump is caught) **plus**
 its structured values (`KEY=VALUE` / ini / json / yaml). Missing paths are
-skipped; files larger than 1 MB skip the whole-blob step. A `**/` pattern walks
-the tree per command — prefer shallow patterns for huge trees.
+skipped; files larger than 1 MB skip the whole-blob step.
 
 ### `[policy]`
 
