@@ -3,6 +3,19 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.10 — 2026-08-12
+
+- **Fixed:** REPL Tab-completion is fast again. Every request — including
+  completion — was rebuilding the whole-workspace secret index while auditing;
+  read-only ops now use a path-only redactor and skip the scan entirely.
+- **Added:** files matched by `policy.deny_read` are excluded from the redaction
+  index. A file that can't be read needs no redacting, and this keeps a big
+  capture file (e.g. a multi-MB `.har`) from over-masking unrelated output. Put a
+  file in `secret_file_paths` (redact it) *or* `deny_read` (never read it), not
+  both.
+- Docs: a new redaction internals reference,
+  [`docs/redaction-internals.md`](https://github.com/anelendata/valet/blob/main/docs/redaction-internals.md).
+
 ## 0.0.9 — 2026-08-11
 
 - **Fixed:** argv-mode commands now resolve the first `PATH` match before
