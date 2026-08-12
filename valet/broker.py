@@ -34,7 +34,7 @@ from .executor import OutputChunk, RunResult, iter_run, kill_process, list_proce
 from .policy import Policy
 from .sanitize import Redactor
 from .secrets import _keep as _worth_redacting
-from .secrets import load_secret_values
+from .secrets import SecretIndex
 
 _WITHHELD = "[REDACTED: output withheld — residual secret detected]"
 # Cap README bytes returned by the ``workspace_info`` op so a pathological file
@@ -167,6 +167,10 @@ class Workspace:
         self.redaction = redaction_cfg
         self.policy = policy
         self.fingerprint_salt = fingerprint_salt
+        # Memoizes the (expensive) secret-file scan across commands. Config is
+        # immutable per Workspace — a config reload builds a fresh Workspace, so
+        # this cache is naturally discarded when redaction settings change.
+        self._secret_index = SecretIndex()
 
     def root(self) -> Optional[str]:
         """The real, canonical workspace root, or None when unconfigured."""
@@ -274,8 +278,9 @@ class Workspace:
     def redactor_for(self, cwd: Optional[str], *, extra_values=()) -> Redactor:
         # Each secret_file_paths entry is a glob (like deny_read). An
         # absolute / ~-rooted pattern applies to every command; a relative one is
-        # resolved against this command's cwd. load_secret_values then expands the
-        # globs/directories to concrete files and masks their contents.
+        # resolved against this command's cwd. The per-workspace SecretIndex then
+        # expands the globs/directories to concrete files and masks their
+        # contents, caching the scan across commands (same sources -> reused).
         sources = []
         for pattern in self.redaction.secret_file_paths:
             resolved = os.path.expanduser(os.path.expandvars(pattern))
@@ -284,7 +289,7 @@ class Workspace:
             elif cwd:
                 sources.append(os.path.join(cwd, resolved))
             # A relative pattern with no cwd can't be located; skip it.
-        values = load_secret_values(sources)
+        values = self._secret_index.values_for(sources)
         # Config-listed literals are always masked; env values (e.g. an inline
         # `NAME=value` prefix or --env) are masked only if long enough to look
         # secret, so trivial ones like `1` or `tiny` don't over-redact output.

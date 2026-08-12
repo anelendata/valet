@@ -1,7 +1,12 @@
 """Secret-value extraction, including YAML sources."""
 import os
 
-from valet.secrets import _from_yaml, _parse_text, load_secret_values
+from valet.secrets import (
+    SecretIndex,
+    _from_yaml,
+    _parse_text,
+    load_secret_values,
+)
 
 
 def test_yaml_suffix_extracts_scalar_leaves():
@@ -134,3 +139,68 @@ def test_example_config_relative_secret_paths_are_recursive():
 
 def test_load_secret_values_tolerates_missing_source(tmp_path):
     assert load_secret_values([str(tmp_path / "does-not-exist.txt")]) == []
+
+
+# ---- SecretIndex cache ------------------------------------------------------
+
+def test_secret_index_matches_load_secret_values(tmp_path):
+    d = tmp_path / "creds"
+    d.mkdir()
+    (d / "a.txt").write_text("secret-value-abcdef123456\n")
+    sources = [str(d / "**")]
+
+    idx = SecretIndex()
+    assert idx.values_for(sources) == load_secret_values(sources)
+
+
+def test_secret_index_reuses_scan_until_a_file_changes(tmp_path, monkeypatch):
+    d = tmp_path / "creds"
+    d.mkdir()
+    f = d / "a.txt"
+    f.write_text("secret-value-abcdef123456\n")
+    sources = [str(d / "**")]
+
+    idx = SecretIndex(ttl_seconds=999)  # never rebuild on TTL; only on change
+
+    # Force a cache hit path by counting scans.
+    import valet.secrets as secrets_mod
+    calls = {"n": 0}
+    real_expand = secrets_mod._expand_all
+
+    def counting_expand(srcs):
+        calls["n"] += 1
+        return real_expand(srcs)
+
+    monkeypatch.setattr(secrets_mod, "_expand_all", counting_expand)
+
+    first = idx.values_for(sources)
+    assert "secret-value-abcdef123456" in first
+    assert calls["n"] == 1
+
+    # Second call with nothing changed -> served from cache, no rescan.
+    idx.values_for(sources)
+    assert calls["n"] == 1
+
+    # Editing an indexed file invalidates immediately, even under a huge TTL.
+    f.write_text("new-secret-value-zyxwvu987654\n")
+    updated = idx.values_for(sources)
+    assert "new-secret-value-zyxwvu987654" in updated
+    assert "secret-value-abcdef123456" not in updated
+    assert calls["n"] == 2
+
+
+def test_secret_index_ttl_picks_up_a_brand_new_file(tmp_path):
+    d = tmp_path / "creds"
+    d.mkdir()
+    (d / "a.txt").write_text("first-secret-abcdef123456\n")
+    sources = [str(d / "**")]
+
+    idx = SecretIndex(ttl_seconds=0)  # always past TTL -> always rescans
+    assert "first-secret-abcdef123456" in idx.values_for(sources)
+
+    # A file added later is not tracked by the previous entry's stamps, so only
+    # the TTL rebuild finds it; ttl=0 forces that on the next call.
+    (d / "b.txt").write_text("second-secret-zyxwvu987654\n")
+    later = idx.values_for(sources)
+    assert "first-secret-abcdef123456" in later
+    assert "second-secret-zyxwvu987654" in later

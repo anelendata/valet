@@ -22,9 +22,11 @@ import configparser
 import json
 import os
 import re
+import threading
+import time
 from glob import glob, has_magic
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Optional
 
 import yaml
 
@@ -203,6 +205,33 @@ def _expand_source(src: str) -> Iterator[str]:
     yield src
 
 
+def _expand_all(sources: Iterable[str]) -> list[str]:
+    """The concrete files named by ``sources`` (globs/dirs expanded), de-duped.
+
+    This is the expensive step: a recursive glob such as ``**/.secrets/**`` walks
+    the whole tree. Kept separate from value loading so a cache can decide when to
+    repeat it (see :class:`SecretIndex`).
+    """
+    files: list[str] = []
+    seen: set[str] = set()
+    for src in sources:
+        for path in _expand_source(src):
+            if path not in seen:
+                seen.add(path)
+                files.append(path)
+    return files
+
+
+def _values_from_files(files: Iterable[str]) -> list[str]:
+    """Redaction values for a concrete file list, de-duped and longest-first."""
+    found: set[str] = set()
+    for path in files:
+        for value in _load_one(Path(path)):
+            if _keep(value):
+                found.add(value.strip() if isinstance(value, str) else str(value))
+    return sorted(found, key=len, reverse=True)
+
+
 def load_secret_values(sources: Iterable[str]) -> list[str]:
     """Return the de-duplicated, redaction-worthy secret values from sources.
 
@@ -212,10 +241,81 @@ def load_secret_values(sources: Iterable[str]) -> list[str]:
     whole-file blob contains an individual value) the longer, more specific
     redaction is applied first.
     """
-    found: set[str] = set()
-    for src in sources:
-        for path in _expand_source(src):
-            for value in _load_one(Path(path)):
-                if _keep(value):
-                    found.add(value.strip() if isinstance(value, str) else str(value))
-    return sorted(found, key=len, reverse=True)
+    return _values_from_files(_expand_all(sources))
+
+
+# ---- cached index -----------------------------------------------------------
+#
+# Rebuilding the value set scans (globs/walks) the workspace tree. With a
+# recursive pattern like ``**/.secrets/**`` over a large tree, paying that on
+# EVERY command is what makes each command slow. ``valet serve`` is long-lived,
+# so we memoize the loaded values per resolved source set and reuse them across
+# commands, rebuilding only when the tree looks stale.
+
+# A newly created secret file is picked up within this many seconds (a full
+# rebuild is forced at least this often). Edits to already-indexed files are
+# caught immediately by mtime, so this only bounds the window for BRAND-NEW
+# files — kept short because that window is time in which a fresh secret could
+# appear unredacted.
+SECRET_INDEX_TTL_SECONDS = 5.0
+
+
+def _stat_stamp(path: str) -> Optional[tuple[int, int]]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+class _IndexEntry:
+    __slots__ = ("values", "stamps", "built_at")
+
+    def __init__(self, values: list[str], stamps: dict[str, Optional[tuple[int, int]]],
+                 built_at: float) -> None:
+        self.values = values
+        self.stamps = stamps
+        self.built_at = built_at
+
+    def files_unchanged(self) -> bool:
+        """True while every indexed file still has the mtime/size it was read at.
+
+        Catches an edited or deleted secret immediately (its stamp changes), so a
+        modified secret is never served stale. It cannot see a brand-new file in
+        an as-yet-unscanned directory — the TTL rebuild covers that.
+        """
+        return all(_stat_stamp(path) == stamp for path, stamp in self.stamps.items())
+
+
+class SecretIndex:
+    """Per-workspace cache of loaded secret values, keyed by resolved source set.
+
+    Correctness is preserved versus calling :func:`load_secret_values` directly:
+    the returned values are identical; only the *frequency* of the scan changes.
+    An entry is reused only while (a) it is younger than the TTL and (b) every
+    file it indexed is byte-for-byte unchanged. Otherwise it is rebuilt.
+    """
+
+    def __init__(self, ttl_seconds: float = SECRET_INDEX_TTL_SECONDS) -> None:
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, ...], _IndexEntry] = {}
+
+    def values_for(self, sources: Iterable[str]) -> list[str]:
+        key = tuple(sources)
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(key)
+            if (entry is not None
+                    and (now - entry.built_at) < self._ttl
+                    and entry.files_unchanged()):
+                return entry.values
+        # Rebuild outside the lock: the scan can be slow and must not block other
+        # workspaces' requests. A concurrent rebuild of the same key just does
+        # duplicate work, never wrong work.
+        files = _expand_all(key)
+        stamps = {f: _stat_stamp(f) for f in files}
+        values = _values_from_files(files)
+        with self._lock:
+            self._entries[key] = _IndexEntry(values, stamps, time.monotonic())
+        return values
