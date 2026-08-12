@@ -78,6 +78,16 @@ default**. Reach for it only when you'd rather a command *fail* than trust
 redaction — for a value a hijacked command could transform (e.g. base64-encode)
 before printing, which literal redaction can't follow.
 
+A `deny_read` file is **also excluded from the redaction index**: it can never
+reach output (reads are refused), so there is nothing to redact, and indexing it
+would only cost the parse and *over-mask* from its non-secret contents. This is
+the escape hatch for a big capture file — a multi-MB `.har` full of session data
+whose thousands of non-secret leaves (URLs, hostnames, timestamps) would
+otherwise mask unrelated output. `deny_read = ["**/*.har"]` blocks reading them
+*and* keeps them out of the index. Put a file in `secret_file_paths` **or**
+`deny_read`, not both: the first says "redact it", the second says "never read
+it, don't index it".
+
 ### Rule of thumb
 
 > - "a tool should *use* this secret, the agent shouldn't *see* it" →
@@ -305,7 +315,7 @@ enforce_workspace_writes = true
 |---|---|---|
 | `allow_exec` | `[]` | Empty = allow everything not otherwise denied. A **non-empty** list flips to **default-deny**: only these basenames run (`cd`/`pushd`/`popd` still allowed), e.g. `["python", "ls", "cat"]`. |
 | `deny_exec` | `[]` | Extra program-name bans (by basename) on top of the built-ins, e.g. `["rm", "npm"]`. |
-| `deny_read` | `[]` | Globs of files a command may not name — valet refuses to **run** it. A hard block that also stops a trusted tool from *using* the file. Shell-aware (splits on `;` `&&` `||` `|`, tracks `cd`). Empty by default; see [`secret_file_paths` vs `deny_read`](#secret_file_paths-vs-deny_read). Examples: `["**/.env", "**/.secrets/**", "~/.aws/**"]`. |
+| `deny_read` | `[]` | Globs of files a command may not name — valet refuses to **run** it, **and excludes the file from the redaction index** (a file that can't be read needs no redacting; keeps a big `.har` from over-masking). A hard block that also stops a trusted tool from *using* the file. Shell-aware (splits on `;` `&&` `||` `|`, tracks `cd`). Empty by default; see [`secret_file_paths` vs `deny_read`](#secret_file_paths-vs-deny_read). Examples: `["**/.env", "**/.secrets/**", "**/*.har", "~/.aws/**"]`. |
 | `enforce_workspace_reads` | `true` | Refuse a command whose existing path argument or `cwd` resolves outside the workspace (`../` and symlinks included). Best-effort, not a sandbox. |
 | `enforce_workspace_writes` | `true` | Refuse a command whose path-like argument resolves outside the workspace **even if it doesn't exist yet**, so nothing is written outside. |
 

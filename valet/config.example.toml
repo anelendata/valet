@@ -191,6 +191,14 @@ deny_exec = []
 # rather the command fail than trust redaction (which can't follow a value that is
 # transformed, e.g. base64-encoded, before printing). Shell-aware: splits on
 # ; && || | and tracks cd. Examples: "**/.env", "**/.secrets/**", "~/.aws/**".
+#
+# A file matched here is ALSO excluded from the redaction index: it can never
+# reach output (reads are refused), so there is nothing to redact, and indexing
+# it would only cost the parse and over-mask from its non-secret contents. So to
+# stop a big capture file (a .har full of session data) from masking unrelated
+# output like the word "substack", deny_read it: `deny_read = ["**/*.har"]`. If
+# instead you WANT such a file redacted (a tool reads it), list it in
+# secret_file_paths and NOT here.
 deny_read = []
 
 # DEFAULT ON. Refuse a command whose existing path argument or cwd resolves

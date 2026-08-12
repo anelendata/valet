@@ -31,6 +31,7 @@ from typing import Iterable, Iterator, Optional
 import yaml
 
 from . import MIN_REDACT_LEN
+from .globmatch import path_matches_globs
 
 # Values equal to these (case-insensitive) are never redacted even if long
 # enough — they are structural, not secret, and blanking them destroys output.
@@ -492,10 +493,21 @@ class SecretIndex:
     def __init__(self, ttl_seconds: float = SECRET_INDEX_TTL_SECONDS) -> None:
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
-        self._entries: dict[tuple[str, ...], _IndexEntry] = {}
+        self._entries: dict[tuple[tuple[str, ...], tuple[str, ...]], _IndexEntry] = {}
 
-    def values_for(self, sources: Iterable[str]) -> list[str]:
-        key = tuple(sources)
+    def values_for(self, sources: Iterable[str],
+                   deny_globs: Iterable[str] = ()) -> list[str]:
+        """Loaded secret values for ``sources``, minus files matching ``deny_globs``.
+
+        A file a command may not read (``policy.deny_read``) can never reach the
+        agent through valet, so there is nothing to redact from it — indexing it
+        would only cost the parse and risk over-masking (its non-secret leaves
+        would mask unrelated output). ``deny_globs`` is part of the cache key, so
+        a config change re-scans.
+        """
+        sources_key = tuple(sources)
+        deny_key = tuple(deny_globs)
+        key = (sources_key, deny_key)
         now = time.monotonic()
         with self._lock:
             entry = self._entries.get(key)
@@ -506,7 +518,9 @@ class SecretIndex:
         # Rebuild outside the lock: the scan can be slow and must not block other
         # workspaces' requests. A concurrent rebuild of the same key just does
         # duplicate work, never wrong work.
-        files = _expand_all(key)
+        files = _expand_all(sources_key)
+        if deny_key:
+            files = [f for f in files if not path_matches_globs(f, deny_key)]
         stamps = {f: _stat_stamp(f) for f in files}
         values = _values_from_files(files)
         with self._lock:
