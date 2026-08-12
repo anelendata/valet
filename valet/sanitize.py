@@ -19,10 +19,46 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+import threading
 from dataclasses import dataclass
 from typing import Iterable
 
 from .heuristics import redact_high_entropy, redact_suspected
+from .multimatch import AhoCorasick
+
+# Hard switch (no config yet — flip to compare) for the exact-value redaction
+# layer. True uses an Aho-Corasick automaton so masking many values is one pass
+# over the output instead of one pass per value; False uses the plain
+# in/replace loop. Coverage is identical either way.
+USE_AHO_CORASICK = True
+
+# Values longer than this stay on the naive in/replace path even when AC is on:
+# there are few of them (whole-file blobs, PEM keys), a long needle fails fast,
+# and keeping them out of the trie avoids megabyte-long branches.
+_AC_MAX_PATTERN_LEN = 256
+
+# Cache the per-value-set split + automaton so it is built once, not per command.
+# Keyed by the (already de-duped, sorted) secret_values tuple.
+_AC_PREP_CACHE: "dict[tuple[str, ...], tuple[tuple[str, ...], AhoCorasick | None]]" = {}
+_AC_PREP_LOCK = threading.Lock()
+_AC_PREP_MAX = 8
+
+
+def _prepare_matcher(secret_values: tuple[str, ...]) -> "tuple[tuple[str, ...], AhoCorasick | None]":
+    """Split values into long (naive) + short (AC automaton), cached per set."""
+    with _AC_PREP_LOCK:
+        hit = _AC_PREP_CACHE.get(secret_values)
+    if hit is not None:
+        return hit
+    long_values = tuple(v for v in secret_values if len(v) > _AC_MAX_PATTERN_LEN)
+    short_values = [v for v in secret_values if len(v) <= _AC_MAX_PATTERN_LEN]
+    automaton = AhoCorasick(short_values) if short_values else None
+    prepared = (long_values, automaton)
+    with _AC_PREP_LOCK:
+        if len(_AC_PREP_CACHE) >= _AC_PREP_MAX:
+            _AC_PREP_CACHE.clear()
+        _AC_PREP_CACHE[secret_values] = prepared
+    return prepared
 
 # --- generic backstop patterns ------------------------------------------------
 # Order matters: ARNs are matched before bare 12-digit account IDs so the whole
@@ -111,10 +147,18 @@ class Redactor:
             text = self._root_re.sub("./", text)
         # Layer 1: exact known secret values → tagged with a stable fingerprint
         # so distinct secrets stay distinguishable without being revealed.
-        for value in self.secret_values:
-            if value and value in text:
-                tag = "[REDACTED:secret:" + fingerprint(value, self.salt) + "]"
-                text = text.replace(value, tag)
+        if self.secret_values:
+            if USE_AHO_CORASICK:
+                long_values, automaton = _prepare_matcher(self.secret_values)
+                for value in long_values:  # few; longest-first order preserved
+                    if value in text:
+                        text = text.replace(value, self._secret_tag(value))
+                if automaton is not None:
+                    text = automaton.replace(text, self._secret_tag)
+            else:
+                for value in self.secret_values:
+                    if value and value in text:
+                        text = text.replace(value, self._secret_tag(value))
         # Layer 2: heuristic redaction of things that *look* secret (values of
         # sensitively-named keys, key/value dumps, known token shapes).
         if self.suspected:
@@ -134,6 +178,10 @@ class Redactor:
                 lambda m: "~/" if m.group(0).endswith("/") else "~", text
             )
         return text
+
+    def _secret_tag(self, value: str) -> str:
+        """The stable fingerprint tag a matched secret value is replaced with."""
+        return "[REDACTED:secret:" + fingerprint(value, self.salt) + "]"
 
     def is_clean(self, text: str) -> bool:
         """True if no known secret value remains. Used as an assertion in the
