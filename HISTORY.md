@@ -3,6 +3,19 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.9 — 2026-08-11
+
+- **Fixed:** argv-mode commands now resolve the first `PATH` match before
+  launching, so shebangless workspace-local scripts consistently use the shell
+  fallback instead of being skipped for a later system binary on Linux.
+- **Fixed:** relative secret-file patterns are resolved from the workspace root,
+  so secret redaction remains consistent no matter which subdirectory a command
+  runs in.
+- **Improved:** the secret redaction index is warmed and cached per workspace,
+  with `pyahocorasick` selected automatically when available for faster
+  multi-pattern masking.
+- CI now runs the test suite both with and without optional speedups installed.
+
 ## 0.0.8 — 2026-08-11
 
 - Docs: fixed broken doc links on the PyPI project page. Five README links added
