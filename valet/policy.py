@@ -38,11 +38,11 @@ import re
 import shlex
 from glob import glob, has_magic
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Optional, Union
 
 from .config import DEFAULT_CONFIG_NAME, PolicyConfig
 from .errors import PolicyError
+from .globmatch import compile_glob as _compile
 
 Command = Union[str, list[str]]
 
@@ -325,28 +325,3 @@ def _split_line(line: str) -> list[list[str]]:
     if cur:
         subs.append(cur)
     return subs
-
-
-@lru_cache(maxsize=256)
-def _compile(pattern: str) -> re.Pattern[str]:
-    """Compile a glob (with ``**``/``*``/``?``) into an anchored regex."""
-    i, n = 0, len(pattern)
-    out = ["(?s:"]
-    while i < n:
-        if pattern[i:i + 3] == "**/":
-            out.append("(?:.*/)?")  # any number of leading directories
-            i += 3
-        elif pattern[i:i + 2] == "**":
-            out.append(".*")
-            i += 2
-        elif pattern[i] == "*":
-            out.append("[^/]*")
-            i += 1
-        elif pattern[i] == "?":
-            out.append("[^/]")
-            i += 1
-        else:
-            out.append(re.escape(pattern[i]))
-            i += 1
-    out.append(r")\Z")
-    return re.compile("".join(out))

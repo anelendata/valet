@@ -294,7 +294,10 @@ class Workspace:
             elif base:
                 sources.append(os.path.join(base, resolved))
             # A relative pattern with no base can't be located; skip it.
-        values = self._secret_index.values_for(sources)
+        # Files the agent may not read (deny_read) can't reach output through
+        # valet, so they are excluded from the index — no wasted parse and no
+        # over-masking from their non-secret contents.
+        values = self._secret_index.values_for(sources, self.policy.deny_read)
         # Config-listed literals are always masked; env values (e.g. an inline
         # `NAME=value` prefix or --env) are masked only if long enough to look
         # secret, so trivial ones like `1` or `tiny` don't over-redact output.
