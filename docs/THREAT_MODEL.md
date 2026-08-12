@@ -74,9 +74,17 @@ individual structured values ([`valet/secrets.py`](../valet/secrets.py) →
 - **Whole-file blob** — a `cat`, `less`, or any full dump of a declared secret
   file is masked wholesale, regardless of format (ini, `.env`, JSON, a bare
   one-line token, a PEM key). You never rely on the parser recognizing the
-  format.
+  format. *Caveat:* the blob is capped at ~1 MB; a **larger** secret file is not
+  masked wholesale — only its extracted structured values are — so a full dump of
+  a multi-MB secret file may leak the parts no value-extractor caught. For files
+  that big (e.g. a `.har` session capture), prefer `deny_read` over redaction.
 - **Individual values** — a single secret leaking on its own (`echo $KEY`, a
   `grep` of one line) is caught even without the surrounding file.
+
+A file matched by `policy.deny_read` is **not indexed for redaction**: it cannot
+be read, so there is nothing to scrub. Do not rely on redaction as a backstop for
+a `deny_read` file reached by a computed path (a gap the policy static analysis
+can miss) — that is the OS sandbox's job, not redaction's.
 
 A guessing scrubber can miss a weird-looking token; valet cannot miss content it
 already holds. A generic pattern backstop (account IDs, ARNs, `AKIA…` keys, PEM
