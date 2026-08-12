@@ -322,6 +322,32 @@ class Broker:
                 cfg, console=self._audit_to_console and cfg.audit.console
             )
 
+    def warm_redaction(self) -> int:
+        """Pre-build each workspace's secret index + matcher at its root.
+
+        The first command in a workspace otherwise pays the whole cost of
+        scanning, parsing (a big .har can be seconds), and building the matcher.
+        Doing it up front at server start moves that off the client's critical
+        path. Best-effort: a workspace that fails is skipped. Returns the count
+        warmed.
+        """
+        with self._lock:
+            workspaces = list(self.workspaces.values())
+        warmed = 0
+        for ws in workspaces:
+            root = ws.root()
+            if not root:
+                continue
+            try:
+                # redactor_for triggers the scan+parse cache; redact() on a
+                # non-empty string forces the exact-value matcher to be built
+                # and cached, so nothing is left for the first real request.
+                ws.redactor_for(root).redact(" ")
+                warmed += 1
+            except Exception:
+                continue
+        return warmed
+
     def _install_config(self, cfg: BrokerConfig, *, console: bool) -> None:
         self.cfg = cfg
         self.workspaces = self._build_workspaces(cfg)

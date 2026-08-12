@@ -26,6 +26,19 @@ class _ConfigWatchState:
     stamp: tuple[int, int] | None
 
 
+def _warm_redaction(broker: Broker) -> None:
+    """Background: pre-build redaction indexes; report timing, never crash."""
+    started = time.monotonic()
+    try:
+        warmed = broker.warm_redaction()
+    except Exception as exc:  # pragma: no cover - defensive; warmup is optional
+        print(f"valet: redaction warmup skipped: {exc}", file=sys.stderr)
+        return
+    if warmed:
+        elapsed = time.monotonic() - started
+        print(f"valet: warmed redaction for {warmed} workspace(s) in {elapsed:.1f}s.")
+
+
 def serve(
     cfg: BrokerConfig,
     *,
@@ -58,6 +71,13 @@ def serve(
 
         ws_thread = threading.Thread(target=ws_server.serve_forever, daemon=True)
         ws_thread.start()
+
+    # Warm each workspace's redaction index in the background so the first client
+    # request doesn't pay the scan/parse/matcher cost. The daemon is already
+    # listening; warmup just races ahead of the first command.
+    threading.Thread(
+        target=_warm_redaction, args=(broker,), daemon=True, name="valet-warm"
+    ).start()
     print("valet: Ctrl-C to stop.")
 
     try:
@@ -137,6 +157,10 @@ def _apply_reloaded_config(broker: Broker, ws_server, new_cfg: BrokerConfig) -> 
         ws_server.cfg = new_cfg  # type: ignore[attr-defined]
         _disconnect_removed_clients(broker, ws_server, old_cfg, new_cfg)
     _warn_if_listener_restart_needed(old_cfg, new_cfg)
+    # Reload rebuilds workspaces with cold caches; re-warm off the request path.
+    threading.Thread(
+        target=_warm_redaction, args=(broker,), daemon=True, name="valet-warm"
+    ).start()
 
 
 def _disconnect_removed_clients(
