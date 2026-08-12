@@ -24,17 +24,17 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .heuristics import redact_high_entropy, redact_suspected
-from .multimatch import AhoCorasick, PyAhoCorasick
+from .multimatch import HAS_PYAHOCORASICK, AhoCorasick, PyAhoCorasick
 
-# Hard switch (no config yet — reassign to compare) for the exact-value redaction
-# backend. It holds the matcher builder to use, or None:
-#   AhoCorasick    -> in-house pure-Python automaton (default; no dependency)
+# Exact-value redaction backend. Holds the matcher builder to use, or None:
 #   PyAhoCorasick  -> the pyahocorasick C extension (needs the `speedups` extra)
+#   AhoCorasick    -> in-house pure-Python automaton (no dependency)
 #   None           -> the plain in/replace loop, one pass per value
-# Every backend masks the same values with byte-identical output; they differ
-# only in speed. A builder takes an iterable of patterns and returns an object
-# with `.replace(text, tag)`.
-AHO_CORASICK = AhoCorasick
+# Defaults to pyahocorasick when installed, else the in-house automaton — safe
+# because every backend masks the same values with byte-identical output (only
+# speed differs). Reassign for experiments (no config knob yet). A builder takes
+# an iterable of patterns and returns an object with `.replace(text, tag)`.
+AHO_CORASICK = PyAhoCorasick if HAS_PYAHOCORASICK else AhoCorasick
 
 # Values longer than this stay on the naive in/replace path even when a backend
 # is selected: there are few of them (whole-file blobs, PEM keys), a long needle
