@@ -130,7 +130,8 @@ shell = false
 # secret_file_paths: globs (** / * / ?) naming secret files/dirs that trusted
 # commands legitimately USE; their contents are masked from EVERY command's
 # output. ABSOLUTE / ~-rooted patterns match the filesystem (apply everywhere);
-# RELATIVE ones resolve against each command's cwd. A pattern may name a file, a
+# RELATIVE ones resolve against the WORKSPACE ROOT (so the whole workspace is
+# covered no matter the command's cwd). A pattern may name a file, a
 # directory (all files under it), or a glob. For each match valet masks the whole
 # file content (so any full dump is caught) plus its structured values (KEY=VALUE
 # / ini / json / yaml). Missing paths skipped; files >1 MB skip the whole-blob

@@ -278,17 +278,22 @@ class Workspace:
     def redactor_for(self, cwd: Optional[str], *, extra_values=()) -> Redactor:
         # Each secret_file_paths entry is a glob (like deny_read). An
         # absolute / ~-rooted pattern applies to every command; a relative one is
-        # resolved against this command's cwd. The per-workspace SecretIndex then
-        # expands the globs/directories to concrete files and masks their
-        # contents, caching the scan across commands (same sources -> reused).
+        # resolved against the WORKSPACE ROOT (not the command's cwd), so the
+        # whole workspace's secrets are masked no matter where the command runs.
+        # Resolving against cwd used to leak: `cd` into a `.config`/`.secrets`
+        # dir put the anchor ABOVE cwd, so `**/.config/**` matched nothing and
+        # the file's value was never loaded. Root-relative also means one cache
+        # key per workspace (every cwd shares it, and the startup warmup fills
+        # it). Without a workspace, fall back to cwd.
+        base = self.root() or cwd
         sources = []
         for pattern in self.redaction.secret_file_paths:
             resolved = os.path.expanduser(os.path.expandvars(pattern))
             if os.path.isabs(resolved):
                 sources.append(resolved)
-            elif cwd:
-                sources.append(os.path.join(cwd, resolved))
-            # A relative pattern with no cwd can't be located; skip it.
+            elif base:
+                sources.append(os.path.join(base, resolved))
+            # A relative pattern with no base can't be located; skip it.
         values = self._secret_index.values_for(sources)
         # Config-listed literals are always masked; env values (e.g. an inline
         # `NAME=value` prefix or --env) are masked only if long enough to look

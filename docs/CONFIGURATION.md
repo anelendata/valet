@@ -263,11 +263,12 @@ One list, but the pattern's **form** decides where it matches:
 
 - An **absolute** or `~`-rooted pattern (`~/.aws/**`) is matched against the
   filesystem and applies to **every** command.
-- A **relative** pattern (`**/.secrets/**`, `**/.env`) is resolved **against
-  each command's cwd**, so one line covers every project.
+- A **relative** pattern (`**/.secrets/**`, `**/.env`) is resolved **against the
+  workspace root**, so it covers the whole workspace no matter where the command
+  runs — including a command whose cwd is *inside* a secret dir.
 
 **Depth matters — this is a common footgun.** A bare `.secrets/**` matches only a
-`.secrets/` directory *directly at the cwd*; a **nested** one (say
+`.secrets/` directory *directly at the workspace root*; a **nested** one (say
 `skills/foo/.secrets/token`) is **not** covered, so its contents would leak in
 output. Prefix with `**/` (`**/.secrets/**`) to match `.secrets/` at **any**
 depth — this is why the shipped defaults use `**/`.
