@@ -53,6 +53,7 @@ Benefits:
   - [Wiring valet into an agent](#wiring-valet-into-an-agent)
   - [Built-in guardrails](#built-in-guardrails)
   - [Scoped credentials per workspace](#scoped-credentials-per-workspace)
+- [Limitations](#limitations)
 - [Development](#development)
   - [Tests](#tests)
 
@@ -554,6 +555,39 @@ workspaces](https://github.com/anelendata/valet/blob/main/docs/separate-creds.md
 For the layers around all this — sandboxing the agent runtime and keeping an
 audit trail of what it ran — see [Sandbox hardening](#sandbox-hardening) and
 [Audit logging](#audit-logging).
+
+## Limitations
+
+valet is defense-in-depth, not an airtight seal. Being honest about the edges —
+the [threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md)
+is the full treatment; the essentials:
+
+- **Redaction is best-effort against an *adversarial* request.** It masks secret
+  values literally, so a request-crafting agent can transform a secret before
+  printing it (`… | base64`, uppercase it, split it) and the output no longer
+  matches. A compromised-but-not-request-crafting agent is stopped; a
+  request-crafting adversary is contained by **policy** (the command never runs)
+  and **audit** (it is recorded), not by redaction.
+- **Large secret files aren't masked wholesale.** The whole-file blob is capped
+  at ~1 MB; above that only extracted values are masked, so a full dump of a
+  multi-MB secret file can leak the parts no extractor caught. Prefer `deny_read`
+  for big captures (e.g. `.har` files).
+- **Over-redaction of big structured files.** valet extracts *every* leaf value
+  of a matched secret file, so a large `.har`/JSON masks its non-secret leaves
+  too — URLs, hostnames, timestamps, even a plain word that happens to be a value
+  — blanking useful output. `deny_read` those files to keep them out of the
+  index; a more precise extractor is future work.
+- **Command-line policy is static analysis, not a boundary.** `deny_read` /
+  `allow_exec` inspect the command line; they can't catch a program that reads a
+  secret via a computed path or opens it internally without naming it. For a hard
+  guarantee, harden the agent's OS sandbox — valet is not a sandbox for itself.
+- **Human approval isn't implemented yet.** valet does policy, redaction, and
+  audit today; an approval gate for sensitive or mutating actions is on the
+  [roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md).
+
+For the full picture see the
+[threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md)
+and [redaction internals](https://github.com/anelendata/valet/blob/main/docs/redaction-internals.md).
 
 ## Development
 
