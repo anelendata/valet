@@ -299,9 +299,10 @@ def _popen(
     allow_script_fallback: bool,
     bufsize: int = -1,
 ) -> tuple[subprocess.Popen, Command]:
+    launch_arg = _resolve_path_executable(popen_arg, shell=shell, env=env)
     try:
         proc = subprocess.Popen(
-            popen_arg,
+            launch_arg,
             shell=shell,
             cwd=cwd,
             env=env,
@@ -314,7 +315,7 @@ def _popen(
         return proc, popen_arg
     except OSError as exc:
         fallback = _script_fallback_arg(
-            popen_arg,
+            launch_arg,
             shell=shell,
             cwd=cwd,
             env=env,
@@ -333,6 +334,24 @@ def _popen(
             start_new_session=start_new_session,
         )
         return proc, fallback
+
+
+def _resolve_path_executable(
+    popen_arg: Command,
+    *,
+    shell: bool,
+    env: Optional[dict[str, str]],
+) -> Command:
+    """Resolve argv[0] to the first PATH hit before subprocess can skip it."""
+    if shell or isinstance(popen_arg, str) or not popen_arg:
+        return popen_arg
+    argv = [str(part) for part in popen_arg]
+    exe = argv[0]
+    if os.path.sep in exe:
+        return argv
+    path = (env or os.environ).get("PATH")
+    resolved = shutil.which(exe, path=path)
+    return [resolved, *argv[1:]] if resolved else argv
 
 
 def _script_fallback_arg(

@@ -19,10 +19,56 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+import threading
 from dataclasses import dataclass
 from typing import Iterable
 
 from .heuristics import redact_high_entropy, redact_suspected
+from .multimatch import HAS_PYAHOCORASICK, AhoCorasick, PyAhoCorasick
+
+# Exact-value redaction backend. Holds the matcher builder to use, or None:
+#   PyAhoCorasick  -> the pyahocorasick C extension (needs the `speedups` extra)
+#   AhoCorasick    -> in-house pure-Python automaton (no dependency)
+#   None           -> the plain in/replace loop, one pass per value
+# Defaults to pyahocorasick when installed, else the in-house automaton — safe
+# because every backend masks the same values with byte-identical output (only
+# speed differs). Reassign for experiments (no config knob yet). A builder takes
+# an iterable of patterns and returns an object with `.replace(text, tag)`.
+AHO_CORASICK = PyAhoCorasick if HAS_PYAHOCORASICK else AhoCorasick
+
+# Values longer than this stay on the naive in/replace path even when a backend
+# is selected: there are few of them (whole-file blobs, PEM keys), a long needle
+# fails fast, and keeping them out of the automaton avoids megabyte-long entries.
+_AC_MAX_PATTERN_LEN = 256
+
+# Cache the per-value-set split + automaton so it is built once, not per command.
+# Keyed by (backend, sorted secret_values) so switching backends is clean.
+_AC_PREP_CACHE: dict = {}
+_AC_PREP_LOCK = threading.Lock()
+_AC_PREP_MAX = 8
+
+
+def _prepare_matcher(secret_values: tuple[str, ...]):
+    """Split values into long (naive) + short (automaton), cached per set+backend.
+
+    Returns ``(long_values, matcher_or_None)`` where ``matcher`` handles the short
+    values via the selected ``AHO_CORASICK`` backend.
+    """
+    backend = AHO_CORASICK
+    key = (backend, secret_values)
+    with _AC_PREP_LOCK:
+        hit = _AC_PREP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    long_values = tuple(v for v in secret_values if len(v) > _AC_MAX_PATTERN_LEN)
+    short_values = [v for v in secret_values if len(v) <= _AC_MAX_PATTERN_LEN]
+    matcher = backend(short_values) if (backend is not None and short_values) else None
+    prepared = (long_values, matcher)
+    with _AC_PREP_LOCK:
+        if len(_AC_PREP_CACHE) >= _AC_PREP_MAX:
+            _AC_PREP_CACHE.clear()
+        _AC_PREP_CACHE[key] = prepared
+    return prepared
 
 # --- generic backstop patterns ------------------------------------------------
 # Order matters: ARNs are matched before bare 12-digit account IDs so the whole
@@ -111,10 +157,18 @@ class Redactor:
             text = self._root_re.sub("./", text)
         # Layer 1: exact known secret values → tagged with a stable fingerprint
         # so distinct secrets stay distinguishable without being revealed.
-        for value in self.secret_values:
-            if value and value in text:
-                tag = "[REDACTED:secret:" + fingerprint(value, self.salt) + "]"
-                text = text.replace(value, tag)
+        if self.secret_values:
+            if AHO_CORASICK is not None:
+                long_values, matcher = _prepare_matcher(self.secret_values)
+                for value in long_values:  # few; longest-first order preserved
+                    if value in text:
+                        text = text.replace(value, self._secret_tag(value))
+                if matcher is not None:
+                    text = matcher.replace(text, self._secret_tag)
+            else:
+                for value in self.secret_values:
+                    if value and value in text:
+                        text = text.replace(value, self._secret_tag(value))
         # Layer 2: heuristic redaction of things that *look* secret (values of
         # sensitively-named keys, key/value dumps, known token shapes).
         if self.suspected:
@@ -134,6 +188,10 @@ class Redactor:
                 lambda m: "~/" if m.group(0).endswith("/") else "~", text
             )
         return text
+
+    def _secret_tag(self, value: str) -> str:
+        """The stable fingerprint tag a matched secret value is replaced with."""
+        return "[REDACTED:secret:" + fingerprint(value, self.salt) + "]"
 
     def is_clean(self, text: str) -> bool:
         """True if no known secret value remains. Used as an assertion in the

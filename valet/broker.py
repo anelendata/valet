@@ -34,7 +34,7 @@ from .executor import OutputChunk, RunResult, iter_run, kill_process, list_proce
 from .policy import Policy
 from .sanitize import Redactor
 from .secrets import _keep as _worth_redacting
-from .secrets import load_secret_values
+from .secrets import SecretIndex
 
 _WITHHELD = "[REDACTED: output withheld — residual secret detected]"
 # Cap README bytes returned by the ``workspace_info`` op so a pathological file
@@ -167,6 +167,10 @@ class Workspace:
         self.redaction = redaction_cfg
         self.policy = policy
         self.fingerprint_salt = fingerprint_salt
+        # Memoizes the (expensive) secret-file scan across commands. Config is
+        # immutable per Workspace — a config reload builds a fresh Workspace, so
+        # this cache is naturally discarded when redaction settings change.
+        self._secret_index = SecretIndex()
 
     def root(self) -> Optional[str]:
         """The real, canonical workspace root, or None when unconfigured."""
@@ -274,17 +278,23 @@ class Workspace:
     def redactor_for(self, cwd: Optional[str], *, extra_values=()) -> Redactor:
         # Each secret_file_paths entry is a glob (like deny_read). An
         # absolute / ~-rooted pattern applies to every command; a relative one is
-        # resolved against this command's cwd. load_secret_values then expands the
-        # globs/directories to concrete files and masks their contents.
+        # resolved against the WORKSPACE ROOT (not the command's cwd), so the
+        # whole workspace's secrets are masked no matter where the command runs.
+        # Resolving against cwd used to leak: `cd` into a `.config`/`.secrets`
+        # dir put the anchor ABOVE cwd, so `**/.config/**` matched nothing and
+        # the file's value was never loaded. Root-relative also means one cache
+        # key per workspace (every cwd shares it, and the startup warmup fills
+        # it). Without a workspace, fall back to cwd.
+        base = self.root() or cwd
         sources = []
         for pattern in self.redaction.secret_file_paths:
             resolved = os.path.expanduser(os.path.expandvars(pattern))
             if os.path.isabs(resolved):
                 sources.append(resolved)
-            elif cwd:
-                sources.append(os.path.join(cwd, resolved))
-            # A relative pattern with no cwd can't be located; skip it.
-        values = load_secret_values(sources)
+            elif base:
+                sources.append(os.path.join(base, resolved))
+            # A relative pattern with no base can't be located; skip it.
+        values = self._secret_index.values_for(sources)
         # Config-listed literals are always masked; env values (e.g. an inline
         # `NAME=value` prefix or --env) are masked only if long enough to look
         # secret, so trivial ones like `1` or `tiny` don't over-redact output.
@@ -316,6 +326,32 @@ class Broker:
             self._install_config(
                 cfg, console=self._audit_to_console and cfg.audit.console
             )
+
+    def warm_redaction(self) -> int:
+        """Pre-build each workspace's secret index + matcher at its root.
+
+        The first command in a workspace otherwise pays the whole cost of
+        scanning, parsing (a big .har can be seconds), and building the matcher.
+        Doing it up front at server start moves that off the client's critical
+        path. Best-effort: a workspace that fails is skipped. Returns the count
+        warmed.
+        """
+        with self._lock:
+            workspaces = list(self.workspaces.values())
+        warmed = 0
+        for ws in workspaces:
+            root = ws.root()
+            if not root:
+                continue
+            try:
+                # redactor_for triggers the scan+parse cache; redact() on a
+                # non-empty string forces the exact-value matcher to be built
+                # and cached, so nothing is left for the first real request.
+                ws.redactor_for(root).redact(" ")
+                warmed += 1
+            except Exception:
+                continue
+        return warmed
 
     def _install_config(self, cfg: BrokerConfig, *, console: bool) -> None:
         self.cfg = cfg

@@ -135,3 +135,78 @@ def test_workspace_still_virtualized_when_home_redaction_on():
 def test_home_redaction_off_without_home_dir():
     red = Redactor.build([], salt="s", workspace_root="/Users/x/ws")
     assert red.redact("/Users/x/projects/app") == "/Users/x/projects/app"
+
+
+# ---- Aho-Corasick redaction backends (AHO_CORASICK) -------------------------
+
+def _use_backend(monkeypatch, backend):
+    from valet import sanitize
+    monkeypatch.setattr(sanitize, "AHO_CORASICK", backend)
+    sanitize._AC_PREP_CACHE.clear()
+
+
+def _backends():
+    """The matcher backends available in this environment (+ None = naive)."""
+    from valet import sanitize
+    from valet.multimatch import AhoCorasick, HAS_PYAHOCORASICK, PyAhoCorasick
+    yield None
+    yield AhoCorasick
+    if HAS_PYAHOCORASICK:
+        yield PyAhoCorasick
+
+
+def test_all_backends_match_naive_on_non_overlapping_values(monkeypatch):
+    import random
+
+    from valet.multimatch import AhoCorasick
+
+    rng = random.Random(7)
+    # Distinct tokens, none a substring of another; fillers use letters that can
+    # never contain a token ('tok' has no a-h chars), so matches don't overlap.
+    vocab = [f"tok{i}z" for i in range(200)]
+    for trial in range(60):
+        parts = []
+        for _ in range(rng.randint(4, 30)):
+            if rng.random() < 0.4:
+                parts.append(rng.choice(vocab))
+            else:
+                parts.append("".join(rng.choice("abcdefgh") for _ in range(rng.randint(1, 6))))
+        text = " ".join(parts)
+        red = Redactor.build(list(set(vocab)), salt="s", suspected=False, high_entropy=False)
+
+        _use_backend(monkeypatch, None)
+        naive_out = red.redact(text)
+        for backend in _backends():
+            if backend is None:
+                continue
+            _use_backend(monkeypatch, backend)
+            assert red.redact(text) == naive_out, (trial, backend, text)
+        assert red.is_clean(naive_out)
+
+
+def test_backends_mask_all_secrets_even_when_overlapping(monkeypatch):
+    for backend in _backends():
+        if backend is None:
+            continue
+        _use_backend(monkeypatch, backend)
+        red = Redactor.build(["abc", "cde", "bcd"], salt="s", suspected=False, high_entropy=False)
+        out = red.redact("xx abcde yy")
+        assert red.is_clean(out), backend
+        for v in ("abc", "cde", "bcd"):
+            assert v not in out
+
+
+def test_backends_still_mask_long_values_via_naive(monkeypatch):
+    from valet import sanitize
+
+    long_secret = "L" + "0123456789" * 40  # > _AC_MAX_PATTERN_LEN (256)
+    assert len(long_secret) > sanitize._AC_MAX_PATTERN_LEN
+    for backend in _backends():
+        if backend is None:
+            continue
+        _use_backend(monkeypatch, backend)
+        red = Redactor.build([long_secret, "shorttok"], salt="s", suspected=False, high_entropy=False)
+        out = red.redact(f"start {long_secret} mid shorttok end")
+        assert long_secret not in out, backend
+        assert "shorttok" not in out
+        assert red.is_clean(out)

@@ -241,9 +241,9 @@ Family 1 — the command runs; its **output** is scrubbed.
 ```toml
 [redaction]
 secret_file_paths = [
-    "~/.aws/**",
-    ".env", ".config/**", ".secrets/**", "secrets/**",
-    ".passwords/**", "passwords/**", ".ssh/**", ".aws/**",
+    "~/.aws/**", "~/.config/**",
+    "**/.env", "**/.config/**", "**/.secrets/**", "**/secrets/**",
+    "**/.passwords/**", "**/passwords/**", "**/.ssh/**", "**/.aws/**",
 ]
 extra_values = []
 redact_suspected = true
@@ -263,14 +263,27 @@ One list, but the pattern's **form** decides where it matches:
 
 - An **absolute** or `~`-rooted pattern (`~/.aws/**`) is matched against the
   filesystem and applies to **every** command.
-- A **relative** pattern (`.env`, `.secrets/**`, `**/.env`) is resolved **against
-  each command's cwd**, so one line covers every project.
+- A **relative** pattern (`**/.secrets/**`, `**/.env`) is resolved **against the
+  workspace root**, so it covers the whole workspace no matter where the command
+  runs — including a command whose cwd is *inside* a secret dir.
+
+**Depth matters — this is a common footgun.** A bare `.secrets/**` matches only a
+`.secrets/` directory *directly at the workspace root*; a **nested** one (say
+`skills/foo/.secrets/token`) is **not** covered, so its contents would leak in
+output. Prefix with `**/` (`**/.secrets/**`) to match `.secrets/` at **any**
+depth — this is why the shipped defaults use `**/`.
+
+To keep `**/` cheap, valet **caches** the scan per workspace (reused across
+commands until an indexed secret file changes, and refreshed at least every few
+seconds so new files are still picked up) and **prunes** well-known huge
+non-secret directories (`.git`, `node_modules`, `.venv`, `__pycache__`, caches,
+…) from the walk. A directory you name explicitly in a pattern is never pruned.
+For an enormous tree you can still narrow patterns to specific subtrees.
 
 A pattern may name a file, a directory (all files under it load), or a glob. For
 each match valet masks the whole file content (so any full dump is caught) **plus**
 its structured values (`KEY=VALUE` / ini / json / yaml). Missing paths are
-skipped; files larger than 1 MB skip the whole-blob step. A `**/` pattern walks
-the tree per command — prefer shallow patterns for huge trees.
+skipped; files larger than 1 MB skip the whole-blob step.
 
 ### `[policy]`
 

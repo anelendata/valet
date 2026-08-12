@@ -130,15 +130,24 @@ shell = false
 # secret_file_paths: globs (** / * / ?) naming secret files/dirs that trusted
 # commands legitimately USE; their contents are masked from EVERY command's
 # output. ABSOLUTE / ~-rooted patterns match the filesystem (apply everywhere);
-# RELATIVE ones resolve against each command's cwd. A pattern may name a file, a
+# RELATIVE ones resolve against the WORKSPACE ROOT (so the whole workspace is
+# covered no matter the command's cwd). A pattern may name a file, a
 # directory (all files under it), or a glob. For each match valet masks the whole
 # file content (so any full dump is caught) plus its structured values (KEY=VALUE
 # / ini / json / yaml). Missing paths skipped; files >1 MB skip the whole-blob
-# step. A "**/" pattern walks the tree per command — prefer shallow for huge trees.
+# step.
+#
+# NOTE the leading "**/" on the relative patterns: a bare ".secrets/**" matches
+# ONLY a .secrets/ directory at the cwd, so a nested one (e.g.
+# skills/foo/.secrets/token) would NOT be covered and its contents would leak.
+# "**/.secrets/**" matches .secrets/ at any depth. valet caches this scan per
+# workspace (reused across commands until a secret file changes) and skips huge
+# non-secret dirs like .git/node_modules, so the "**/" cost is paid rarely, not
+# on every command; for an enormous tree you can still list specific subtrees.
 secret_file_paths = [
     "~/.aws/**", "~/.config/**",
-    ".env", ".config/**", ".secrets/**", "secrets/**",
-    ".passwords/**", "passwords/**", ".ssh/**", ".aws/**",
+    "**/.env", "**/.config/**", "**/.secrets/**", "**/secrets/**",
+    "**/.passwords/**", "**/passwords/**", "**/.ssh/**", "**/.aws/**",
 ]
 
 # Extra literal strings to always redact (e.g. a token not stored in a file).

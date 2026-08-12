@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Run the suite twice: without pyahocorasick (in-house AC backend, the
+        # cross-backend test skips) and with it (default becomes PyAhoCorasick
+        # and the differential test runs).
+        extras: ["test", "test,speedups"]
+    name: pytest (${{ matrix.extras }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[${{ matrix.extras }}]"
+      - run: python -c "import valet.sanitize as s; print('AHO_CORASICK =', s.AHO_CORASICK)"
+      - run: pytest -q
