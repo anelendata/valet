@@ -390,3 +390,49 @@ def test_expand_all_grouped_matches_glob_union_on_random_trees(tmp_path):
             str(root / "**" / "note.env"),
         ]
         assert sorted(_expand_all(sources)) == _ref_glob_union(sources), (t, sources)
+
+
+# ---- per-file parse cache ---------------------------------------------------
+
+def test_load_one_caches_parse_until_file_changes(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import valet.secrets as secrets_mod
+
+    secrets_mod._FILE_VALUE_CACHE.clear()
+    f = tmp_path / "big.txt"
+    f.write_text("token-value-abcdef123456\n")
+
+    parses = {"n": 0}
+    real_read = secrets_mod._read_file_values
+
+    def counting_read(path):
+        parses["n"] += 1
+        return real_read(path)
+
+    monkeypatch.setattr(secrets_mod, "_read_file_values", counting_read)
+
+    v1 = secrets_mod._load_one(Path(f))
+    assert "token-value-abcdef123456" in v1
+    assert parses["n"] == 1
+
+    # Unchanged file -> served from cache, not re-parsed.
+    secrets_mod._load_one(Path(f))
+    assert parses["n"] == 1
+
+    # Edited file (new mtime/size) -> re-parsed.
+    f.write_text("new-token-zyxwvu987654\n")
+    v2 = secrets_mod._load_one(Path(f))
+    assert "new-token-zyxwvu987654" in v2
+    assert parses["n"] == 2
+
+
+def test_load_one_matches_uncached_read(tmp_path):
+    from pathlib import Path
+
+    import valet.secrets as secrets_mod
+
+    secrets_mod._FILE_VALUE_CACHE.clear()
+    f = tmp_path / "s.env"
+    f.write_text("API_KEY=secret-abcdef123456\n")
+    assert secrets_mod._load_one(Path(f)) == secrets_mod._read_file_values(Path(f))

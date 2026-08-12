@@ -159,8 +159,17 @@ def _parse_text(name: str, suffix: str, text: str) -> list[str]:
     return list(_from_dotenv(text)) + list(_from_ini(text)) + list(_from_yaml(text))
 
 
-def _load_one(path: Path) -> list[str]:
-    """Redaction values for one secret file.
+# Parsed values per file, keyed by (mtime_ns, size). Parsing a large secret file
+# (e.g. a multi-MB .har, which falls to the slow pure-Python YAML loader) is the
+# dominant rebuild cost; this makes it a one-time-per-version cost instead of a
+# per-rebuild one. Process-wide (paths are absolute) and thread-safe.
+_FILE_VALUE_CACHE: dict[str, tuple[tuple[int, int], list[str]]] = {}
+_FILE_VALUE_LOCK = threading.Lock()
+_FILE_VALUE_CACHE_MAX = 4096
+
+
+def _read_file_values(path: Path) -> list[str]:
+    """Redaction values for one secret file (uncached).
 
     Includes the ENTIRE file content as one blob (so any dump of the file —
     `cat`, `less`, a bare token file, a PEM key, whatever the format — is masked
@@ -180,6 +189,31 @@ def _load_one(path: Path) -> list[str]:
     if whole and len(text.encode("utf-8", "replace")) <= MAX_WHOLE_FILE_BYTES:
         values.append(whole)
 
+    return values
+
+
+def _load_one(path: Path) -> list[str]:
+    """Cached wrapper over :func:`_read_file_values`.
+
+    Reuses the parsed values while the file's ``(mtime_ns, size)`` is unchanged,
+    so a big secret file is parsed once, not on every index rebuild. An edited
+    file gets a new stamp and is re-parsed.
+    """
+    key = str(path)
+    stamp = _stat_stamp(key)
+    if stamp is None:
+        return []
+    with _FILE_VALUE_LOCK:
+        cached = _FILE_VALUE_CACHE.get(key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+    # Parse outside the lock: a slow YAML load must not serialize other files. A
+    # concurrent re-parse of the same file just does duplicate work.
+    values = _read_file_values(path)
+    with _FILE_VALUE_LOCK:
+        if len(_FILE_VALUE_CACHE) >= _FILE_VALUE_CACHE_MAX:
+            _FILE_VALUE_CACHE.clear()
+        _FILE_VALUE_CACHE[key] = (stamp, values)
     return values
 
 
