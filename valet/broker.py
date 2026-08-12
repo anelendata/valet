@@ -275,7 +275,8 @@ class Workspace:
             return root
         return self.real_from_virtual(raw_cwd, root)
 
-    def redactor_for(self, cwd: Optional[str], *, extra_values=()) -> Redactor:
+    def redactor_for(self, cwd: Optional[str], *, extra_values=(),
+                     load_secrets: bool = True) -> Redactor:
         # Each secret_file_paths entry is a glob (like deny_read). An
         # absolute / ~-rooted pattern applies to every command; a relative one is
         # resolved against the WORKSPACE ROOT (not the command's cwd), so the
@@ -285,24 +286,32 @@ class Workspace:
         # the file's value was never loaded. Root-relative also means one cache
         # key per workspace (every cwd shares it, and the startup warmup fills
         # it). Without a workspace, fall back to cwd.
-        base = self.root() or cwd
-        sources = []
-        for pattern in self.redaction.secret_file_paths:
-            resolved = os.path.expanduser(os.path.expandvars(pattern))
-            if os.path.isabs(resolved):
-                sources.append(resolved)
-            elif base:
-                sources.append(os.path.join(base, resolved))
-            # A relative pattern with no base can't be located; skip it.
-        # Files the agent may not read (deny_read) can't reach output through
-        # valet, so they are excluded from the index — no wasted parse and no
-        # over-masking from their non-secret contents.
-        values = self._secret_index.values_for(sources, self.policy.deny_read)
-        # Config-listed literals are always masked; env values (e.g. an inline
-        # `NAME=value` prefix or --env) are masked only if long enough to look
-        # secret, so trivial ones like `1` or `tiny` don't over-redact output.
-        values.extend(v for v in self.redaction.extra_values if v)
-        values.extend(v for v in extra_values if _worth_redacting(v))
+        #
+        # load_secrets=False returns a PATH-ONLY redactor: it keeps the
+        # workspace-root/home virtualization but loads no secret values, so it
+        # skips the whole-workspace scan entirely. Used to audit read-only ops
+        # (complete/ping/chdir/...) that have no command output to scrub — a
+        # keystroke Tab-completion must not trigger a full secret index build.
+        values: list[str] = []
+        if load_secrets:
+            base = self.root() or cwd
+            sources = []
+            for pattern in self.redaction.secret_file_paths:
+                resolved = os.path.expanduser(os.path.expandvars(pattern))
+                if os.path.isabs(resolved):
+                    sources.append(resolved)
+                elif base:
+                    sources.append(os.path.join(base, resolved))
+                # A relative pattern with no base can't be located; skip it.
+            # Files the agent may not read (deny_read) can't reach output through
+            # valet, so they are excluded from the index — no wasted parse and no
+            # over-masking from their non-secret contents.
+            values = self._secret_index.values_for(sources, self.policy.deny_read)
+            # Config-listed literals are always masked; env values (e.g. an
+            # inline `NAME=value` prefix or --env) are masked only if long enough
+            # to look secret, so trivial ones like `1` or `tiny` don't over-redact.
+            values.extend(v for v in self.redaction.extra_values if v)
+            values.extend(v for v in extra_values if _worth_redacting(v))
         workspace_root = self.root() or ""
         # Only rewrite the home prefix when confined to a workspace: that is the
         # mode where leaking the real host layout (a sibling of the workspace,
@@ -310,8 +319,8 @@ class Workspace:
         home_dir = os.path.expanduser("~") if workspace_root else ""
         return Redactor.build(
             values, self.fingerprint_salt,
-            suspected=self.redaction.redact_suspected,
-            high_entropy=self.redaction.redact_high_entropy,
+            suspected=self.redaction.redact_suspected if load_secrets else False,
+            high_entropy=self.redaction.redact_high_entropy if load_secrets else False,
             workspace_root=workspace_root,
             home_dir=home_dir,
         )
@@ -920,7 +929,12 @@ class Broker:
     ) -> dict[str, Any]:
         request_dict = request if isinstance(request, dict) else {}
         ws = self._workspace_or_default(request_dict)
-        redactor = self._audit_redactor(request_dict, ws)
+        # Only exec has an echoed command and command output to scrub. Read-only
+        # ops (complete/ping/chdir/workspaces/...) don't, so they use a path-only
+        # redactor and never trigger the whole-workspace secret scan — otherwise
+        # every REPL Tab-completion would rebuild the index.
+        op = request_dict.get("op", "exec") if request_dict else response.get("op")
+        redactor = self._audit_redactor(request_dict, ws, load_secrets=(op == "exec"))
         command = response.get("cmd") or self._audit_command(request_dict, redactor, ws)
         cwd = response.get("cwd") or self._audit_cwd(request_dict, ws)
         detail = response.get("detail")
@@ -984,12 +998,19 @@ class Broker:
         }
         return event
 
-    def _audit_redactor(self, request: dict, ws: "Workspace") -> Redactor:
-        try:
-            extra_env = self._normalize_env(request.get("env"))
-        except ValetError:
-            extra_env = {}
-        return ws.redactor_for(self._audit_cwd(request, ws), extra_values=extra_env.values())
+    def _audit_redactor(self, request: dict, ws: "Workspace",
+                        *, load_secrets: bool = True) -> Redactor:
+        extra_env: dict = {}
+        if load_secrets:
+            try:
+                extra_env = self._normalize_env(request.get("env"))
+            except ValetError:
+                extra_env = {}
+        return ws.redactor_for(
+            self._audit_cwd(request, ws),
+            extra_values=extra_env.values(),
+            load_secrets=load_secrets,
+        )
 
     @staticmethod
     def _audit_cwd(request: dict, ws: "Workspace") -> Optional[str]:
