@@ -59,6 +59,7 @@ environment for `run`/`sh`/`repl`.
 | [`hosts`](#hosts) | client | List configured remote hosts. |
 | [`init`](#init) | host | Create `config.toml` (and, on macOS, the sandbox profile). |
 | [`doctor`](#doctor) | host | Check config and the OS sandbox setup. |
+| [`doctor redact`](#doctor-redact) | host | Inspect or benchmark the secret-redaction index. |
 | [`serve`](#serve) | host | Run the configured host daemon. |
 | [`serve-lan`](#serve-lan) | host | Run the trusted-LAN WebSocket RPC host. |
 | [`workspaces`](#workspaces-host-side) | host | `list` / `add` / `remove` workspaces. |
@@ -217,6 +218,83 @@ Re-check config health and the OS sandbox setup anytime. Warns when the config,
 sandbox profile, audit log, or secret sources resolve **inside** a workspace
 (where the agent could read them), and flags a workspace that is your home
 directory or broader as very high risk.
+
+### `doctor redact`
+
+```
+valet doctor redact [WORKSPACE]                 # what would be masked, by file
+valet doctor redact [WORKSPACE] --show-values   # also print the plaintext values
+valet doctor redact [WORKSPACE] --bench         # time the index build, by directory
+```
+
+Introspect the **exact-value redaction index** for a workspace — the secret
+values loaded from `[redaction].secret_file_paths` that get masked from all
+command output. Runs host-side against the local `config.toml` (no daemon
+needed) and uses the broker's own loaders, so what it reports is exactly what
+`valet serve` would index (same source resolution, `deny_read` exclusion, and
+binary-file skipping). Defaults to the `-w` workspace, else the default one.
+
+Options: `--show-values` prints the secrets in plaintext (off by default — the
+values *are* the secrets); `--max N` truncates each shown value (0 = full);
+`--bench` / `--bench-depth N` switch to benchmark mode (see below).
+
+**Reading the summary (why is this value redacted?).** Each matched source file
+is listed with the values it contributes, the `[REDACTED:secret:h:…]` tag each
+maps to, and its match route (`auto` = Aho-Corasick automaton, `naive` = the
+>256-char long-value path):
+
+```
+── .config/gws/cache/docs_v1.json  (312 value(s))
+   [auto ] len=41     [REDACTED:secret:h:1a2b3c4d]
+   ...
+```
+
+Use it to fix over-redaction: if readable output is being masked, find the
+offending string here, note which **file** contributed it, and decide whether
+that file is really secret. A tag you saw in real output (`h:1a2b3c4d`) maps back
+to the exact file/value shown here. Common fixes to `config.toml`:
+
+- The file is an app **cache or data file**, not a credential (e.g. a
+  `~/.config/<tool>/cache/*.json` swept in by a broad `**/.config/**`) → add its
+  subtree to `[policy].deny_read` (e.g. `"**/.config/<tool>/cache/**"`), which
+  un-indexes it. The tool keeps working as long as the command doesn't take that
+  path as an argument.
+- The pattern is broader than intended → tighten the `secret_file_paths` glob to
+  the directory that actually holds secrets.
+
+**Reading `--bench` (why is a workspace slow?).** Benchmark mode splits the cold
+index build into **scan** (the tree walk/glob) and **parse** (reading +
+structured-parsing matched files), then breaks both down:
+
+```
+scan (walk+glob) :    987.0 ms
+parse (all files):     70.0 ms   (79 files, 43K, 976 values)
+
+   scan_ms  matched  pattern (independent expansion)
+     1120.4        3  .../**/.config/gws/client_secret.json     ← complex tail: own full walk
+      986.0       69  .../**/.secrets/**
+
+  parse_ms    files      size   values  depth-1 directory
+      64.0       61      2.4M     3080  projects                 ← hot subtree
+```
+
+Interpretation and the `config.toml` fix each points to:
+
+- **`scan` dominates** → the cost is tree traversal, not secrets. In the
+  per-pattern table, a **complex-tail** pattern (anything with path segments
+  after `**`, e.g. `**/.config/gws/x.json`) each triggers its *own* full-tree
+  walk. If a dir glob you already have covers it (`**/.config/**` covers those
+  gws files), **delete the redundant specific patterns**. If a tree is just huge,
+  scope patterns to the subtrees that hold secrets.
+- **`parse` dominates, or `slowest single file` is large** → a big *text* file is
+  being indexed (often a cache/data JSON). `deny_read` it (binaries are already
+  skipped automatically).
+- The **depth-N directory** table names the hot subtree; raise `--bench-depth` to
+  drill in before deciding what to scope or `deny_read`.
+
+After editing `config.toml`, re-run `valet doctor redact --bench` to confirm the
+scan/parse numbers dropped. (Bench always measures the *cold* rebuild; steady-state
+per-command cost is lower because `valet serve` caches the index.)
 
 ### `serve`
 

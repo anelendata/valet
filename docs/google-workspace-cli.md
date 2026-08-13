@@ -258,6 +258,24 @@ uncommented `(deny network*)`, `gws` will fail DNS/HTTPS.
   injection before they reach an agent (`--sanitize <template>`, or
   `GOOGLE_WORKSPACE_CLI_SANITIZE_TEMPLATE` / `_MODE`). That is complementary to
   valet's output redaction and worth enabling for untrusted mailboxes.
+- **Keep the discovery cache out of the redaction index.** If
+  `[redaction].secret_file_paths` uses a broad `**/.config/**`, valet also indexes
+  `~/.config/gws/cache/*.json` — API **discovery documents**, full of
+  natural-language field names (`nextPageToken`, `messages`, …). Those words then
+  become redaction values and get masked from *all* command output, turning
+  readable results into `[REDACTED]`. The cache is not secret, so exclude it via
+  `deny_read`:
+
+  ```toml
+  [policy]
+  deny_read = ["**/.config/gws/cache/**"]
+  ```
+
+  This only stops valet from *indexing* the cache; `gws` still reads it directly,
+  so the CLI keeps working (the cache path is never passed as a command argument).
+  Confirm the fix with [`valet doctor redact`](COMMANDS.md#doctor-redact), which
+  lists exactly which files feed the index. (As of 0.0.11, binary files are
+  skipped automatically; this note is about the cache's *text* JSON.)
 
 ---
 
@@ -268,6 +286,7 @@ uncommented `(deny network*)`, `gws` will fail DNS/HTTPS.
 | `error[discovery]: File exists (os error 17)`, `exit 4` | Sandbox blocks the discovery cache under `~/.config/gws` | Set `GOOGLE_WORKSPACE_CLI_CONFIG_DIR` into the workspace (§5) |
 | Auth error, `exit 2`, under sandbox but fine unsandboxed | Keyring (Keychain) / credential files blocked | Use a credentials file (Option A) or `KEYRING_BACKEND=file` (Option B) |
 | `gws auth login` hangs / no browser in the REPL | Interactive flow, valet is non-interactive | Run auth outside valet (§5, Gotcha 1) |
+| Readable output over-masked as `[REDACTED]` (field names, IDs) | A broad `**/.config/**` indexed the `gws` discovery cache | `deny_read` the cache (§6); verify with `valet doctor redact` |
 | DNS / connection failures | `(deny network*)` in the sandbox profile | Allow network (§5, Gotcha 3) |
 | "Access blocked" during login | Account not in OAuth **Test users** | Add your email to Test users |
 | Consent error / too many scopes | Unverified app capped at ~25 scopes | `gws auth login -s <services>` |
