@@ -141,6 +141,15 @@ def _from_yaml(text: str) -> Iterable[str]:
 # guards against someone pointing a source at a huge file.
 MAX_WHOLE_FILE_BYTES = 1_000_000
 
+# A file whose first chunk contains a NUL byte is treated as binary and skipped:
+# text secret files never contain NUL, binaries almost always do near the start
+# (the same cheap heuristic git and grep use). This keeps images/archives/etc.
+# under a broad source glob (e.g. `**/.config/**`) out of the index, so their
+# bytes are not decoded into junk redaction values — and a big binary is never
+# read past the sniff. Text (incl. non-ASCII UTF-8) is unaffected, so a secret
+# with unicode content is still loaded; an ASCII-only test would wrongly skip it.
+_BINARY_SNIFF_BYTES = 8192
+
 
 def _parse_text(name: str, suffix: str, text: str) -> list[str]:
     """Extract structured values (KEY=VALUE / ini / json / yaml) from file text."""
@@ -172,7 +181,8 @@ _FILE_VALUE_CACHE_MAX = 4096
 def _read_file_values(path: Path) -> list[str]:
     """Redaction values for one secret file (uncached).
 
-    Includes the ENTIRE file content as one blob (so any dump of the file —
+    Binary files (see :data:`_BINARY_SNIFF_BYTES`) are skipped. For a text file,
+    this includes the ENTIRE file content as one blob (so any dump of the file —
     `cat`, `less`, a bare token file, a PEM key, whatever the format — is masked
     wholesale) PLUS the structured values (so a single secret leaking on its own,
     e.g. `echo $KEY`, is still caught). The whole-content blob is longest, so the
@@ -180,14 +190,19 @@ def _read_file_values(path: Path) -> list[str]:
     else.
     """
     try:
-        text = path.read_text(errors="replace")
+        with open(path, "rb") as fh:
+            head = fh.read(_BINARY_SNIFF_BYTES)
+            if b"\x00" in head:  # binary file: not a text secret source
+                return []
+            raw = head + fh.read()
     except OSError:
         return []
 
+    text = raw.decode("utf-8", errors="replace")
     values: list[str] = list(_parse_text(path.name.lower(), path.suffix.lower(), text))
 
     whole = text.strip()
-    if whole and len(text.encode("utf-8", "replace")) <= MAX_WHOLE_FILE_BYTES:
+    if whole and len(raw) <= MAX_WHOLE_FILE_BYTES:
         values.append(whole)
 
     return values

@@ -59,6 +59,26 @@ def test_load_secret_values_masks_yaml_value(tmp_path):
     assert "yaml-loaded-secret-value" in values
 
 
+def test_binary_file_is_skipped(tmp_path):
+    # A file with a NUL byte in its first chunk is binary (image/archive/etc.)
+    # and must not be indexed — its bytes would otherwise be decoded into junk
+    # redaction values under a broad glob like `**/.config/**`.
+    src = tmp_path / "logo.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00sup3r-secret-looking-token\x00")
+    values = load_secret_values([str(src)])
+    assert values == []
+    assert "sup3r-secret-looking-token" not in values
+
+
+def test_non_ascii_text_file_is_still_indexed(tmp_path):
+    # Detection is text-vs-binary, NOT ASCII-vs-non-ASCII: a UTF-8 secret with
+    # unicode content must still load, or non-English secrets would leak.
+    src = tmp_path / "creds.env"
+    src.write_text("API_KEY=café-sécrét-tøken-9012\n", encoding="utf-8")
+    values = load_secret_values([str(src)])
+    assert "café-sécrét-tøken-9012" in values
+
+
 def test_load_secret_values_expands_directory_recursively(tmp_path):
     # A directory source loads every file beneath it — this is what lets a
     # *directory* of secrets (e.g. `.secrets/`) be redacted, not just a file
