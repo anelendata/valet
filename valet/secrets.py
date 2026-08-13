@@ -308,13 +308,18 @@ class _AnchorGroup:
             self.file_names.add(name)
 
 
-def _walk_anchored(base: str, group: "_AnchorGroup") -> Iterator[str]:
+def _walk_anchored(base: str, group: "_AnchorGroup",
+                   seen_dirs: "Optional[set[str]]" = None) -> Iterator[str]:
     """One pruned walk of ``base`` yielding files matched by any anchor.
 
     A file is a match when it sits inside a directory named by ``dir_names`` (at
     any depth), or its own name is in ``file_names``, or ``collect_all`` is set.
     Equivalent to running each ``**/<name>/**`` and ``**/<name>`` pattern
     separately, but the whole tree is traversed only once.
+
+    When ``seen_dirs`` is given, every directory traversed is added to it, so the
+    caller can stamp their mtimes and later detect a newly added file/dir without
+    re-walking (see :class:`SecretIndex`).
     """
     if not os.path.isdir(base):
         return
@@ -327,6 +332,8 @@ def _walk_anchored(base: str, group: "_AnchorGroup") -> Iterator[str]:
     base_len = len(base.rstrip(os.sep))
     for root, dirs, files in os.walk(base):
         dirs[:] = [d for d in dirs if d not in prune]
+        if seen_dirs is not None:
+            seen_dirs.add(root)
         rel = root[base_len:].strip(os.sep)
         inside = collect_all or (bool(dir_names) and not dir_names.isdisjoint(rel.split(os.sep)))
         if inside:
@@ -338,7 +345,8 @@ def _walk_anchored(base: str, group: "_AnchorGroup") -> Iterator[str]:
                     yield os.path.join(root, name)
 
 
-def _expand_recursive_glob(pattern: str) -> Iterator[str]:
+def _expand_recursive_glob(pattern: str,
+                           seen_dirs: "Optional[set[str]]" = None) -> Iterator[str]:
     """Expand a ``**`` pattern with pruning, matching glob semantics.
 
     Only the leading ``**`` recursion is done here (a pruned ``os.walk``); the
@@ -348,11 +356,16 @@ def _expand_recursive_glob(pattern: str) -> Iterator[str]:
     only by (a) excluding files under pruned dirs and (b) also descending hidden
     intermediate dirs, which ``glob``'s ``**`` skips — a superset that can only
     catch *more* secrets, never fewer.
+
+    ``seen_dirs``, if given, collects every directory traversed (see
+    :func:`_walk_anchored`).
     """
     base, tail = _split_recursive(pattern)
     prune = _prune_dirs_for(pattern)
     seen: set[str] = set()
     for directory in _walk_dirs(base, prune):
+        if seen_dirs is not None:
+            seen_dirs.add(directory)
         inner = os.path.join(directory, tail) if tail else os.path.join(directory, "*")
         for match in glob(inner, recursive=True):
             if match not in seen and os.path.isfile(match):
@@ -360,7 +373,8 @@ def _expand_recursive_glob(pattern: str) -> Iterator[str]:
                 yield match
 
 
-def _expand_source(src: str) -> Iterator[str]:
+def _expand_source(src: str,
+                   seen_dirs: "Optional[set[str]]" = None) -> Iterator[str]:
     """Resolve one configured source to the concrete files it names.
 
     A plain file path is yielded as-is (``_load_one`` tolerates a missing one).
@@ -369,26 +383,40 @@ def _expand_source(src: str) -> Iterator[str]:
     secrets (e.g. ``.secrets/``) has all its contents loaded into the redactor,
     not just a file that happens to be named ``.secrets``. Recursive (`**`)
     patterns and directory walks prune well-known huge non-secret dirs.
+
+    ``seen_dirs``, if given, collects every directory traversed (see
+    :func:`_walk_anchored`).
     """
     if has_magic(src):
         if "**" in src.split(os.sep):
-            yield from _expand_recursive_glob(src)
+            yield from _expand_recursive_glob(src, seen_dirs)
         else:
+            # A non-`**` glob only looks in its own directory; stamp that dir (via
+            # each match's parent) so a sibling appearing later is noticed.
             for match in glob(src, recursive=True):
                 if os.path.isfile(match):
+                    if seen_dirs is not None:
+                        seen_dirs.add(os.path.dirname(match))
                     yield match
         return
     if os.path.isdir(src):
         prune = _prune_dirs_for(src)
         for root, dirs, files in os.walk(src):
             dirs[:] = [d for d in dirs if d not in prune]
+            if seen_dirs is not None:
+                seen_dirs.add(root)
             for name in files:
                 yield os.path.join(root, name)
         return
+    # A plain (non-glob) file source: stamp its parent dir so the file appearing
+    # later — not yet present, so not in the file stamps — triggers a rebuild.
+    if seen_dirs is not None:
+        seen_dirs.add(os.path.dirname(src) or ".")
     yield src
 
 
-def _expand_all(sources: Iterable[str]) -> list[str]:
+def _expand_all(sources: Iterable[str],
+                seen_dirs: "Optional[set[str]]" = None) -> list[str]:
     """The concrete files named by ``sources`` (globs/dirs expanded), de-duped.
 
     This is the expensive step: a recursive glob such as ``**/.secrets/**`` walks
@@ -401,6 +429,10 @@ def _expand_all(sources: Iterable[str]) -> list[str]:
     the same cwd, so this is roughly a 10x reduction in traversal. Anything else
     (a plain file, a directory, a non-recursive glob, or a complex ``**`` tail)
     is expanded individually by :func:`_expand_source`.
+
+    ``seen_dirs``, if given, collects every directory traversed so a caller can
+    stamp their mtimes and later detect a newly added file/dir without re-walking
+    (see :class:`SecretIndex`).
     """
     files: list[str] = []
     seen: set[str] = set()
@@ -423,10 +455,10 @@ def _expand_all(sources: Iterable[str]) -> list[str]:
             leftovers.append(src)
 
     for base, group in groups.items():
-        for path in _walk_anchored(base, group):
+        for path in _walk_anchored(base, group, seen_dirs):
             add(path)
     for src in leftovers:
-        for path in _expand_source(src):
+        for path in _expand_source(src, seen_dirs):
             add(path)
     return files
 
@@ -459,14 +491,26 @@ def load_secret_values(sources: Iterable[str]) -> list[str]:
 # recursive pattern like ``**/.secrets/**`` over a large tree, paying that on
 # EVERY command is what makes each command slow. ``valet serve`` is long-lived,
 # so we memoize the loaded values per resolved source set and reuse them across
-# commands, rebuilding only when the tree looks stale.
+# commands, rebuilding only when the tree actually changed.
+#
+# Freshness is driven by mtimes, not a timer:
+#   * indexed FILES     — catches an edit or delete of a known secret (file mtime
+#                         /size changes), so a modified secret is never served
+#                         stale.
+#   * traversed DIRS    — catches a BRAND-NEW file or directory: adding or
+#                         removing an entry bumps its parent directory's mtime,
+#                         and we stamped every directory the walk visited. So a
+#                         fresh secret appearing anywhere in the tree invalidates
+#                         the cache on the very next command — no polling window.
+# Re-checking stamps is O(files + dirs) stat() calls, far cheaper than the full
+# os.walk (which also lists every directory's contents) it replaces.
 
-# A newly created secret file is picked up within this many seconds (a full
-# rebuild is forced at least this often). Edits to already-indexed files are
-# caught immediately by mtime, so this only bounds the window for BRAND-NEW
-# files — kept short because that window is time in which a fresh secret could
-# appear unredacted.
-SECRET_INDEX_TTL_SECONDS = 5.0
+# Backstop only: on exotic filesystems that do NOT bump a directory's mtime when
+# a child is added (some network/FUSE mounts), the dir-mtime signal can miss a
+# new file. A full rebuild is forced at least this often to bound that worst
+# case. On normal local filesystems new secrets are caught immediately by the
+# dir-mtime check above, so this rarely fires. `float("inf")` disables it.
+SECRET_INDEX_TTL_SECONDS = 300.0
 
 
 def _stat_stamp(path: str) -> Optional[tuple[int, int]]:
@@ -478,22 +522,28 @@ def _stat_stamp(path: str) -> Optional[tuple[int, int]]:
 
 
 class _IndexEntry:
-    __slots__ = ("values", "stamps", "built_at")
+    __slots__ = ("values", "stamps", "dir_stamps", "built_at")
 
-    def __init__(self, values: list[str], stamps: dict[str, Optional[tuple[int, int]]],
+    def __init__(self, values: list[str],
+                 stamps: dict[str, Optional[tuple[int, int]]],
+                 dir_stamps: dict[str, Optional[tuple[int, int]]],
                  built_at: float) -> None:
         self.values = values
         self.stamps = stamps
+        self.dir_stamps = dir_stamps
         self.built_at = built_at
 
-    def files_unchanged(self) -> bool:
-        """True while every indexed file still has the mtime/size it was read at.
+    def unchanged(self) -> bool:
+        """True while every indexed file AND every traversed directory still has
+        the mtime/size it had at build time.
 
-        Catches an edited or deleted secret immediately (its stamp changes), so a
-        modified secret is never served stale. It cannot see a brand-new file in
-        an as-yet-unscanned directory — the TTL rebuild covers that.
+        Files catch edits/deletes of known secrets; directories catch brand-new
+        files or subdirs appearing anywhere the walk reached (an add/remove bumps
+        the parent dir's mtime). Together they detect every change on a normal
+        filesystem without re-walking the tree.
         """
-        return all(_stat_stamp(path) == stamp for path, stamp in self.stamps.items())
+        return (all(_stat_stamp(p) == s for p, s in self.stamps.items())
+                and all(_stat_stamp(d) == s for d, s in self.dir_stamps.items()))
 
 
 class SecretIndex:
@@ -501,8 +551,9 @@ class SecretIndex:
 
     Correctness is preserved versus calling :func:`load_secret_values` directly:
     the returned values are identical; only the *frequency* of the scan changes.
-    An entry is reused only while (a) it is younger than the TTL and (b) every
-    file it indexed is byte-for-byte unchanged. Otherwise it is rebuilt.
+    An entry is reused only while every indexed file and every traversed directory
+    is unchanged (see :meth:`_IndexEntry.unchanged`), with a long backstop TTL for
+    filesystems whose directory mtimes are unreliable. Otherwise it is rebuilt.
     """
 
     def __init__(self, ttl_seconds: float = SECRET_INDEX_TTL_SECONDS) -> None:
@@ -528,16 +579,19 @@ class SecretIndex:
             entry = self._entries.get(key)
             if (entry is not None
                     and (now - entry.built_at) < self._ttl
-                    and entry.files_unchanged()):
+                    and entry.unchanged()):
                 return entry.values
         # Rebuild outside the lock: the scan can be slow and must not block other
         # workspaces' requests. A concurrent rebuild of the same key just does
         # duplicate work, never wrong work.
-        files = _expand_all(sources_key)
+        seen_dirs: set[str] = set()
+        files = _expand_all(sources_key, seen_dirs)
         if deny_key:
             files = [f for f in files if not path_matches_globs(f, deny_key)]
         stamps = {f: _stat_stamp(f) for f in files}
+        dir_stamps = {d: _stat_stamp(d) for d in seen_dirs}
         values = _values_from_files(files)
         with self._lock:
-            self._entries[key] = _IndexEntry(values, stamps, time.monotonic())
+            self._entries[key] = _IndexEntry(values, stamps, dir_stamps,
+                                             time.monotonic())
         return values

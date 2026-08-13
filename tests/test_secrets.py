@@ -187,9 +187,9 @@ def test_secret_index_reuses_scan_until_a_file_changes(tmp_path, monkeypatch):
     calls = {"n": 0}
     real_expand = secrets_mod._expand_all
 
-    def counting_expand(srcs):
+    def counting_expand(*a, **k):
         calls["n"] += 1
-        return real_expand(srcs)
+        return real_expand(*a, **k)
 
     monkeypatch.setattr(secrets_mod, "_expand_all", counting_expand)
 
@@ -209,20 +209,54 @@ def test_secret_index_reuses_scan_until_a_file_changes(tmp_path, monkeypatch):
     assert calls["n"] == 2
 
 
-def test_secret_index_ttl_picks_up_a_brand_new_file(tmp_path):
+def test_secret_index_detects_new_file_via_dir_mtime(tmp_path):
+    # A brand-new file added to an already-walked directory bumps that dir's
+    # mtime, so it is picked up immediately — no TTL wait — under a huge backstop.
     d = tmp_path / "creds"
     d.mkdir()
     (d / "a.txt").write_text("first-secret-abcdef123456\n")
     sources = [str(d / "**")]
 
-    idx = SecretIndex(ttl_seconds=0)  # always past TTL -> always rescans
+    idx = SecretIndex(ttl_seconds=999)  # backstop far away; rely on dir mtime
     assert "first-secret-abcdef123456" in idx.values_for(sources)
 
-    # A file added later is not tracked by the previous entry's stamps, so only
-    # the TTL rebuild finds it; ttl=0 forces that on the next call.
     (d / "b.txt").write_text("second-secret-zyxwvu987654\n")
     later = idx.values_for(sources)
     assert "first-secret-abcdef123456" in later
+    assert "second-secret-zyxwvu987654" in later
+
+
+def test_secret_index_detects_new_nested_secret_dir_via_dir_mtime(tmp_path):
+    # A whole new secret subtree appearing anywhere the walk reached is caught:
+    # creating proj/creds bumps proj's (walked) mtime under a `**/creds/**`-style
+    # pattern rooted at tmp_path.
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "keep.txt").write_text("x")  # proj is walked & stamped
+    sources = [str(tmp_path / "**" / "creds" / "**")]
+
+    idx = SecretIndex(ttl_seconds=999)
+    assert idx.values_for(sources) == []  # no creds/ yet
+
+    nested = tmp_path / "proj" / "creds"
+    nested.mkdir()
+    (nested / "s.txt").write_text("nested-new-secret-abcdef123456\n")
+    later = idx.values_for(sources)
+    assert "nested-new-secret-abcdef123456" in later
+
+
+def test_secret_index_backstop_ttl_forces_rescan(tmp_path):
+    # Defense-in-depth for filesystems that don't bump dir mtimes: ttl=0 forces a
+    # rebuild on every call regardless of the mtime signals.
+    d = tmp_path / "creds"
+    d.mkdir()
+    (d / "a.txt").write_text("first-secret-abcdef123456\n")
+    sources = [str(d / "**")]
+
+    idx = SecretIndex(ttl_seconds=0)  # always past backstop -> always rescans
+    assert "first-secret-abcdef123456" in idx.values_for(sources)
+
+    (d / "b.txt").write_text("second-secret-zyxwvu987654\n")
+    later = idx.values_for(sources)
     assert "second-secret-zyxwvu987654" in later
 
 

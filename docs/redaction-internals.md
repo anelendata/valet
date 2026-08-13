@@ -127,13 +127,18 @@ Three independent caches, each keyed so that "same inputs → reuse, changed inp
 → rebuild":
 
 - **`SecretIndex`** (per workspace) — memoizes the *scan result* (the value list)
-  keyed by the resolved source tuple. An entry is reused only while it is younger
-  than `SECRET_INDEX_TTL_SECONDS` (5s) **and** every file it indexed is
-  byte-for-byte unchanged (`files_unchanged()` re-stats each). So an edited or
-  deleted secret is caught immediately; a brand-new file in an as-yet-unscanned
-  directory is caught within the TTL. Rebuilds happen outside the lock.
+  keyed by the resolved source tuple. An entry is reused only while every indexed
+  file **and** every directory the walk traversed is unchanged (`unchanged()`
+  re-stats each). Files catch an edit or delete of a known secret; directories
+  catch a **brand-new** file or subdir — adding or removing an entry bumps its
+  parent directory's mtime, and the walk stamped every directory it visited — so
+  a fresh secret appearing anywhere is caught on the very next command, with no
+  polling window. Re-checking is O(files + dirs) `stat()` calls, far cheaper than
+  the full walk it replaces. A long backstop, `SECRET_INDEX_TTL_SECONDS` (300s),
+  forces an occasional rebuild only for exotic filesystems that don't bump
+  directory mtimes on child changes. Rebuilds happen outside the lock.
 - **Per-file value cache** (above) — memoizes each file's parsed values across
-  index rebuilds, so a TTL rebuild only re-reads *changed* files.
+  index rebuilds, so a rebuild only re-reads *changed* files.
 - **Matcher prep cache** (`sanitize._AC_PREP_CACHE`) — memoizes the long/short
   value split and the built automaton, keyed by `(backend, values)`, so the
   Aho-Corasick automaton is built once per value-set, not per command.
@@ -237,10 +242,14 @@ multi-MB `.har` captures):
   trusted tool must *read* still over-masks. The general fix is about *what* we
   extract from big files (size-tiered blob-only, or shape/sensitive-key
   filtering), still open.
-- **TTL staleness window.** A brand-new secret file created in an as-yet-unscanned
-  directory can be unmasked for up to `SECRET_INDEX_TTL_SECONDS` (5s) until the
-  next rebuild. Edited/deleted files are caught immediately. Not yet configurable;
-  filesystem-watch invalidation was considered and deferred.
+- **Staleness window (backstop only).** On a normal local filesystem a brand-new
+  secret file is caught on the next command via the directory-mtime check (adding
+  it bumps its parent dir's mtime), so there is no polling window. The window
+  reappears only on exotic filesystems that do **not** update a directory's mtime
+  when a child is added/removed: there, a new file can be unmasked until the
+  backstop `SECRET_INDEX_TTL_SECONDS` (300s) rebuild. Edited/deleted files are
+  always caught immediately by their file stamps. Full filesystem-watch
+  invalidation (FSEvents/inotify) was considered and deferred.
 - **Cold cost on first use.** The first command per workspace (or after a config
   reload / restart) still parses every secret file once — seconds if there are big
   HARs. Warmup moves this off the client's critical path but does not remove it.
