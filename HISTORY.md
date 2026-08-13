@@ -3,6 +3,26 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.11 — 2026-08-12
+
+- **Improved:** the per-workspace secret index is now invalidated by directory
+  mtime instead of a 5-second TTL, so a large workspace no longer re-walks the
+  whole tree on nearly every command. A brand-new secret file is caught on the
+  next command — with no polling window — via its parent directory's mtime; a
+  300-second backstop covers filesystems that don't update directory mtimes.
+- **Fixed:** binary files (images, archives) under a broad secret-source glob
+  (e.g. `**/.config/**`) are no longer indexed and decoded into junk redaction
+  values. valet skips any file with a NUL byte in its first 8 KB — a
+  text-vs-binary test, so unicode-containing secret files are still indexed.
+- **Added:** `valet doctor redact` inspects the redaction index for a workspace
+  (which source files contribute which values; plaintext hidden unless
+  `--show-values`), and `valet doctor redact --bench` benchmarks the index
+  build — splitting the tree-walk cost from per-file parsing and breaking it down
+  by directory to find a slow workspace's hot subtree or file.
+- Docs: note that a broad `**/.config/**`-style glob can sweep in app cache files
+  (e.g. `~/.config/<tool>/cache/*.json`), whose long contents then over-mask
+  output; `deny_read` the cache subtree.
+
 ## 0.0.10 — 2026-08-12
 
 - **Fixed:** REPL Tab-completion is fast again. Every request — including

@@ -198,7 +198,7 @@ rules at work before you trust an agent to them:
 
 ```
 $ valet
-valet 0.0.10 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
+valet 0.0.11 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
 
 valet> aws logs tail mystack/some-task --since 60m --profile prod-readonly
 
@@ -372,7 +372,7 @@ you type is run as a command**, and the output comes back redacted:
 
 ```
 $ valet
-valet 0.0.10 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
+valet 0.0.11 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
 (default) ws valet> cat .secrets
 DB_PASSWORD=[REDACTED:secret:h:38673aad]
 API_TOKEN=[REDACTED:secret:h:3bc13a30]
