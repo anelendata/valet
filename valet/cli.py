@@ -4,6 +4,7 @@ Subcommands:
   valet                 interactive redacting shell (default; like `python` bare)
   valet repl            same as above, explicitly
   valet doctor          check config and the OS sandbox setup
+  valet doctor redact   inspect/benchmark the secret-redaction index
   valet serve           run the configured host daemon
   valet serve-lan       run the Level 1 WebSocket RPC host adapter
   valet run CMD...      run an argv (no shell) and print redacted output
@@ -263,6 +264,33 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"valet: could not load config: {exc}", file=sys.stderr)
         return 2
     return 1 if _doctor_report(path, cfg) else 0
+
+
+def _cmd_doctor_redact(args: argparse.Namespace) -> int:
+    """Inspect or benchmark the secret-redaction index for a workspace."""
+    path = _resolve_config_path(args)
+    try:
+        cfg = load_config(path)
+    except ValetError as exc:
+        print(f"valet: could not load config: {exc}", file=sys.stderr)
+        return 2
+    workspaces = resolve_workspaces(cfg)
+    if not workspaces:
+        print("valet: no workspace configured. Add one with "
+              "`valet workspaces add <id> <dir>`.", file=sys.stderr)
+        return 2
+    wid = args.workspace_id or args.workspace or cfg.default_workspace
+    if wid not in workspaces:
+        print(f"valet: unknown workspace {wid!r}; known: "
+              f"{', '.join(sorted(workspaces))}", file=sys.stderr)
+        return 2
+    from . import redact_inspect
+    if args.bench:
+        redact_inspect.benchmark(cfg, wid, depth=max(1, args.bench_depth))
+    else:
+        redact_inspect.summarize(cfg, wid, show_values=args.show_values,
+                                 max_len=args.max)
+    return 0
 
 
 def _doctor_report(path: Path, cfg) -> bool:
@@ -1528,8 +1556,28 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "init", help="create config.toml (and, on macOS, the sandbox profile)"
     ).set_defaults(func=_cmd_init)
-    sub.add_parser("doctor", help="check config and the OS sandbox setup"
-                   ).set_defaults(func=_cmd_doctor)
+    doctor = sub.add_parser("doctor", help="check config and the OS sandbox setup")
+    doctor.set_defaults(func=_cmd_doctor)
+    doctor_sub = doctor.add_subparsers(dest="doctor_cmd")
+    doctor_redact = doctor_sub.add_parser(
+        "redact",
+        help="inspect or benchmark the secret-redaction index (host-side)")
+    doctor_redact.add_argument(
+        "workspace_id", nargs="?", default=None,
+        help="workspace to inspect (default: -w, else the default workspace)")
+    doctor_redact.add_argument(
+        "--bench", action="store_true",
+        help="benchmark the index build (ms), broken down by directory")
+    doctor_redact.add_argument(
+        "--bench-depth", type=int, default=1, metavar="N",
+        help="group --bench timings by the top-N directory levels (default 1)")
+    doctor_redact.add_argument(
+        "--show-values", action="store_true",
+        help="print the plaintext secret values (DANGEROUS; hidden by default)")
+    doctor_redact.add_argument(
+        "--max", type=int, default=80,
+        help="truncate shown values to N chars (0 = full; needs --show-values)")
+    doctor_redact.set_defaults(func=_cmd_doctor_redact)
     sub.add_parser("serve", help="run the configured host daemon").set_defaults(func=_cmd_serve)
     sub.add_parser("serve-lan", help="run the Level 1 trusted-LAN WebSocket RPC host"
                    ).set_defaults(func=_cmd_serve_lan)
