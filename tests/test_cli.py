@@ -82,6 +82,78 @@ def test_sandbox_profile_packaged_and_matches_contrib():
         )
 
 
+def _write_redact_config(tmp_path):
+    """A minimal host config with one workspace whose secrets live in creds/."""
+    ws = tmp_path / "ws"
+    (ws / "creds").mkdir(parents=True)
+    (ws / "creds" / "a.env").write_text("API_KEY=alpha-secret-123456\n")
+    # a binary file that must be skipped by the NUL-sniff, not indexed
+    (ws / "creds" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00binary-secret-xyz")
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[broker]\n"
+        f'socket_path = "{tmp_path / "x.sock"}"\n'
+        "timeout_seconds = 30\n"
+        'fingerprint_salt = "testsalt"\n'
+        "[exec]\n"
+        'default_workspace = "w"\n'
+        "[redaction]\n"
+        'secret_file_paths = ["**/creds/**"]\n'
+        "[workspaces.w]\n"
+        f'path = "{ws}"\n'
+    )
+    return cfg, ws
+
+
+def test_doctor_redact_summary_hides_values_by_default(tmp_path, capsys):
+    cfg, _ws = _write_redact_config(tmp_path)
+    rc = main(["-c", str(cfg), "doctor", "redact"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "workspace : w" in out
+    assert "[REDACTED:secret:h:" in out          # fingerprint tag shown
+    assert "alpha-secret-123456" not in out       # plaintext hidden by default
+
+
+def test_doctor_redact_show_values(tmp_path, capsys):
+    cfg, _ws = _write_redact_config(tmp_path)
+    rc = main(["-c", str(cfg), "doctor", "redact", "--show-values"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "alpha-secret-123456" in out
+
+
+def test_doctor_redact_skips_binary_files(tmp_path, capsys):
+    cfg, _ws = _write_redact_config(tmp_path)
+    main(["-c", str(cfg), "doctor", "redact", "--show-values"])
+    out = capsys.readouterr().out
+    assert "binary-secret-xyz" not in out          # png skipped end-to-end
+
+
+def test_doctor_redact_bench(tmp_path, capsys):
+    cfg, _ws = _write_redact_config(tmp_path)
+    rc = main(["-c", str(cfg), "doctor", "redact", "--bench"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "scan (walk+glob)" in out
+    assert "parse (all files)" in out
+
+
+def test_doctor_redact_unknown_workspace(tmp_path, capsys):
+    cfg, _ws = _write_redact_config(tmp_path)
+    rc = main(["-c", str(cfg), "doctor", "redact", "nope"])
+    assert rc == 2
+    assert "unknown workspace" in capsys.readouterr().err
+
+
+def test_bare_doctor_still_runs(tmp_path, capsys):
+    cfg, _ws = _write_redact_config(tmp_path)
+    rc = main(["-c", str(cfg), "doctor"])
+    out = capsys.readouterr().out
+    assert rc in (0, 1)                            # 1 only if a check fails
+    assert "valet doctor" in out
+
+
 class _FakeTarget:
     def __init__(self, is_remote):
         self.is_remote = is_remote

@@ -144,9 +144,16 @@ shell = false
 # workspace (reused across commands until a secret file changes) and skips huge
 # non-secret dirs like .git/node_modules, so the "**/" cost is paid rarely, not
 # on every command; for an enormous tree you can still list specific subtrees.
+#
+# CAUTION: a broad dir glob like "**/.config/**" also sweeps in app CACHE files
+# living under those dirs (e.g. ~/.config/<tool>/cache/*.json), whose long
+# natural-language contents then get indexed and masked from ALL output —
+# turning readable text into [REDACTED]. If output goes unreadable, deny_read
+# the offending cache subtree (e.g. "**/.config/<tool>/cache/**") so it is never
+# indexed. Binary files (images/archives) are already skipped automatically.
 secret_file_paths = [
     "~/.aws/**", "~/.config/**",
-    "**/.env", "**/.config/**", "**/.secrets/**", "**/secrets/**",
+    "**/.env/**", "**/.config/**", "**/.secrets/**", "**/secrets/**",
     "**/.passwords/**", "**/passwords/**", "**/.ssh/**", "**/.aws/**",
 ]
 
