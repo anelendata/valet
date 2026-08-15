@@ -262,6 +262,7 @@ it is a different layer:
 
 | Valet is not... | What that product or layer does | How valet is different |
 |---|---|---|
+| **an agent harness/runtime like OpenClaw, Hermes, or DeepSeek Harness** | Defines how agents run: models, tools, skills, sessions, sandboxes, memory, loops, scheduling, UI, and plugin composition. | valet does not orchestrate the whole agent runtime. It is the broker a sandboxed agent calls when it needs a privileged host action with policy, redaction, and audit around it. |
 | **a password manager or vault like 1Password** | Stores, shares, rotates, and governs secrets for humans, services, and teams. | valet does not want to become the source of truth for secrets. It uses credentials that already exist at runtime and focuses on approved actions plus redacted results. |
 | **a compute platform or sandbox runtime like Modal** | Runs code in managed infrastructure with scaling, isolation, images, jobs, and service deployment. | valet does not provide general compute. It is the broker a sandboxed agent calls when it needs a trusted tool or host-side capability. |
 | **a network gateway** | Controls which networks, hosts, ports, services, or private resources a workload can reach. | valet does not primarily route packets. It decides whether a requested action may run, executes approved actions, and redacts the response before the agent sees it. |
