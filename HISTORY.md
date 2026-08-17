@@ -3,6 +3,23 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## Unreleased
+
+- **Added:** `valet files push <src> <dst>` uploads a local file into a
+  workspace over the existing UDS/WebSocket transport. Bytes are base64-encoded
+  (the JSON transport carries only text, so any file type works) and written to a
+  workspace-relative destination. The destination is jailed to the workspace root
+  — `..` and symlinks are resolved before the containment check, `/` and `~` mean
+  the root (never the host filesystem), and `config.toml` stays protected — so a
+  push can never write outside the workspace. Deliberately one-directional: there
+  is no pull/read op, so this adds a write channel without opening a path for host
+  data to leave. The whole file travels in one message, capped at 8 MiB (the
+  transport's per-frame limit); the source's permission bits are preserved (so a
+  pushed `bin/` tool stays executable), overwrite is the default with
+  `--no-clobber` to refuse it, and the client verifies the host's sha256 against
+  the local file to catch a corrupted transfer. Every push is audited with its
+  destination path and byte count.
+
 ## 0.0.11 — 2026-08-12
 
 - **Improved:** the per-workspace secret index is now invalidated by directory

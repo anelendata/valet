@@ -9,6 +9,7 @@ Subcommands:
   valet serve-lan       run the Level 1 WebSocket RPC host adapter
   valet run CMD...      run an argv (no shell) and print redacted output
   valet sh 'CMDLINE'    run a shell command line when [exec].shell=true
+  valet files push SRC DST  upload a local file into the workspace (agent->host)
   valet call --json ..  send a raw request object to the daemon
   valet ping            check the selected host
   valet hosts           list configured client hosts
@@ -29,15 +30,20 @@ themselves; the daemon does the privileged work and redacts before replying.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
 import secrets as _secrets
 import shutil
+import stat
 import subprocess
 import sys
 from glob import has_magic
 from pathlib import Path
+
+from .broker import FILE_PUSH_MAX_BYTES
 
 from .client_config import (
     default_client_config_path,
@@ -881,6 +887,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print("                                        e.g. valet -w <ws> run -- ls -la")
     print("  valet -w <ws> sh '<command line>'     run a shell command line")
     print("  valet -w <ws> run --cwd <dir> -- ...  run inside a subdirectory")
+    print("  valet -w <ws> files push <src> <dst>  upload a local file into the")
+    print("                                        workspace (any type; host cannot")
+    print("                                        be read back — upload only)")
     print("  Omit -w to use the host's default workspace.")
     print()
     if ping is not None and workspaces:
@@ -937,6 +946,88 @@ def _cmd_info(args: argparse.Namespace) -> int:
     else:
         print("(No README.md in this workspace yet — list its contents with the "
               "commands above.)")
+    return 0
+
+
+def _cmd_files_push(args: argparse.Namespace) -> int:
+    """Upload a local file into the selected workspace (agent -> host).
+
+    Reads the source from the machine running this client, base64-encodes it (the
+    transport carries only JSON text, so any file type must be encoded), and asks
+    the host to write it to a workspace-relative destination. There is no matching
+    pull — the channel is one-directional by design.
+    """
+    src = Path(os.path.expanduser(os.path.expandvars(args.source)))
+    if not src.is_file():
+        print(f"valet files push: source file not found: {src}", file=sys.stderr)
+        return 2
+    try:
+        data = src.read_bytes()
+    except OSError as exc:
+        print(f"valet files push: cannot read {src}: {exc}", file=sys.stderr)
+        return 2
+    if len(data) > FILE_PUSH_MAX_BYTES:
+        limit_mib = FILE_PUSH_MAX_BYTES // (1024 * 1024)
+        print(f"valet files push: {src} is {len(data)} bytes, over the "
+              f"{limit_mib} MiB push limit. The whole file travels in one message; "
+              "split it or copy it another way.", file=sys.stderr)
+        return 2
+
+    req: dict = {
+        "op": "files.push",
+        "path": args.dest,
+        "content_b64": base64.b64encode(data).decode("ascii"),
+    }
+    if args.mode is not None:
+        try:
+            int(args.mode, 8)
+        except ValueError:
+            print(f"valet files push: --mode must be octal (e.g. 755), got "
+                  f"{args.mode!r}", file=sys.stderr)
+            return 2
+        req["mode"] = args.mode
+    else:
+        # Carry the source's permission bits so pushing an executable (e.g. into
+        # bin/) stays executable on the host.
+        req["mode"] = stat.S_IMODE(src.stat().st_mode)
+    if args.no_clobber:
+        req["overwrite"] = False
+    workspace = _effective_workspace(args)
+    if workspace:
+        req["workspace"] = workspace
+
+    try:
+        conn, _target, _cfg = _connect(args)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request(req)
+    finally:
+        conn.close()
+
+    handled = _maybe_unknown_workspace_exit(args, resp)
+    if handled is not None:
+        return handled
+    if not resp.get("ok"):
+        return _print_response(resp)
+
+    # Integrity check: the host returns the sha256 of what it wrote; compare it
+    # with the local file so a truncated or corrupted transfer is caught.
+    local_sha = hashlib.sha256(data).hexdigest()
+    remote_sha = resp.get("sha256")
+    if remote_sha and remote_sha != local_sha:
+        print("valet files push: integrity check FAILED — the host wrote a "
+              "different file than was sent (sha256 mismatch).", file=sys.stderr)
+        return 1
+    verb = "created" if resp.get("created") else "updated"
+    where = f" in workspace {workspace!r}" if workspace else ""
+    print(f"valet: {verb} {resp.get('path')} "
+          f"({resp.get('bytes_written')} bytes){where}")
     return 0
 
 
@@ -1680,6 +1771,24 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--timeout", type=int, default=60)
     sh.add_argument("command", help="the command line to run via the shell")
     sh.set_defaults(func=_cmd_sh)
+
+    files_p = sub.add_parser(
+        "files", help="transfer files into a workspace (agent -> host only)")
+    files_sub = files_p.add_subparsers(dest="files_cmd", required=True)
+    files_push = files_sub.add_parser(
+        "push", help="upload a local file into the selected workspace")
+    files_push.add_argument(
+        "source", help="local file to upload (on the machine running this client)")
+    files_push.add_argument(
+        "dest", help="destination inside the workspace (virtual; './' is the "
+                     "root, and you cannot write above it)")
+    files_push.add_argument(
+        "--mode", default=None, metavar="OCTAL",
+        help="permission bits for the written file (default: copy the source's)")
+    files_push.add_argument(
+        "--no-clobber", action="store_true",
+        help="fail if the destination already exists (default: overwrite)")
+    files_push.set_defaults(func=_cmd_files_push)
 
     call = sub.add_parser("call", help="send a raw JSON request to the daemon")
     call.add_argument("--json", required=True, help='e.g. \'{"op":"ping"}\'')

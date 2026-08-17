@@ -16,6 +16,7 @@ from valet.rpc import (
     ValetClient,
     _WebSocketRpcTransport,
     _connect_websocket,
+    _request_envelope,
     _signature,
     legacy_request_from_rpc,
 )
@@ -173,6 +174,21 @@ def test_rpc_request_maps_to_legacy_broker_request():
         "shell": False,
         "stream": True,
     }
+
+
+def test_files_push_round_trips_through_the_rpc_envelope():
+    # The upload op must survive the client->host mapping with its base64 payload
+    # intact, so files.push works over the WebSocket transport, not just UDS.
+    req = {
+        "op": "files.push",
+        "path": "bin/tool",
+        "content_b64": "AAEC",
+        "mode": "755",
+        "workspace": "w",
+    }
+    envelope = _request_envelope("rid", "client-1", req)
+    assert envelope["method"] == "files.push"
+    assert legacy_request_from_rpc(envelope) == req
 
 
 def test_connect_websocket_without_proxy_connects_directly(monkeypatch):
