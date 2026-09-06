@@ -3,7 +3,7 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
-## Unreleased
+## 0.0.12 — 2026-09-05
 
 - **Added:** `valet files push <src> <dst>` uploads a local file into a
   workspace over the existing UDS/WebSocket transport. Bytes are base64-encoded
