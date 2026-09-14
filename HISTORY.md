@@ -5,6 +5,18 @@ Notable changes per release. Published to PyPI as
 
 ## Unreleased
 
+- **Added:** `valet files pull <src> [dst|-]` downloads a workspace file. Off by
+  default (`[policy].allow_pull`), with separate opt-ins for WebSocket clients
+  (`allow_pull_lan`) and binary files (`allow_pull_binary`). A pulled file is not
+  redacted, so the host refuses it instead whenever redaction would matter: the
+  push path rules (secret sources, `deny_read`, VCS internals, valet state), a
+  symlink swap (`O_NOFOLLOW` walk), a hard link, a FIFO/device, the secret file
+  itself by inode or a byte-for-byte copy of any secret file, text the workspace
+  redactor would change (the error names the category, never the value), and
+  binary content unless enabled — which is then still searched for known secret
+  values and key shapes. Every pull is audited with path, size, and sha256.
+- **Fixed:** the redactor no longer appends each command's env values to the
+  secret index's cached value list, which grew with every command.
 - **Security:** `valet files push` now refuses destinations that let an upload
   tamper with credentials or smuggle in code the host will run: secret sources
   (`redaction.secret_file_paths`), `policy.deny_read` paths, VCS internals

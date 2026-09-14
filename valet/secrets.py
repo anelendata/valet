@@ -571,6 +571,19 @@ class SecretIndex:
         would mask unrelated output). ``deny_globs`` is part of the cache key, so
         a config change re-scans.
         """
+        return self._entry_for(sources, deny_globs).values
+
+    def files_for(self, sources: Iterable[str],
+                  deny_globs: Iterable[str] = ()) -> list[str]:
+        """The concrete secret files behind :meth:`values_for` (same cache entry).
+
+        Includes files that contribute no values (binary ones), so a caller can
+        recognise a secret file by identity rather than by content.
+        """
+        return list(self._entry_for(sources, deny_globs).stamps)
+
+    def _entry_for(self, sources: Iterable[str],
+                   deny_globs: Iterable[str]) -> _IndexEntry:
         sources_key = tuple(sources)
         deny_key = tuple(deny_globs)
         key = (sources_key, deny_key)
@@ -580,7 +593,7 @@ class SecretIndex:
             if (entry is not None
                     and (now - entry.built_at) < self._ttl
                     and entry.unchanged()):
-                return entry.values
+                return entry
         # Rebuild outside the lock: the scan can be slow and must not block other
         # workspaces' requests. A concurrent rebuild of the same key just does
         # duplicate work, never wrong work.
@@ -592,6 +605,6 @@ class SecretIndex:
         dir_stamps = {d: _stat_stamp(d) for d in seen_dirs}
         values = _values_from_files(files)
         with self._lock:
-            self._entries[key] = _IndexEntry(values, stamps, dir_stamps,
-                                             time.monotonic())
-        return values
+            entry = _IndexEntry(values, stamps, dir_stamps, time.monotonic())
+            self._entries[key] = entry
+        return entry

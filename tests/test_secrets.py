@@ -490,3 +490,13 @@ def test_load_one_matches_uncached_read(tmp_path):
     f = tmp_path / "s.env"
     f.write_text("API_KEY=secret-abcdef123456\n")
     assert secrets_mod._load_one(Path(f)) == secrets_mod._read_file_values(Path(f))
+
+
+def test_redactor_for_does_not_grow_the_cached_index(cfg):
+    from valet.broker import Broker
+    ws = next(iter(Broker(cfg).workspaces.values()))
+    before = list(ws._secret_index.values_for(ws.secret_sources(), ws.policy.deny_read))
+    ws.redactor_for(None, extra_values=["per-command-env-value-1234"])
+    ws.redactor_for(None, extra_values=["another-env-value-5678"])
+    after = ws._secret_index.values_for(ws.secret_sources(), ws.policy.deny_read)
+    assert after == before

@@ -215,3 +215,13 @@ enforce_workspace_reads = true
 # DEFAULT ON. Refuse a command whose path-like argument resolves outside the
 # workspace even if it doesn't exist yet, so nothing is written outside.
 enforce_workspace_writes = true
+
+# DEFAULT OFF. `valet files pull` (host -> agent download). A pulled file is not
+# redacted, so the host refuses secret sources, deny_read paths, .git/ internals,
+# valet state, hard links, copies of secret files, and any text the redactor
+# would change. allow_pull_lan extends it to WebSocket clients on other machines;
+# allow_pull_binary allows binary files, whose content cannot be fully scanned
+# (a compressed or encoded secret would pass).
+allow_pull = false
+allow_pull_lan = false
+allow_pull_binary = false

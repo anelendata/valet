@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
 import threading
 import time
@@ -34,7 +35,14 @@ from .errors import (
     ValidationError,
 )
 from .executor import OutputChunk, RunResult, iter_run, kill_process, list_processes, run
-from .files import TransferGuard, clamp_mode, write_file
+from .files import (
+    TransferGuard,
+    check_content,
+    check_not_secret_file,
+    clamp_mode,
+    read_file,
+    write_file,
+)
 from .policy import Policy
 from .sanitize import Redactor
 from .secrets import _keep as _worth_redacting
@@ -50,6 +58,11 @@ _README_MAX_BYTES = 64 * 1024
 # ~10.9 MiB on the wire — comfortably inside the frame cap with the JSON envelope.
 # The client (cli) enforces the same limit up front so oversize files fail fast.
 FILE_PUSH_MAX_BYTES = 8 * 1024 * 1024
+# A pulled file travels back the same way (base64 in one response frame).
+FILE_PULL_MAX_BYTES = FILE_PUSH_MAX_BYTES
+# Transports whose client is on this machine as the socket owner. Anything else
+# (the WebSocket LAN host) sends pulled bytes off-machine and needs its own opt-in.
+_LOCAL_TRANSPORTS = frozenset({"uds", "direct"})
 _STRUCTURED_LINE_RE = re.compile(
     r"^\s*(?:---\s*)?$|"
     r"^\s*[\{\[]|"
@@ -285,6 +298,23 @@ class Workspace:
             return root
         return self.real_from_virtual(raw_cwd, root)
 
+    def secret_sources(self, cwd: Optional[str] = None) -> list[str]:
+        """``secret_file_paths`` resolved to absolute sources (see redactor_for)."""
+        base = self.root() or cwd
+        sources = []
+        for pattern in self.redaction.secret_file_paths:
+            resolved = os.path.expanduser(os.path.expandvars(pattern))
+            if os.path.isabs(resolved):
+                sources.append(resolved)
+            elif base:
+                sources.append(os.path.join(base, resolved))
+            # A relative pattern with no base can't be located; skip it.
+        return sources
+
+    def secret_files(self) -> list[str]:
+        """The concrete files behind this workspace's secret sources."""
+        return self._secret_index.files_for(self.secret_sources(), self.policy.deny_read)
+
     def redactor_for(self, cwd: Optional[str], *, extra_values=(),
                      load_secrets: bool = True) -> Redactor:
         # Each secret_file_paths entry is a glob (like deny_read). An
@@ -304,19 +334,10 @@ class Workspace:
         # keystroke Tab-completion must not trigger a full secret index build.
         values: list[str] = []
         if load_secrets:
-            base = self.root() or cwd
-            sources = []
-            for pattern in self.redaction.secret_file_paths:
-                resolved = os.path.expanduser(os.path.expandvars(pattern))
-                if os.path.isabs(resolved):
-                    sources.append(resolved)
-                elif base:
-                    sources.append(os.path.join(base, resolved))
-                # A relative pattern with no base can't be located; skip it.
-            # Files the agent may not read (deny_read) can't reach output through
-            # valet, so they are excluded from the index — no wasted parse and no
-            # over-masking from their non-secret contents.
-            values = self._secret_index.values_for(sources, self.policy.deny_read)
+            # Copy: the index returns its cached list, which must not collect
+            # every command's extra values.
+            values = list(self._secret_index.values_for(
+                self.secret_sources(cwd), self.policy.deny_read))
             # Config-listed literals are always masked; env values (e.g. an
             # inline `NAME=value` prefix or --env) are masked only if long enough
             # to look secret, so trivial ones like `1` or `tiny` don't over-redact.
@@ -451,6 +472,9 @@ class Broker:
                 return response
             if op == "files.push":
                 response = {**base, **self._files_push(request)}
+                return response
+            if op == "files.pull":
+                response = {**base, **self._files_pull(request, context)}
                 return response
             if op == "ping":
                 default_ws = self.workspaces[self.default_workspace]
@@ -696,6 +720,57 @@ class Broker:
             "bytes_written": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
             "created": created,
+        }
+
+    def _files_pull(self, request: dict, context: AuditContext) -> dict:
+        """Return a workspace file's bytes to the client (host -> agent).
+
+        Unlike every other op, the result is not passed through redaction — a
+        redacted file is a corrupted file — so a pull is refused instead whenever
+        redaction would have mattered. In order:
+
+          1. enabled per workspace (``allow_pull``), and for WebSocket clients on
+             other machines separately (``allow_pull_lan``);
+          2. the path rules shared with push: no secret source, ``deny_read``
+             path, VCS internals, or valet state (case-insensitive, lexical and
+             symlink-resolved);
+          3. opened without following symlinks; must be a regular, single-link
+             file within the size cap;
+          4. not a secret file by identity, nor a byte-for-byte copy of one;
+          5. content: text that the workspace redactor would change is refused;
+             binary is refused unless ``allow_pull_binary``, and even then is
+             searched for known secret values and key shapes.
+
+        What this cannot stop is a secret *transformed* into a workspace file by
+        a command (base64, compression, encryption) — the same limit exec has;
+        policy and the audit trail contain that.
+        """
+        ws = self._workspace(request)
+        if not ws.policy.allow_pull:
+            raise PolicyError(
+                "files pull is disabled for this workspace ([policy].allow_pull)")
+        if context.transport not in _LOCAL_TRANSPORTS and not ws.policy.allow_pull_lan:
+            raise PolicyError(
+                "files pull over the network is disabled ([policy].allow_pull_lan)")
+        guard = TransferGuard.for_workspace(ws, self.cfg)
+        lexical, real = guard.resolve(request.get("path"))
+        if real == guard.root:
+            raise ValidationError("path is a directory")
+        guard.check_common(lexical, real)
+
+        content, st = read_file(guard.root, real, FILE_PULL_MAX_BYTES)
+        check_not_secret_file(st, content, ws.secret_files())
+        check_content(content, ws.redactor_for(guard.root),
+                      allow_binary=ws.policy.allow_pull_binary)
+
+        return {
+            "op": "files.pull",
+            "ok": True,
+            "path": ws.to_virtual(real),
+            "bytes_read": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "mode": stat.S_IMODE(st.st_mode) & 0o755,
+            "content_b64": base64.b64encode(content).decode("ascii"),
         }
 
     @staticmethod
@@ -1048,6 +1123,8 @@ class Broker:
             push_path = request_dict.get("path")
         event["path"] = self._safe(redactor, str(push_path)) if push_path else None
         event["bytes_written"] = response.get("bytes_written")
+        event["bytes_read"] = response.get("bytes_read")
+        event["sha256"] = response.get("sha256")
         event["request"] = {
             "op": event["op"],
             "cmd": command,

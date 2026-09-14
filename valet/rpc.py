@@ -488,8 +488,8 @@ def _method_for(req: dict) -> str:
         return "host.ping"
     if op == "redaction_info":
         return "redaction.info"
-    if op == "files.push":
-        return "files.push"
+    if op in ("files.push", "files.pull"):
+        return op
     return str(op)
 
 
@@ -510,8 +510,8 @@ def legacy_request_from_rpc(message: dict) -> dict:
         return {"op": "ping", **params}
     if method == "redaction.info":
         return {"op": "redaction_info", **params}
-    if method == "files.push":
-        return {"op": "files.push", **params}
+    if method in ("files.push", "files.pull"):
+        return {"op": method, **params}
     return {"op": str(method or "unknown"), **params}
 
 

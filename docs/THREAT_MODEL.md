@@ -129,6 +129,38 @@ a secret before printing it defeats it. valet defends against secrets appearing
 verbatim (an accidental `cat .env`, `env`, error dumps) — not against a command
 deliberately obfuscating one.
 
+## File transfer (`files push` / `files pull`)
+
+**Push** writes agent bytes into the workspace. The jail keeps it inside the
+root, but inside the root some files are trust anchors, so push also refuses:
+secret sources (overwriting `.env` swaps the credentials trusted tools use, and a
+new file there feeds values into the redaction index), `deny_read` paths, VCS
+internals (a `.git` hook or `core.pager` runs on the next trusted `git`), valet's
+own state, a workspace `bin/` entry that would shadow a PATH program, and any file
+named like an `allow_exec` entry. The write walks the path with `O_NOFOLLOW` so a
+directory swapped for a symlink after the check cannot redirect it.
+
+**Pull** is the one op whose result is *not* redacted — a redacted file is a
+corrupted file — so it must refuse whenever redaction would have mattered. It is
+off by default (`allow_pull`), separately gated for LAN clients
+(`allow_pull_lan`), and refuses, in order:
+
+| Breach attempt | Stopped by |
+|---|---|
+| pull `.secrets/key`, `.ENV`, a `deny_read` file, `.git/objects/…` | case-insensitive path rules on the lexical and resolved path |
+| symlink to a secret or out of the jail; swap a component mid-request | `realpath` jail + `O_NOFOLLOW` walk |
+| `ln .secrets/key notes.txt` (or a link to `~/.aws/credentials`) | single-link (`st_nlink == 1`) requirement + inode match |
+| `cp .secrets/key out.txt` (text, binary, or >1 MB) | byte-for-byte comparison with same-size secret files |
+| a command writes a token or credential dump to a file | text refused if the redactor would change anything |
+| FIFO / device / socket | regular-file requirement (opened non-blocking) |
+| compressed or binary copy | binary refused unless `allow_pull_binary`; then still scanned for known values and key shapes |
+
+**What pull does not stop:** a secret *transformed* into a workspace file by a
+command — `base64`, `gzip`, `openssl enc` — then pulled. This is the same limit
+exec already has (see above), except that pull returns binary losslessly, which
+is why binary pulls are a separate opt-in. Policy (`deny_exec`, `allow_exec`) and
+the audit log (every pull records path, size, and sha256) contain it.
+
 ## Transport attack surface
 
 **Unix domain socket** (primary). The socket file is `0600`, owned by the user

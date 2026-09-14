@@ -1,5 +1,9 @@
 """Host-side guards for the ``files.*`` ops (agent <-> workspace file transfer).
 
+Both directions share the path rules below (:meth:`TransferGuard.check_common`);
+push adds the program-shadowing rules, pull adds file-identity and content
+checks (:func:`read_file`, :func:`check_not_secret_file`, :func:`check_content`).
+
 Pushing a file lets the agent place bytes on the host, so the destination check
 goes further than "inside the workspace". A push may not:
 
@@ -26,10 +30,12 @@ redirect the write outside the workspace.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import shutil
 import stat
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -281,3 +287,129 @@ def clamp_mode(raw: Any) -> int:
     except (TypeError, ValueError) as exc:
         raise ValidationError("mode must be octal permission bits") from exc
     return stat.S_IMODE(mode) & 0o755
+
+
+# -- pull: race-safe read and content inspection ------------------------------------
+
+# Same sniff as the redaction index: a NUL in the head means binary.
+_BINARY_SNIFF_BYTES = 8192
+# Secret shapes that are unambiguous even inside binary data.
+_BINARY_SECRET_RES = (
+    re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+    re.compile(rb"(?:AKIA|ASIA)[0-9A-Z]{16}"),
+)
+_REDACTION_TAG_RE = re.compile(r"\[REDACTED:([a-z_-]+)")
+
+
+def read_file(root: str, real: str, max_bytes: int) -> tuple[bytes, os.stat_result]:
+    """Read ``real`` (inside ``root``) without following symlinks.
+
+    Refuses anything but a regular file with a single link: a FIFO would block,
+    a device or socket is not a file, and a hard link is another name for a file
+    whose other name might be protected (``ln .secrets/key notes.txt``).
+    """
+    dir_fd, name = _open_parent(root, real, create=False)
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(name, flags, dir_fd=dir_fd)
+        except FileNotFoundError as exc:
+            raise ValidationError("no such file") from exc
+        except OSError as exc:
+            raise PolicyError("path is not a regular file") from exc
+    finally:
+        os.close(dir_fd)
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            raise ValidationError("path is a directory")
+        if not stat.S_ISREG(st.st_mode):
+            raise PolicyError("path is not a regular file")
+        if st.st_nlink != 1:
+            raise PolicyError("path is a hard link to another file")
+        if st.st_size > max_bytes:
+            raise ValidationError(
+                f"file exceeds the {max_bytes // (1024 * 1024)} MiB transfer limit")
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValidationError(
+                    f"file exceeds the {max_bytes // (1024 * 1024)} MiB transfer limit")
+            chunks.append(chunk)
+        return b"".join(chunks), st
+    finally:
+        os.close(fd)
+
+
+def check_not_secret_file(st: os.stat_result, content: bytes,
+                          secret_files: Iterable[str]) -> None:
+    """Refuse a file that *is*, or is a byte-for-byte copy of, a secret source.
+
+    Identity (device + inode) catches an alias the path rules missed; an exact
+    copy (``cp .secrets/key out.bin``) is caught by comparing against secret
+    files of the same size — which also covers binary and >1 MB secret files
+    that contribute no redaction values.
+    """
+    size = len(content)
+    for path in secret_files:
+        try:
+            sst = os.stat(path)
+        except OSError:
+            continue
+        if (sst.st_dev, sst.st_ino) == (st.st_dev, st.st_ino):
+            raise PolicyError("file is a secret source")
+        if sst.st_size == size and size > 0:
+            try:
+                with open(path, "rb") as fh:
+                    same = fh.read(size + 1) == content
+            except OSError:
+                continue
+            if same:
+                raise PolicyError("file is a copy of a secret source")
+
+
+def is_binary(content: bytes) -> bool:
+    if b"\x00" in content[:_BINARY_SNIFF_BYTES]:
+        return True
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def check_content(content: bytes, redactor: Any, *, allow_binary: bool) -> None:
+    """Refuse content valet would redact, rather than return a doctored file.
+
+    Text is run through the workspace's full redactor; any change — a known
+    secret value, a suspected secret, a key/token shape, an identifier valet
+    de-identifies (ARN, account id, email), or the real host path — refuses the
+    pull, so a pull never reveals what ``valet run -- cat`` would mask. The
+    refusal names only the categories found, never the values.
+
+    Binary content cannot be scanned meaningfully (compressed or encoded data
+    hides anything), so it is refused unless ``allow_binary``; when allowed it
+    is still searched for every known secret value and unambiguous key shapes.
+    """
+    if is_binary(content):
+        if not allow_binary:
+            raise PolicyError(
+                "binary file pull is disabled ([policy].allow_pull_binary)")
+        for value in redactor.secret_values:
+            if value and value.encode("utf-8") in content:
+                raise PolicyError("file contains a known secret value")
+        if any(r.search(content) for r in _BINARY_SECRET_RES):
+            raise PolicyError("file contains a private key or access key id")
+        return
+    text = content.decode("utf-8")
+    redacted = redactor.redact(text)
+    if redacted == text:
+        return
+    found = sorted(Counter(_REDACTION_TAG_RE.findall(redacted))
+                   - Counter(_REDACTION_TAG_RE.findall(text)))
+    what = ", ".join(found) if found else "host path"
+    raise PolicyError(f"file contains content valet redacts ({what})")

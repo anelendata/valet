@@ -726,3 +726,10 @@ def test_connection_registry_removed_connection_is_not_revoked():
 
     assert reg.revoke_clients({"drop"}, "gone") == []
     assert conn.revoked_with is None
+
+
+def test_files_pull_round_trips_through_the_rpc_envelope():
+    req = {"op": "files.pull", "path": "out/report.txt", "workspace": "w"}
+    envelope = _request_envelope("rid", "client-1", req)
+    assert envelope["method"] == "files.pull"
+    assert legacy_request_from_rpc(envelope) == req

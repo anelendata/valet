@@ -103,6 +103,14 @@ class PolicyConfig:
     # existing paths outside it, writes reject path-like targets outside it.
     enforce_workspace_reads: bool = True
     enforce_workspace_writes: bool = True
+    # `valet files pull` (host -> agent). Off by default: pull hands over raw
+    # bytes, so it is gated by path, file-identity, and content checks — see
+    # valet/files.py. allow_pull covers local (Unix-socket) clients;
+    # allow_pull_lan additionally allows WebSocket clients on other machines;
+    # allow_pull_binary allows files whose content cannot be scanned as text.
+    allow_pull: bool = False
+    allow_pull_lan: bool = False
+    allow_pull_binary: bool = False
 
 
 @dataclass(frozen=True)
@@ -369,6 +377,9 @@ def _parse_policy_table(table: dict, base: PolicyConfig) -> PolicyConfig:
         enforce_workspace_writes=bool(
             table.get("enforce_workspace_writes", base.enforce_workspace_writes)
         ),
+        allow_pull=bool(table.get("allow_pull", base.allow_pull)),
+        allow_pull_lan=bool(table.get("allow_pull_lan", base.allow_pull_lan)),
+        allow_pull_binary=bool(table.get("allow_pull_binary", base.allow_pull_binary)),
     )
 
 

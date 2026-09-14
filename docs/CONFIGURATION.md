@@ -309,6 +309,9 @@ deny_exec = []
 deny_read = []
 enforce_workspace_reads = true
 enforce_workspace_writes = true
+allow_pull = false
+allow_pull_lan = false
+allow_pull_binary = false
 ```
 
 | Key | Default | What it does |
@@ -318,6 +321,9 @@ enforce_workspace_writes = true
 | `deny_read` | `[]` | Globs of files a command may not name — valet refuses to **run** it, **and excludes the file from the redaction index** (a file that can't be read needs no redacting; keeps a big `.har` from over-masking). A hard block that also stops a trusted tool from *using* the file. Shell-aware (splits on `;` `&&` `||` `|`, tracks `cd`). Empty by default; see [`secret_file_paths` vs `deny_read`](#secret_file_paths-vs-deny_read). Examples: `["**/.env", "**/.secrets/**", "**/*.har", "~/.aws/**"]`. |
 | `enforce_workspace_reads` | `true` | Refuse a command whose existing path argument or `cwd` resolves outside the workspace (`../` and symlinks included). Best-effort, not a sandbox. |
 | `enforce_workspace_writes` | `true` | Refuse a command whose path-like argument resolves outside the workspace **even if it doesn't exist yet**, so nothing is written outside. |
+| `allow_pull` | `false` | Enable [`valet files pull`](COMMANDS.md#files-pull) for local (Unix-socket) clients. A pull returns raw bytes, so it is refused for secret sources, `deny_read` paths, VCS internals, valet state, hard links, copies of secret files, and any text the redactor would change. |
+| `allow_pull_lan` | `false` | Also allow pulls from WebSocket clients (another machine). Requires `allow_pull`. |
+| `allow_pull_binary` | `false` | Allow pulling binary (non-UTF-8 or NUL-containing) files. Binary content can hide a compressed or encoded secret the scan cannot see; known secret values and private-key/access-key shapes are still refused. |
 
 ## Workspaces and per-workspace overrides
 

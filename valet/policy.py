@@ -101,6 +101,9 @@ class Policy:
     deny_read: tuple[str, ...] = ()
     enforce_workspace_reads: bool = False
     enforce_workspace_writes: bool = False
+    allow_pull: bool = False
+    allow_pull_lan: bool = False
+    allow_pull_binary: bool = False
 
     @classmethod
     def from_config(
@@ -122,6 +125,9 @@ class Policy:
             ),
             enforce_workspace_reads=cfg.enforce_workspace_reads,
             enforce_workspace_writes=cfg.enforce_workspace_writes,
+            allow_pull=cfg.allow_pull,
+            allow_pull_lan=cfg.allow_pull_lan,
+            allow_pull_binary=cfg.allow_pull_binary,
         )
 
     def check(self, cmd: Command, cwd: Optional[str]) -> None:

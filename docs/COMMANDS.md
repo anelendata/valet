@@ -52,6 +52,8 @@ environment for `run`/`sh`/`repl`.
 | [`run`](#run) | client | Run an argv with no shell; print redacted output. |
 | [`sh`](#sh) | client | Run a shell command line; print redacted output. |
 | [`call`](#call) | client | Send a raw JSON request to the daemon. |
+| [`files push`](#files-push) | client | Upload a local file into the workspace. |
+| [`files pull`](#files-pull) | client | Download a workspace file (host opt-in). |
 | [`repl`](#repl) | client | Interactive redacting shell. |
 | [`status`](#status) | client | Connection status + agent orientation. |
 | [`info`](#info) | client | Show the selected workspace's README guide. |
@@ -129,6 +131,64 @@ and scripting against the wire protocol. Prints the JSON response.
 ```bash
 valet call --json '{"op":"ping"}'
 valet call --json '{"op":"exec","cmd":"echo hi","shell":false}'
+```
+
+## Transferring files
+
+Both directions carry the whole file base64-encoded in one message, capped at
+8 MiB, and verify a sha256 end to end. Paths on the host are workspace-virtual:
+`./`, `/` and `~` all mean the workspace root. Every transfer — refused ones
+included — is audited with its path, size, and hash (never the content).
+
+### `files push`
+
+```
+valet [-w ID] files push [--mode OCTAL] [--no-clobber] <src> <dst>
+```
+
+Upload a local file to `<dst>` inside the workspace, creating parent
+directories. Mode bits default to the source's, capped at `0755`. The host
+refuses destinations that would tamper with credentials or plant code it runs:
+
+- a secret source (`redaction.secret_file_paths`) or `policy.deny_read` path;
+- VCS internals (`.git/`, `.hg/`, `.svn/`);
+- valet's own state (`~/.valet`, the socket, the audit log, the sandbox profile,
+  any `config.toml`);
+- a workspace `bin/` file named like a program already on PATH, or any file
+  named like an `allow_exec` entry.
+
+Matching is case-insensitive and applies to the symlink-resolved path too.
+
+```bash
+valet files push ./report-generator.py tools/report.py
+valet files push --no-clobber data.csv inbox/data.csv
+```
+
+### `files pull`
+
+```
+valet [-w ID] files pull [--no-clobber] <src> [<dst>|-]
+```
+
+Download a workspace file to `<dst>` (default: its name in the current
+directory; `-` writes to stdout). **Off unless the host sets
+`[policy].allow_pull = true`** for the workspace, and WebSocket clients also need
+`allow_pull_lan = true`. A pulled file is never redacted — a doctored file is a
+broken file — so the host refuses instead when:
+
+- the path hits any push rule above (other than the program-name ones);
+- the file is a symlink target outside the jail, a hard link, a FIFO/device, or
+  over the size cap;
+- it *is* a secret file, or a byte-for-byte copy of one;
+- it is text that valet's redactor would change (a known secret value, a
+  suspected secret, a key/token shape, an ARN/account id/email, or the real host
+  path) — the error names the categories found, never the values;
+- it is binary and `allow_pull_binary` is off. With it on, binary content is
+  still searched for known secret values and private-key/access-key shapes.
+
+```bash
+valet files pull out/chart.png ./chart.png
+valet files pull out/summary.json - | jq .
 ```
 
 ## Interactive & orientation

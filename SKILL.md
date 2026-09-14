@@ -80,6 +80,21 @@ Use a non-default config when needed:
 valet -c /path/to/config.toml --host my-computer ping
 ```
 
+## Transfer Files
+
+```bash
+valet files push ./local.py tools/local.py     # client -> workspace
+valet files pull out/report.csv ./report.csv   # workspace -> client (host opt-in)
+valet files pull out/summary.json -            # to stdout
+```
+
+- Push refuses secret files, `deny_read` paths, `.git/` internals, valet state,
+  and names that would shadow a program. Do not try to work around a refusal.
+- Pull works only if the host enabled `[policy].allow_pull`. It refuses secret
+  files, copies of them, and any file whose content valet would redact (the
+  error names the category). Treat a refusal as final; do not copy, encode, or
+  split the file to get it out.
+
 ## Client Config
 
 The client config contains only the client identity and remote host URLs. It

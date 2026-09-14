@@ -10,6 +10,7 @@ Subcommands:
   valet run CMD...      run an argv (no shell) and print redacted output
   valet sh 'CMDLINE'    run a shell command line when [exec].shell=true
   valet files push SRC DST  upload a local file into the workspace (agent->host)
+  valet files pull SRC [DST]  download a workspace file (host->agent; opt-in)
   valet call --json ..  send a raw request object to the daemon
   valet ping            check the selected host
   valet hosts           list configured client hosts
@@ -888,8 +889,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print("  valet -w <ws> sh '<command line>'     run a shell command line")
     print("  valet -w <ws> run --cwd <dir> -- ...  run inside a subdirectory")
     print("  valet -w <ws> files push <src> <dst>  upload a local file into the")
-    print("                                        workspace (any type; host cannot")
-    print("                                        be read back — upload only)")
+    print("                                        workspace (any type)")
+    print("  valet -w <ws> files pull <src> [dst]  download a workspace file, if the")
+    print("                                        host enabled it; refused for secret")
+    print("                                        files and content valet would redact")
     print("  Omit -w to use the host's default workspace.")
     print()
     if ping is not None and workspaces:
@@ -954,8 +957,7 @@ def _cmd_files_push(args: argparse.Namespace) -> int:
 
     Reads the source from the machine running this client, base64-encodes it (the
     transport carries only JSON text, so any file type must be encoded), and asks
-    the host to write it to a workspace-relative destination. There is no matching
-    pull — the channel is one-directional by design.
+    the host to write it to a workspace-relative destination.
     """
     src = Path(os.path.expanduser(os.path.expandvars(args.source)))
     if not src.is_file():
@@ -1028,6 +1030,86 @@ def _cmd_files_push(args: argparse.Namespace) -> int:
     where = f" in workspace {workspace!r}" if workspace else ""
     print(f"valet: {verb} {resp.get('path')} "
           f"({resp.get('bytes_written')} bytes){where}")
+    return 0
+
+
+def _cmd_files_pull(args: argparse.Namespace) -> int:
+    """Download a workspace file to this client (host -> agent).
+
+    The host must enable it (``[policy].allow_pull``) and refuses secret files,
+    copies of them, and any content its redactor would change — see
+    ``Broker._files_pull``. The destination defaults to the source's basename in
+    the current directory; ``-`` writes the bytes to stdout.
+    """
+    req: dict = {"op": "files.pull", "path": args.source}
+    workspace = _effective_workspace(args)
+    if workspace:
+        req["workspace"] = workspace
+
+    to_stdout = args.dest == "-"
+    dest: Path | None = None
+    if not to_stdout:
+        name = os.path.basename(args.source.rstrip("/")) or "pulled"
+        dest = Path(os.path.expanduser(args.dest)) if args.dest else Path(name)
+        if dest.is_dir():
+            dest = dest / name
+        if args.no_clobber and dest.exists():
+            print(f"valet files pull: {dest} exists (--no-clobber)", file=sys.stderr)
+            return 2
+
+    try:
+        conn, _target, _cfg = _connect(args)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request(req)
+    finally:
+        conn.close()
+
+    handled = _maybe_unknown_workspace_exit(args, resp)
+    if handled is not None:
+        return handled
+    if not resp.get("ok"):
+        print(f"valet files pull: {resp.get('error_class')}: {resp.get('detail', '')}",
+              file=sys.stderr)
+        return 1
+
+    try:
+        data = base64.b64decode(resp.get("content_b64") or "", validate=True)
+    except (ValueError, TypeError):
+        print("valet files pull: the host returned invalid content", file=sys.stderr)
+        return 1
+    if hashlib.sha256(data).hexdigest() != resp.get("sha256"):
+        print("valet files pull: integrity check FAILED — the received bytes do "
+              "not match the host's sha256.", file=sys.stderr)
+        return 1
+
+    if to_stdout:
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+        return 0
+    assert dest is not None
+    mode = int(resp.get("mode") or 0o644) & 0o755
+    tmp = dest.with_name(f".{dest.name}.valet-pull-{_secrets.token_hex(4)}")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, dest)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        print(f"valet files pull: cannot write {dest}: {exc}", file=sys.stderr)
+        return 1
+    where = f" from workspace {workspace!r}" if workspace else ""
+    print(f"valet: pulled {resp.get('path')}{where} -> {dest} "
+          f"({resp.get('bytes_read')} bytes)")
     return 0
 
 
@@ -1773,7 +1855,7 @@ def build_parser() -> argparse.ArgumentParser:
     sh.set_defaults(func=_cmd_sh)
 
     files_p = sub.add_parser(
-        "files", help="transfer files into a workspace (agent -> host only)")
+        "files", help="transfer files to and from a workspace")
     files_sub = files_p.add_subparsers(dest="files_cmd", required=True)
     files_push = files_sub.add_parser(
         "push", help="upload a local file into the selected workspace")
@@ -1789,6 +1871,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-clobber", action="store_true",
         help="fail if the destination already exists (default: overwrite)")
     files_push.set_defaults(func=_cmd_files_push)
+    files_pull = files_sub.add_parser(
+        "pull", help="download a file from the selected workspace (host must "
+                     "enable [policy].allow_pull)")
+    files_pull.add_argument(
+        "source", help="file inside the workspace (virtual; './' is the root)")
+    files_pull.add_argument(
+        "dest", nargs="?", default=None,
+        help="local destination file or directory (default: the source's name "
+             "in the current directory; '-' for stdout)")
+    files_pull.add_argument(
+        "--no-clobber", action="store_true",
+        help="fail if the local destination already exists (default: overwrite)")
+    files_pull.set_defaults(func=_cmd_files_pull)
 
     call = sub.add_parser("call", help="send a raw JSON request to the daemon")
     call.add_argument("--json", required=True, help='e.g. \'{"op":"ping"}\'')
