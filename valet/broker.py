@@ -14,9 +14,7 @@ import json
 import os
 import re
 import shlex
-import stat
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -26,7 +24,7 @@ from typing import Any, Optional
 
 from . import __version__
 from .audit import AuditContext, AuditLogger
-from .config import DEFAULT_CONFIG_NAME, BrokerConfig, resolve_workspaces
+from .config import BrokerConfig, resolve_workspaces
 from .errors import (
     CommandError,
     ConfigError,
@@ -36,6 +34,7 @@ from .errors import (
     ValidationError,
 )
 from .executor import OutputChunk, RunResult, iter_run, kill_process, list_processes, run
+from .files import TransferGuard, clamp_mode, write_file
 from .policy import Policy
 from .sanitize import Redactor
 from .secrets import _keep as _worth_redacting
@@ -668,36 +667,27 @@ class Broker:
         return {"op": "chdir", "ok": True, "cwd": ws.to_virtual(newpath)}
 
     def _files_push(self, request: dict) -> dict:
-        """Write a client-supplied file into the workspace (agent -> host only).
+        """Write a client-supplied file into the workspace (agent -> host).
 
-        The single write op. Bytes arrive base64-encoded in ``content_b64`` (the
-        JSON transport carries only UTF-8 text, so any file type must be encoded)
-        and are decoded and written to ``path`` *inside the workspace*. The
-        destination is always interpreted as a workspace-virtual path and jailed
-        to the root — ``..``/symlinks are resolved before the containment check,
-        and an absolute or ``~``-rooted path is taken relative to the root, never
-        the host filesystem — so a push can never write outside the workspace.
-
-        Deliberately one-directional: there is no matching read/pull op, so this
-        adds a write channel without opening a path for host data to leave.
+        Bytes arrive base64-encoded in ``content_b64`` (the JSON transport carries
+        only UTF-8 text, so any file type must be encoded) and are decoded and
+        written to ``path`` *inside the workspace*. The destination is always a
+        workspace-virtual path jailed to the root, and it may not be a secret
+        source, a ``deny_read`` path, VCS internals, valet's own state, or a name
+        that shadows a program — see :mod:`valet.files` for the full rule set.
         """
         ws = self._workspace(request)
-        root = ws.root()
-        if root is None:
-            raise ValidationError("workspace path is not configured")
+        guard = TransferGuard.for_workspace(ws, self.cfg)
 
         content = self._decode_push_content(request.get("content_b64"))
-        dest = self._resolve_push_dest(root, request.get("path"))
-        if os.path.isdir(dest):
+        lexical, dest = guard.resolve(request.get("path"))
+        if dest == guard.root:
             raise ValidationError("destination is a directory")
-        if os.path.basename(dest).casefold() == DEFAULT_CONFIG_NAME.casefold():
-            raise PolicyError("config.toml is protected")
-        existed = os.path.exists(dest)
-        if existed and not bool(request.get("overwrite", True)):
-            raise ValidationError("destination exists (overwrite is disabled)")
+        guard.check_push(lexical, dest)
 
-        mode = self._push_mode(request.get("mode"))
-        self._write_file_atomic(dest, content, mode)
+        mode = clamp_mode(request.get("mode"))
+        created = write_file(guard.root, dest, content, mode,
+                             overwrite=bool(request.get("overwrite", True)))
 
         return {
             "op": "files.push",
@@ -705,7 +695,7 @@ class Broker:
             "path": ws.to_virtual(dest),
             "bytes_written": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
-            "created": not existed,
+            "created": created,
         }
 
     @staticmethod
@@ -724,69 +714,6 @@ class Broker:
                 "push limit"
             )
         return content
-
-    @staticmethod
-    def _resolve_push_dest(root: str, raw_path: Any) -> str:
-        """Resolve a push destination as a workspace-virtual path, jailed to root.
-
-        Unlike ``real_from_virtual`` (built for existing dirs), this treats every
-        input as workspace-relative so a not-yet-existing target resolves inside
-        the root: a leading ``~``/``/`` is stripped, then the path is joined onto
-        the root and ``realpath``-normalised so ``..`` and symlinks cannot climb
-        out. Anything that still lands outside the root is refused.
-        """
-        target = os.path.expandvars(str(raw_path or "")).strip()
-        if target.startswith("~"):
-            target = target[1:]
-        target = target.lstrip("/")
-        if not target:
-            raise ValidationError("missing 'path'")
-        dest = os.path.realpath(os.path.join(root, target))
-        if dest != root and not dest.startswith(root + os.sep):
-            raise PolicyError("destination is outside the workspace")
-        return dest
-
-    @staticmethod
-    def _push_mode(raw: Any) -> int:
-        """Permission bits for the written file (default 0644), clamped to 0777."""
-        if raw is None:
-            return 0o644
-        try:
-            # Accept an int (0o755) or a string ("755"/"0755"); a string is octal.
-            mode = raw if isinstance(raw, int) else int(str(raw), 8)
-        except (TypeError, ValueError) as exc:
-            raise ValidationError("mode must be octal permission bits") from exc
-        return stat.S_IMODE(mode)
-
-    @staticmethod
-    def _write_file_atomic(dest: str, content: bytes, mode: int) -> None:
-        """Write ``content`` to ``dest`` via a temp file + rename, creating parents.
-
-        Parents are created inside the already-jailed root. The temp file lives in
-        the destination directory so the final ``os.replace`` is atomic, and it is
-        cleaned up if anything fails, leaving no partial file behind.
-        """
-        parent = os.path.dirname(dest) or "."
-        try:
-            os.makedirs(parent, exist_ok=True)
-        except OSError as exc:
-            raise CommandError("could not create the destination directory") from exc
-        tmp = None
-        try:
-            fd, tmp = tempfile.mkstemp(dir=parent, prefix=".valet-push-")
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(content)
-            os.chmod(tmp, mode)
-            os.replace(tmp, dest)
-            tmp = None
-        except OSError as exc:
-            raise CommandError("could not write the destination file") from exc
-        finally:
-            if tmp is not None and os.path.exists(tmp):
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
 
     def _redaction_info(self, request: dict) -> dict:
         ws = self._workspace(request)
@@ -1112,9 +1039,13 @@ class Broker:
             # workspace is auditable rather than hidden behind a virtual cwd.
             "referenced_outside_workspace": self._references_outside_workspace(request_dict, ws),
         }
-        # files.push has no command; record its destination (already a virtual,
-        # host-layout-free path) and size so the write is auditable.
+        # files ops have no command; record the destination (already a virtual,
+        # host-layout-free path) and size so the transfer is auditable. A refused
+        # transfer has no resolved path, so record what was asked for — probing
+        # protected paths must be visible too.
         push_path = response.get("path")
+        if not push_path and str(request_dict.get("op", "")).startswith("files."):
+            push_path = request_dict.get("path")
         event["path"] = self._safe(redactor, str(push_path)) if push_path else None
         event["bytes_written"] = response.get("bytes_written")
         event["request"] = {

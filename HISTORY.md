@@ -3,6 +3,24 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## Unreleased
+
+- **Security:** `valet files push` now refuses destinations that let an upload
+  tamper with credentials or smuggle in code the host will run: secret sources
+  (`redaction.secret_file_paths`), `policy.deny_read` paths, VCS internals
+  (`.git/`, `.hg/`, `.svn/` — hooks and `core.*` config execute on the next
+  trusted `git`), valet's own state (`~/.valet`, the socket, the audit log, the
+  sandbox profile, any `config.toml`), a workspace `bin/` file that would shadow a
+  program on PATH, and any file named like an `allow_exec` entry (so
+  `valet run -- tools/aws` cannot pass an `aws` allowlist). Checks are
+  case-insensitive and applied to both the lexical and symlink-resolved path.
+- **Security:** the push path is no longer `$VAR`-expanded on the host (which
+  could echo host environment values back in the returned path), the write walks
+  the destination with `O_NOFOLLOW` so a directory swapped for a symlink after the
+  check cannot redirect it outside the workspace, and pushed permission bits are
+  capped at `0755` (no setuid/setgid/sticky, no group/other write). A refused push
+  is audited with the requested path.
+
 ## 0.0.12 — 2026-09-05
 
 - **Added:** `valet files push <src> <dst>` uploads a local file into a
