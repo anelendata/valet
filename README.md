@@ -453,11 +453,8 @@ listen = "0.0.0.0:8766"
 ```
 
 ```bash
-valet clients add my-ai-box     # prints the snippet below
-valet clients list              # also: block / unblock / remove <id>
-```
+> valet clients add my-ai-box     # prints the snippet below
 
-```toml
 # Write this in client (agent)'s ~/.valet/config.toml
 [client]
 id = "my-ai-box"
