@@ -53,7 +53,7 @@ import shutil
 import unicodedata
 from glob import glob, has_magic
 from dataclasses import dataclass
-from typing import Mapping, Optional, Union
+from typing import Iterable, Mapping, NamedTuple, Optional, Union
 
 from .config import DEFAULT_CONFIG_NAME, PolicyConfig
 from .errors import PolicyError
@@ -134,6 +134,26 @@ _ENV_SETTING_BUILTINS = frozenset({"export", "declare", "typeset", "local", "rea
 # Tokens made up entirely of these characters are shell control operators and
 # act as sub-command separators (";", "&&", "||", "|", "&", "(", ")", "<", ">").
 _OPERATOR_CHARS = set(";&|()<>")
+# A separator made only of these redirects: what follows it is a *file*, not a
+# command (">", ">>", "<", "<<", "<<<"). Kept strict on purpose — "<(" is
+# process substitution, whose first word really is a command to check, and it
+# does not qualify.
+_REDIRECT_CHARS = set("<>")
+
+
+class _Sub(NamedTuple):
+    """One sub-command's tokens, and whether they are a redirect's operand.
+
+    ``echo hi > out.txt`` splits on ``>`` into ``echo hi`` and ``out.txt``. Only
+    the first is a command; the second is the file it writes to, and checking it
+    against the allow/deny lists denies every redirect under an allowlist for a
+    reason that has nothing to do with what ran. The operand's *paths* are still
+    checked — that is the part that matters.
+    """
+
+    tokens: list[str]
+    is_operand: bool = False
+    heredoc: Optional[str] = None  # delimiter, when `<<` opened a body here
 
 
 def _is_config_name(path: str) -> bool:
@@ -200,7 +220,8 @@ class Policy:
         effective_cwd = cwd
         if self.enforce_workspace_reads and self._is_outside_workspace(effective_cwd, None):
             raise PolicyError("working directory is outside the workspace")
-        for sub in _split_subcommands(cmd):
+        for parsed in _split_subcommands(cmd):
+            sub = parsed.tokens
             if not sub:
                 continue
 
@@ -209,6 +230,11 @@ class Policy:
             # token rather than only command arguments.
             if any(self._is_protected_config_path(tok, effective_cwd) for tok in sub):
                 raise PolicyError("config.toml is protected")
+
+            if parsed.is_operand:
+                # A redirect's target: not a command, so only its paths matter.
+                self._check_paths(sub, effective_cwd)
+                continue
 
             assignments, programs = _parse_invocation(sub)
             command = os.path.basename(programs[-1]).casefold() if programs else ""
@@ -225,7 +251,8 @@ class Policy:
             # builtins are exempt so `cd`/`pushd` still work in an allowed session.
             if self.allow_exec and command and not is_navigation:
                 if command not in _casefold_names(self.allow_exec):
-                    raise PolicyError("command is not on the allow list")
+                    raise PolicyError(
+                        f"command is not on the allow list: {_quote(programs[-1])}")
                 # The allowlist matched a basename; a path-qualified program
                 # (including an `env` wrapper's own path) must also be the
                 # host's, not a workspace file carrying an allowed name.
@@ -237,20 +264,30 @@ class Policy:
                         )
 
             if command in _casefold_names(BUILTIN_DENY + self.deny_exec):
-                raise PolicyError("command is on the deny list")
+                raise PolicyError(
+                    f"command is on the deny list: {_quote(programs[-1] if programs else command)}")
 
-            for tok in sub[1:]:
-                if self.enforce_workspace_reads and self._is_outside_workspace(tok, effective_cwd):
-                    raise PolicyError("command references a path outside the workspace")
-                if self.enforce_workspace_writes and self._is_write_outside_workspace(tok, effective_cwd):
-                    raise PolicyError("command targets a path outside the workspace")
-                if self.deny_read:
-                    if self._is_denied_path(tok, effective_cwd):
-                        raise PolicyError("command references a denied path")
+            self._check_paths(sub[1:], effective_cwd)
 
             # Track directory changes so later sub-commands resolve correctly.
             if sub[0] in ("cd", "pushd") and len(sub) >= 2:
                 effective_cwd = self._resolve(sub[1], effective_cwd)
+
+    def _check_paths(self, tokens: Iterable[str], cwd: Optional[str]) -> None:
+        """The path rules, over whatever tokens the caller says are operands.
+
+        The message names the token *as the request wrote it* — never the path it
+        resolves to, which would hand back the host's real layout.
+        """
+        for tok in tokens:
+            if self.enforce_workspace_reads and self._is_outside_workspace(tok, cwd):
+                raise PolicyError(
+                    f"command references a path outside the workspace: {_quote(tok)}")
+            if self.enforce_workspace_writes and self._is_write_outside_workspace(tok, cwd):
+                raise PolicyError(
+                    f"command targets a path outside the workspace: {_quote(tok)}")
+            if self.deny_read and self._is_denied_path(tok, cwd):
+                raise PolicyError(f"command references a denied path: {_quote(tok)}")
 
     def _resolve(self, token: str, cwd: Optional[str]) -> str:
         path = os.path.expanduser(os.path.expandvars(token))
@@ -350,11 +387,16 @@ class Policy:
         if self._is_outside_workspace(cwd, None):
             return True
         effective_cwd = cwd
-        for sub in _split_subcommands(cmd):
-            for tok in sub[1:] if sub else ():
+        for parsed in _split_subcommands(cmd):
+            sub = parsed.tokens
+            if not sub:
+                continue
+            # A redirect operand is all target, so every token of it counts;
+            # elsewhere the program name is not a path reference.
+            for tok in (sub if parsed.is_operand else sub[1:]):
                 if self._is_outside_workspace(tok, effective_cwd):
                     return True
-            if sub and sub[0] in ("cd", "pushd") and len(sub) >= 2:
+            if not parsed.is_operand and sub[0] in ("cd", "pushd") and len(sub) >= 2:
                 effective_cwd = self._resolve(sub[1], effective_cwd)
         return False
 
@@ -364,20 +406,38 @@ def _looks_like_path(token: str) -> bool:
     return token.startswith(("/", "~", "./", "../")) or "/" in token
 
 
-def _split_subcommands(cmd: Command) -> list[list[str]]:
-    """Split a command into sub-commands (token lists) on shell operators.
+def _split_subcommands(cmd: Command) -> list[_Sub]:
+    """Split a command into sub-commands on shell operators.
 
-    An argv list is a single sub-command. A shell string is lexed with operator
-    awareness; newlines also separate sub-commands.
+    An argv list is a single sub-command — no shell parses it, so its ``>`` is
+    an ordinary argument. A shell string is lexed with operator awareness;
+    newlines also separate sub-commands.
     """
     if isinstance(cmd, (list, tuple)):
-        return [[str(t) for t in cmd]]
+        return [_Sub([str(t) for t in cmd])]
 
-    subs: list[list[str]] = []
+    subs: list[_Sub] = []
+    body_ends_at: Optional[str] = None
     for line in cmd.splitlines():
-        for tokens in _split_line(line):
-            subs.append(tokens)
+        if body_ends_at is not None:
+            # Inside a heredoc: these lines are the command's input, not
+            # commands. (`bash <<EOF` does run its body — but `bash` itself had
+            # to pass the command checks, exactly as `bash -c` does.)
+            if line.strip() == body_ends_at:
+                body_ends_at = None
+            continue
+        line_subs = _split_line(line)
+        subs.extend(line_subs)
+        # Two heredocs on one line is rare enough to approximate: tracking the
+        # first ends the body early, which only means more checking, not less.
+        body_ends_at = next((s.heredoc for s in line_subs if s.heredoc), None)
     return subs
+
+
+def _quote(token: str, limit: int = 60) -> str:
+    """A request's own token, quoted for an error message and length-capped."""
+    shown = token if len(token) <= limit else token[:limit] + "…"
+    return repr(shown)
 
 
 def _casefold_names(names: tuple[str, ...]) -> set[str]:
@@ -446,23 +506,39 @@ def _is_within(path: str, base: str) -> bool:
     return p == b or p.startswith(b + os.sep)
 
 
-def _split_line(line: str) -> list[list[str]]:
+def _split_line(line: str) -> list[_Sub]:
+    lexed = True
     try:
         lex = shlex.shlex(line, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         tokens = list(lex)
     except ValueError:
+        # Unbalanced quotes: this tokenisation is a guess, not the shell's, so
+        # nothing here is trusted enough to be called a redirect operand.
+        lexed = False
         tokens = line.split()
 
-    subs: list[list[str]] = []
+    subs: list[_Sub] = []
     cur: list[str] = []
+    op = ""  # the separator that introduced `cur`
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:  # a pure-operator token
             if cur:
-                subs.append(cur)
+                subs.append(_operand_or_command(cur, op, lexed))
                 cur = []
+            op = tok
         else:
             cur.append(tok)
     if cur:
-        subs.append(cur)
+        subs.append(_operand_or_command(cur, op, lexed))
     return subs
+
+
+def _operand_or_command(tokens: list[str], op: str, lexed: bool) -> _Sub:
+    """Classify one sub-command by the operator that introduced it."""
+    if not lexed or not op or not set(op) <= _REDIRECT_CHARS:
+        return _Sub(tokens, False)
+    # `<<` opens a body that runs to a delimiter line; `<<<` is inline, and
+    # `<<-` allows leading tabs, which shlex leaves on the delimiter token.
+    delimiter = tokens[0].lstrip("-") if op == "<<" and tokens else None
+    return _Sub(tokens, True, delimiter or None)

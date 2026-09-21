@@ -17,6 +17,7 @@ import shlex
 import signal
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -99,6 +100,32 @@ def _child_env(
     return env
 
 
+def _stdin_source(data: Optional[str]):
+    """What the child reads on stdin: the given text, else nothing.
+
+    Without this the child inherits the daemon's stdin — on a daemon started in
+    a terminal that means a command reading stdin blocks on the operator's
+    keyboard and pipes what they type back to the agent.
+
+    The text goes to an unlinked temp file rather than a pipe: a pipe would
+    deadlock when the child writes more output than the pipe buffer holds
+    before reading its input, and a temp file is also seekable, which some
+    programs expect. It is never linked into a directory, so no other process
+    can open it by name.
+    """
+    if data is None:
+        return subprocess.DEVNULL
+    handle = tempfile.TemporaryFile()
+    handle.write(data.encode("utf-8"))
+    handle.seek(0)
+    return handle
+
+
+def _close_stdin_source(source) -> None:
+    if source is not subprocess.DEVNULL:
+        source.close()
+
+
 def run(
     cmd: Command,
     *,
@@ -109,6 +136,7 @@ def run(
     allow_script_fallback: bool = False,
     path_prepend: Optional[str] = None,
     workspace_root: Optional[str] = None,
+    stdin: Optional[str] = None,
 ) -> RunResult:
     if shell:
         if not isinstance(cmd, str):
@@ -120,6 +148,7 @@ def run(
         popen_arg = list(cmd)
 
     env = _child_env(extra_env, cwd, path_prepend, workspace_root)
+    stdin_source = _stdin_source(stdin)
 
     try:
         proc, tracked_cmd = _popen(
@@ -127,6 +156,7 @@ def run(
             shell=shell,
             cwd=cwd,
             env=env,
+            stdin=stdin_source,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -149,6 +179,7 @@ def run(
     except OSError as exc:
         raise CommandError(_launch_error_detail(exc)) from exc
     finally:
+        _close_stdin_source(stdin_source)
         if "proc" in locals():
             _unregister_process(proc)
 
@@ -170,6 +201,7 @@ def iter_run(
     allow_script_fallback: bool = False,
     path_prepend: Optional[str] = None,
     workspace_root: Optional[str] = None,
+    stdin: Optional[str] = None,
 ) -> Iterator[StreamItem]:
     if shell:
         if not isinstance(cmd, str):
@@ -181,6 +213,7 @@ def iter_run(
         popen_arg = list(cmd)
 
     env = _child_env(extra_env, cwd, path_prepend, workspace_root)
+    stdin_source = _stdin_source(stdin)
 
     try:
         proc, tracked_cmd = _popen(
@@ -188,6 +221,7 @@ def iter_run(
             shell=shell,
             cwd=cwd,
             env=env,
+            stdin=stdin_source,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -200,6 +234,9 @@ def iter_run(
         return
     except OSError as exc:
         raise CommandError(_launch_error_detail(exc)) from exc
+    finally:
+        # The child holds its own descriptor; this one is done either way.
+        _close_stdin_source(stdin_source)
     _register_process(proc, tracked_cmd, shell=shell, cwd=cwd)
 
     out: dict[str, list[str]] = {"stdout": [], "stderr": []}
@@ -298,6 +335,7 @@ def _popen(
     start_new_session: bool,
     allow_script_fallback: bool,
     bufsize: int = -1,
+    stdin=subprocess.DEVNULL,
 ) -> tuple[subprocess.Popen, Command]:
     launch_arg = _resolve_path_executable(popen_arg, shell=shell, env=env)
     try:
@@ -306,6 +344,7 @@ def _popen(
             shell=shell,
             cwd=cwd,
             env=env,
+            stdin=stdin,
             stdout=stdout,
             stderr=stderr,
             text=text,
@@ -322,11 +361,14 @@ def _popen(
         ) if allow_script_fallback and _is_exec_format_error(exc) else None
         if fallback is None:
             raise
+        if stdin is not subprocess.DEVNULL:
+            stdin.seek(0)  # the failed launch never read it, but be explicit
         proc = subprocess.Popen(
             fallback,
             shell=False,
             cwd=cwd,
             env=env,
+            stdin=stdin,
             stdout=stdout,
             stderr=stderr,
             text=text,

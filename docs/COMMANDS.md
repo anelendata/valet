@@ -79,7 +79,8 @@ remote host over WebSocket when `--host` (or a client `default_host`) is set.
 ### `run`
 
 ```
-valet [-w ID] [--env NAME=VALUE] run [--cwd DIR] [--timeout N] -- <cmd> [args…]
+valet [-w ID] [--env NAME=VALUE] run [--cwd DIR] [--timeout N]
+                                    [--stdin-file FILE|-] -- <cmd> [args…]
 ```
 
 Run a command as an **argv** — no shell, so no pipes, globs, or redirection.
@@ -92,6 +93,20 @@ with the command's own exit code.
 | `<cmd> [args…]` | — | The command and its arguments. A leading `--` separates them from valet's own flags and is stripped. |
 | `--cwd DIR` | workspace root | Working directory for this command. |
 | `--timeout N` | `60` | Hard wall-clock limit in seconds. |
+| `--stdin-file FILE` | — | Feed the command this file's text on stdin; `-` reads this client's stdin. Without it the command's stdin is empty. |
+
+Since argv mode runs no shell, a `>` or `|` among the arguments is an ordinary
+argument — nothing is redirected or piped — so use `sh` for that, or
+`--stdin-file` to feed the command its input. valet prints a note on stderr when
+it spots one, because the command otherwise succeeds while writing no file.
+
+**`--stdin-file` is how a local script runs on the host** without being written
+there and without a shell parsing it:
+
+```bash
+valet run --stdin-file ./plan.py -- python3 -
+valet run --stdin-file ./patch.diff -- git apply -
+```
 
 ```bash
 valet run -- aws s3 ls s3://my-bucket/
@@ -102,7 +117,8 @@ valet --env AWS_PROFILE=prod run -- aws s3 ls
 ### `sh`
 
 ```
-valet [-w ID] [--env NAME=VALUE] sh [--cwd DIR] [--timeout N] "<command line>"
+valet [-w ID] [--env NAME=VALUE] sh [--cwd DIR] [--timeout N]
+                                   [--stdin-file FILE|-] "<command line>"|-
 ```
 
 Run a **shell command line**, so pipes, globs, redirection, and `&&` work.
@@ -111,13 +127,25 @@ request is refused. Same redaction and exit-code behavior as `run`.
 
 | Argument | Default | Notes |
 |---|---|---|
-| `"<command line>"` | — | The line to run via the shell. Quote it as one argument. |
+| `"<command line>"` | — | The line to run via the shell. Quote it as one argument, or pass `-` to read it from this client's stdin. |
 | `--cwd DIR` | workspace root | Working directory for this command. |
 | `--timeout N` | `60` | Hard wall-clock limit in seconds. |
+| `--stdin-file FILE` | — | Feed the command line this file's text on stdin; `-` reads this client's stdin (not usable together with a `-` command). |
 
 ```bash
 valet sh 'aws s3 ls | grep prod'
 valet sh 'psql "$DATABASE_URL" --csv -c "select count(*) from jobs"'
+```
+
+**A command line is parsed twice** — once by whatever shell you type it into,
+once by the host's `/bin/sh` — and nesting quotes through both is where it
+usually goes wrong. `valet sh -` takes the line from stdin instead, which a
+quoted heredoc delivers with no parsing at all:
+
+```bash
+valet sh - <<'VALET'
+grep -c "it's" notes.md > counts.txt && cat counts.txt
+VALET
 ```
 
 ### `call`

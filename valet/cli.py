@@ -45,7 +45,7 @@ import sys
 from glob import has_magic
 from pathlib import Path
 
-from .broker import FILE_PUSH_MAX_BYTES, MAX_DIFF_CONTEXT
+from .broker import EXEC_STDIN_MAX_BYTES, FILE_PUSH_MAX_BYTES, MAX_DIFF_CONTEXT
 
 from .client_config import (
     default_client_config_path,
@@ -797,6 +797,58 @@ def _attach_env(args: argparse.Namespace, req: dict) -> None:
         req["workspace"] = workspace
 
 
+def _read_stdin_arg(source: str | None, *, consumed: bool = False) -> str | None:
+    """The text ``--stdin-file`` names, read as UTF-8. ``-`` is this client's stdin.
+
+    Sending a command's input this way keeps it out of the command string, which
+    two shells would otherwise parse on the way to the program.
+    """
+    if source is None:
+        return None
+    if source == "-":
+        if consumed:
+            raise ValidationError(
+                "stdin is already being read for the command itself; "
+                "pass --stdin-file a file instead of '-'")
+        data = sys.stdin.read()
+    else:
+        path = Path(os.path.expanduser(os.path.expandvars(source)))
+        try:
+            data = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValidationError(f"cannot read {path}: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                f"{path} is not UTF-8 text; stdin carries text, so push a binary "
+                "file instead") from exc
+    size = len(data.encode("utf-8"))
+    if size > EXEC_STDIN_MAX_BYTES:
+        raise ValidationError(
+            f"stdin is {size} bytes, over the "
+            f"{EXEC_STDIN_MAX_BYTES // 1024} KiB limit")
+    return data
+
+
+_ARGV_OPERATORS = frozenset({">", ">>", "<", "<<", "|", "||", "&&", ";", "&", "2>"})
+
+
+def _warn_about_argv_operators(command: list[str]) -> None:
+    """Warn when argv mode is handed what looks like a shell operator.
+
+    No shell runs here, so ``>`` is an ordinary argument: the command succeeds,
+    prints its own ``>``, and writes nothing. Silence made that look like a
+    failed redirect rather than a misunderstanding.
+    """
+    found = [tok for tok in command if tok in _ARGV_OPERATORS]
+    if not found:
+        return
+    print(f"valet run: note: {' '.join(repr(t) for t in found)} "
+          f"{'is' if len(found) == 1 else 'are'} being passed to the command as "
+          "plain argument(s) — argv mode runs no shell, so nothing is redirected "
+          "or piped. Use `valet sh '<line>'`, or --stdin-file to feed input.",
+          file=sys.stderr)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     command = list(args.command)
     if command and command[0] == "--":  # `valet run -- cmd ...`
@@ -804,8 +856,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not command:
         print("valet run: no command given", file=sys.stderr)
         return 2
+    _warn_about_argv_operators(command)
     req = {"op": "exec", "cmd": command, "shell": False,
            "timeout": args.timeout}
+    stdin = _read_stdin_arg(args.stdin_file)
+    if stdin is not None:
+        req["stdin"] = stdin
     if args.cwd:
         req["cwd"] = args.cwd
     _attach_env(args, req)
@@ -813,8 +869,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_sh(args: argparse.Namespace) -> int:
-    req = {"op": "exec", "cmd": args.command, "shell": True,
+    """Run a shell command line on the host.
+
+    The command line is parsed twice — once by whatever shell typed it here, and
+    once by the host's ``/bin/sh`` — so quoting it is the fiddly part. ``valet sh
+    -`` takes the line from this client's stdin instead, which a quoted heredoc
+    (``<<'VALET'``) delivers with no parsing at all.
+    """
+    command = args.command
+    from_stdin = command == "-"
+    if from_stdin:
+        command = sys.stdin.read()
+        if not command.strip():
+            print("valet sh: no command on stdin", file=sys.stderr)
+            return 2
+    req = {"op": "exec", "cmd": command, "shell": True,
            "timeout": args.timeout}
+    stdin = _read_stdin_arg(args.stdin_file, consumed=from_stdin)
+    if stdin is not None:
+        req["stdin"] = stdin
     if args.cwd:
         req["cwd"] = args.cwd
     _attach_env(args, req)
@@ -1973,6 +2046,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--cwd", default=argparse.SUPPRESS)
     run.add_argument("--timeout", type=int, default=60,
                      help="seconds before the command is killed (default: 60)")
+    run.add_argument("--stdin-file", default=None, metavar="FILE",
+                     help="feed the command this file's text on stdin "
+                          "('-' reads this client's stdin); without it the "
+                          "command gets no input")
     run.add_argument("command", nargs=argparse.REMAINDER,
                      help="the command and its arguments")
     run.set_defaults(func=_cmd_run)
@@ -1981,7 +2058,13 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--cwd", default=argparse.SUPPRESS)
     sh.add_argument("--timeout", type=int, default=60,
                     help="seconds before the command is killed (default: 60)")
-    sh.add_argument("command", help="the command line to run via the shell")
+    sh.add_argument("--stdin-file", default=None, metavar="FILE",
+                    help="feed the command line this file's text on stdin "
+                         "('-' reads this client's stdin)")
+    sh.add_argument("command",
+                    help="the command line to run via the shell, or '-' to read "
+                         "it from this client's stdin (quote-free: use a "
+                         "heredoc)")
     sh.set_defaults(func=_cmd_sh)
 
     files_p = sub.add_parser(

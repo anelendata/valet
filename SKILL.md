@@ -80,6 +80,32 @@ Use a non-default config when needed:
 valet -c /path/to/config.toml --host my-computer ping
 ```
 
+## Quoting, Redirection, and stdin
+
+A `sh` command line is parsed twice: by the shell you type it into, then by the
+host's `/bin/sh`. Most "valet corrupted my command" turns out to be the first
+parse eating a quote layer the second one needed. Three ways out, cheapest first:
+
+```bash
+valet run -- <argv...>                        # no shell at all; quotes, newlines
+                                              # and tabs reach the program intact
+valet run --stdin-file ./plan.py -- python3 - # a local script, run host-side,
+                                              # never written to the host
+valet sh - <<'VALET'                          # the command line itself, unparsed
+grep -c "it's <b>" notes.md > out.txt
+VALET
+```
+
+- `run` is argv only. A `>` or `|` in it is a plain argument — nothing is
+  redirected. Use `sh`, or `--stdin-file` for input.
+- A redirect you write *unquoted* on your own command line is consumed by your
+  own shell, so the file lands on **your** machine, not the host.
+- `--stdin-file` carries text (UTF-8, up to 1 MiB) straight to the command's
+  stdin, untouched by either shell. It is the right way to hand a script, patch
+  or JSON document to a program.
+- Without `--stdin-file` a command's stdin is empty, so anything that reads
+  stdin sees EOF rather than hanging.
+
 ## Transfer Files
 
 ```bash

@@ -145,6 +145,16 @@ own code, and what now stops them:
 | `--env PATH=./tools:…` then bare `aws` | `PATH` is refused per request |
 | `PYTHONPATH`/`PYTHONSTARTUP`, `NODE_OPTIONS`, `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`, `GIT_CONFIG_*`/`GIT_EXEC_PATH`, `BASH_ENV`, `PERL5OPT`, `HOME`, `PAGER`, … | refused per request, in every policy mode (`RESTRICTED_ENV`) |
 
+**A redirect's target is a file, not a command.** `echo hi > out.txt` lexes
+into two sub-commands, and treating the second as a program denied every
+redirect under an allowlist — for a filename that was never going to run. The
+target is now checked as what it is: the path rules (`deny_read`, the workspace
+jail, `config.toml`) still apply to it, the allow/deny lists do not. The same
+goes for a heredoc's body, which is the command's input. Only a *pure* redirect
+operator qualifies: `<(` is process substitution, whose first word really is a
+command, and an unbalanced-quote line is not trusted to say which token is
+which — both keep the stricter reading.
+
 **The workspace `bin/` is trusted.** It is prepended to `PATH`, so a bare name
 runs `bin/<name>` before the host's program. That is the admin's hook for
 workspace tools; it assumes the agent cannot write `bin/`. Push refuses a `bin/`
@@ -157,6 +167,17 @@ buys consistency; under a sandbox profile that restricts which files may be
 executed it also stops code arriving by library or module path, which needs only
 a read. The admin's
 `[exec].env` is not restricted.
+
+**Command stdin is not analysed.** `--stdin-file` hands a command bytes that
+policy never inspects — but that is not new ground: `python3 -c` and a heredoc
+already put arbitrary program text past static analysis, and an allowlist that
+includes an interpreter is a decision to allow that. What stdin changes is that
+the text no longer has to survive two shell parses, and no longer has to be
+written to the host to be run. It is capped at 1 MiB, never logged (the audit
+records `stdin_bytes` only), and reaches the child through an unlinked temp file
+that no other process can open by name. Without it a command's stdin is empty:
+before, the child inherited the daemon's, so on a daemon started in a terminal a
+command reading stdin consumed the operator's keystrokes.
 
 **What this does not stop:**
 
