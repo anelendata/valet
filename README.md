@@ -1,7 +1,7 @@
 # valet: Let agents use privileged tools without seeing secrets
 
-valet lets an AI agent use privileged tools — the AWS CLI, `psql`, anything that
-needs a real credential — without ever seeing the secret behind it.
+valet lets an AI agent use privileged tools — the AWS CLI, psql, ... anything
+that needs a real credential — without ever seeing the secret behind it.
 
 The name says it: a valet holds your keys, brings the car around, and hands it
 back — never the keys.
@@ -68,7 +68,7 @@ Here is the default workspace content:
 ├── tmp
 └── tools
 ```
-Agents can pick up skills and tools (e.g. CLIs) from workspace instead of
+**Agents can pick up skills and tools (e.g. CLIs) from workspace** instead of
 installing in the agent box. This allows lightweight agents spawn quickly.
 
 
