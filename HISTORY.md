@@ -5,6 +5,21 @@ Notable changes per release. Published to PyPI as
 
 ## Unreleased
 
+- **Added:** `valet files patch <path>` edits a workspace file in place on the
+  host, so a small edit costs one round trip instead of pull-edit-push-verify.
+  Edits are literal `--old`/`--new` text (or `--edits FILE` for a batch, plus
+  `--append` for a trailing row) and each carries the number of occurrences it
+  expects, default exactly one: if a count is off, nothing is written, so a
+  drifted or ambiguous anchor fails loudly instead of editing the wrong line.
+  The reply is a unified diff. A patch obeys every `files push` destination rule
+  (it may not edit a secret source, a `deny_read` path, VCS internals, valet
+  state, or a program-shadowing name) and the pull-side identity checks (not a
+  secret file by inode, nor a copy of one); binary and setuid/setgid files are
+  refused, other permission bits are kept, and a file that changed between the
+  read and the write is refused rather than silently reverted. `--context N`
+  returns unseen lines around each hunk, so it needs `[policy].allow_pull`
+  (`allow_pull_lan` off-machine) and passes those lines through the pull content
+  gate — checked before the write, so a refusal leaves the file untouched.
 - **Added:** `valet files pull <src> [dst|-]` downloads a workspace file. Off by
   default (`[policy].allow_pull`), with separate opt-ins for WebSocket clients
   (`allow_pull_lan`) and binary files (`allow_pull_binary`). A pulled file is not

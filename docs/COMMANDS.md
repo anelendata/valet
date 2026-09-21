@@ -54,6 +54,7 @@ environment for `run`/`sh`/`repl`.
 | [`call`](#call) | client | Send a raw JSON request to the daemon. |
 | [`files push`](#files-push) | client | Upload a local file into the workspace. |
 | [`files pull`](#files-pull) | client | Download a workspace file (host opt-in). |
+| [`files patch`](#files-patch) | client | Edit a workspace file in place, host-side. |
 | [`repl`](#repl) | client | Interactive redacting shell. |
 | [`status`](#status) | client | Connection status + agent orientation. |
 | [`info`](#info) | client | Show the selected workspace's README guide. |
@@ -136,9 +137,11 @@ valet call --json '{"op":"exec","cmd":"echo hi","shell":false}'
 ## Transferring files
 
 Both directions carry the whole file base64-encoded in one message, capped at
-8 MiB, and verify a sha256 end to end. Paths on the host are workspace-virtual:
-`./`, `/` and `~` all mean the workspace root. Every transfer — refused ones
-included — is audited with its path, size, and hash (never the content).
+8 MiB, and verify a sha256 end to end. [`files patch`](#files-patch) moves no
+file at all: it edits one in place on the host and returns a diff. Paths on the
+host are workspace-virtual: `./`, `/` and `~` all mean the workspace root. Every
+transfer — refused ones included — is audited with its path, size, and hash
+(never the content).
 
 ### `files push`
 
@@ -189,6 +192,53 @@ broken file — so the host refuses instead when:
 ```bash
 valet files pull out/chart.png ./chart.png
 valet files pull out/summary.json - | jq .
+```
+
+### `files patch`
+
+```
+valet [-w ID] files patch [--old TEXT|--old-file F] [--new TEXT|--new-file F]
+                          [--edits FILE] [--count N] [--append TEXT|--append-file F]
+                          [--context N] [--dry-run] <path>
+```
+
+Edit a file **in place on the host**, so a small change costs one round trip
+instead of pull-edit-push-verify. The edit is literal text, not a diff to be
+fuzzy-matched: `--old` is replaced by `--new`, and it must occur exactly
+`--count` times (default 1). If any count is off, **nothing is written** — a drifted or
+ambiguous anchor fails loudly instead of editing the wrong line. What comes back
+is a unified diff of what changed.
+
+| Flag | Meaning |
+|---|---|
+| `--old` / `--old-file` | The exact text to replace (a file keeps multi-line anchors readable). A file's text is used exactly as written, **trailing newline included** — keep both sides consistent, or an edit that looks line-shaped will join two lines. |
+| `--new` / `--new-file` | What replaces it. |
+| `--edits FILE` | Several edits in one request, as JSON: `{"edits": [{"old", "new", "count"}], "append": "..."}`, or `{"replacements": [[old, new], ...]}`, or a bare list. Edits apply in order, each against the text the previous one left. |
+| `--count N` | How many occurrences the anchor must have (default 1, i.e. unique). All of them are replaced. |
+| `--append` / `--append-file` | Text to add at the end of the file after the edits — for appending a row to a log or table without knowing its last line. |
+| `--context N` | Unchanged lines to show around each hunk (0-10, default 0). |
+| `--dry-run` | Print the diff; write nothing. |
+
+Because a patch writes to the host, the destination must clear every
+[`files push`](#files-push) rule — patching `bin/aws` is no safer than pushing
+it — and because it reads the file first, the pull-side identity checks apply
+too (a file that *is* a secret source by inode, or a copy of one, is refused).
+Binary files and setuid/setgid files are refused; other permission bits are
+kept. If the file changes on the host between the read and the write, the write
+is refused rather than reverting that change.
+
+**`--context` is a read of the file.** At the default `--context 0` every line
+of the diff is one you supplied, so it discloses nothing you did not already
+have. Context lines are file content you have not seen, so asking for them needs
+`[policy].allow_pull` (and `allow_pull_lan` off-machine), and those lines go
+through the same content gate as a pull — a patch next to a credential is
+refused before anything is written, rather than returning a doctored diff.
+
+```bash
+valet files patch README.md --old-file old.txt --new-file new.txt
+valet files patch notes.md --old 'status: red' --new 'status: green' --context 3
+valet files patch ETL_MONITOR.md --edits edits.json --append '| 2026-09-20 | 24h | ok |'
+valet files patch config.yaml --old 'retries: 3' --new 'retries: 5' --dry-run
 ```
 
 ## Interactive & orientation

@@ -3,6 +3,9 @@
 Both directions share the path rules below (:meth:`TransferGuard.check_common`);
 push adds the program-shadowing rules, pull adds file-identity and content
 checks (:func:`read_file`, :func:`check_not_secret_file`, :func:`check_content`).
+Patch is both directions at once — it reads a file and writes it back — so it
+takes both rule sets, and adds the count assertion that makes a blind edit safe
+(:func:`parse_edits`, :func:`apply_edits`).
 
 Pushing a file lets the agent place bytes on the host, so the destination check
 goes further than "inside the workspace". A push may not:
@@ -26,9 +29,13 @@ neither ``.ENV`` nor a symlinked alias reaches a protected file.
 The write itself walks the resolved path one directory at a time with
 ``O_NOFOLLOW``, so a directory swapped for a symlink after the check cannot
 redirect the write outside the workspace.
+A patch also passes the stat of the bytes it read back to :func:`write_file`,
+which refuses the write if the file changed in between rather than reverting an
+edit made on the host meanwhile.
 """
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import secrets
@@ -234,12 +241,16 @@ def _open_parent(root: str, real: str, *, create: bool) -> tuple[int, str]:
 
 
 def write_file(root: str, real: str, content: bytes, mode: int,
-               *, overwrite: bool) -> bool:
+               *, overwrite: bool, expect: Any = None) -> bool:
     """Atomically write ``content`` to ``real`` (inside ``root``).
 
     Returns whether the file was newly created. Writes a temp file beside the
     destination, then renames it over; a hard link at the destination is replaced
     rather than written through.
+
+    ``expect`` is an ``os.stat_result`` the destination must still match (a patch
+    passes the stat of the bytes it read): if the file changed under us since,
+    the write is refused rather than silently reverting someone else's edit.
     """
     dir_fd, name = _open_parent(root, real, create=True)
     tmp = None
@@ -254,6 +265,11 @@ def write_file(root: str, real: str, content: bytes, mode: int,
             raise ValidationError("destination is a directory")
         if existed and not overwrite:
             raise ValidationError("destination exists (overwrite is disabled)")
+        if expect is not None:
+            if st is None or (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != (
+                    expect.st_dev, expect.st_ino, expect.st_size, expect.st_mtime_ns):
+                raise CommandError(
+                    "the file changed while it was being patched — nothing written")
         tmp = f".valet-push-{secrets.token_hex(8)}"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         fd = os.open(tmp, flags, 0o600, dir_fd=dir_fd)
@@ -413,3 +429,111 @@ def check_content(content: bytes, redactor: Any, *, allow_binary: bool) -> None:
                    - Counter(_REDACTION_TAG_RE.findall(text)))
     what = ", ".join(found) if found else "host path"
     raise PolicyError(f"file contains content valet redacts ({what})")
+
+
+# -- patch: literal, count-asserted edits -------------------------------------------
+
+# A patch request is one file's worth of edits, not a program; the cap keeps a
+# malformed or hostile request from turning into a long scan of a large file.
+MAX_EDITS = 64
+MAX_EDIT_COUNT = 1000
+
+
+@dataclass(frozen=True)
+class Edit:
+    """One literal replacement: every ``old`` becomes ``new``, and there must be
+    exactly ``count`` of them."""
+
+    old: str
+    new: str
+    count: int = 1
+
+
+def parse_edits(raw: Any) -> tuple[Edit, ...]:
+    """Validate the wire form of an edit list.
+
+    Accepts a list of ``{"old", "new", "count"}`` objects, or ``[old, new]``
+    pairs (the shape a hand-written ``edits.json`` tends to have).
+    """
+    if raw is None:
+        raise ValidationError("missing 'edits'")
+    if not isinstance(raw, list):
+        raise ValidationError("edits must be a list")
+    if not raw:
+        raise ValidationError("edits is empty")
+    if len(raw) > MAX_EDITS:
+        raise ValidationError(f"at most {MAX_EDITS} edits per request")
+    out = []
+    for i, item in enumerate(raw):
+        if isinstance(item, (list, tuple)):
+            if len(item) != 2:
+                raise ValidationError(f"edit {i}: a pair must be [old, new]")
+            old, new, count = item[0], item[1], 1
+        elif isinstance(item, dict):
+            old, new, count = item.get("old"), item.get("new"), item.get("count", 1)
+        else:
+            raise ValidationError(f"edit {i}: must be an object or an [old, new] pair")
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise ValidationError(f"edit {i}: 'old' and 'new' must be strings")
+        if not old:
+            raise ValidationError(f"edit {i}: 'old' is empty — an empty anchor "
+                                  "matches everywhere")
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ValidationError(f"edit {i}: 'count' must be an integer")
+        if not 1 <= count <= MAX_EDIT_COUNT:
+            raise ValidationError(
+                f"edit {i}: 'count' must be between 1 and {MAX_EDIT_COUNT}")
+        out.append(Edit(old=old, new=new, count=count))
+    return tuple(out)
+
+
+def apply_edits(text: str, edits: Iterable[Edit]) -> tuple[str, list[dict]]:
+    """Apply ``edits`` in order, asserting each anchor's occurrence count.
+
+    The count assertion is the whole point: an anchor that has drifted, or that
+    turns out to be ambiguous, fails loudly and changes nothing rather than
+    silently editing the wrong place. Each edit matches against the text as the
+    previous edits left it, so an earlier edit can create or consume a later
+    anchor — the same semantics as a chain of ``str.replace``.
+
+    Returns the new text and, per edit, the 1-based line of each occurrence.
+    """
+    applied = []
+    for i, edit in enumerate(edits):
+        found = text.count(edit.old)
+        if found != edit.count:
+            raise ValidationError(
+                f"edit {i}: expected {edit.count} occurrence(s) of the anchor, "
+                f"found {found}" + ("" if found else " — the file has moved on, "
+                                    "or the anchor was never there"))
+        lines, at = [], 0
+        for _ in range(found):
+            at = text.index(edit.old, at)
+            lines.append(text.count("\n", 0, at) + 1)
+            at += len(edit.old)
+        text = text.replace(edit.old, edit.new)
+        applied.append({"index": i, "count": found, "lines": lines})
+    return text, applied
+
+
+def render_diff(before: str, after: str, path: str, context: int) -> str:
+    """A unified diff of the change, with ``context`` lines of surrounding text.
+
+    At ``context == 0`` every line in the diff is one the caller already supplied
+    (the removed lines are its anchors, the added ones its replacements), so the
+    diff discloses nothing but line numbers. Context lines are file content the
+    caller has not seen, which is why the caller of this function gates them.
+    """
+    return "".join(difflib.unified_diff(
+        before.splitlines(keepends=True), after.splitlines(keepends=True),
+        fromfile=f"{path} (before)", tofile=f"{path} (after)", n=context))
+
+
+def diff_context_lines(diff: str) -> str:
+    """The unchanged lines a diff discloses (its ``' '``-prefixed lines).
+
+    These, and only these, are file content the caller did not already have;
+    they are what the content gate has to inspect.
+    """
+    return "".join(line[1:] for line in diff.splitlines(keepends=True)
+                   if line.startswith(" "))

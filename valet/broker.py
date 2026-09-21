@@ -37,10 +37,15 @@ from .errors import (
 from .executor import OutputChunk, RunResult, iter_run, kill_process, list_processes, run
 from .files import (
     TransferGuard,
+    apply_edits,
     check_content,
     check_not_secret_file,
     clamp_mode,
+    diff_context_lines,
+    is_binary,
+    parse_edits,
     read_file,
+    render_diff,
     write_file,
 )
 from .policy import Policy
@@ -60,6 +65,11 @@ _README_MAX_BYTES = 64 * 1024
 FILE_PUSH_MAX_BYTES = 8 * 1024 * 1024
 # A pulled file travels back the same way (base64 in one response frame).
 FILE_PULL_MAX_BYTES = FILE_PUSH_MAX_BYTES
+# A patched file is read and rewritten host-side; only the diff crosses the wire.
+FILE_PATCH_MAX_BYTES = FILE_PUSH_MAX_BYTES
+# Diff context beyond this is a file dump wearing a diff's clothes; `files pull`
+# is the op for reading a file.
+MAX_DIFF_CONTEXT = 10
 # Transports whose client is on this machine as the socket owner. Anything else
 # (the WebSocket LAN host) sends pulled bytes off-machine and needs its own opt-in.
 _LOCAL_TRANSPORTS = frozenset({"uds", "direct"})
@@ -476,6 +486,9 @@ class Broker:
             if op == "files.pull":
                 response = {**base, **self._files_pull(request, context)}
                 return response
+            if op == "files.patch":
+                response = {**base, **self._files_patch(request, context)}
+                return response
             if op == "ping":
                 default_ws = self.workspaces[self.default_workspace]
                 response = {
@@ -772,6 +785,121 @@ class Broker:
             "mode": stat.S_IMODE(st.st_mode) & 0o755,
             "content_b64": base64.b64encode(content).decode("ascii"),
         }
+
+    def _files_patch(self, request: dict, context: AuditContext) -> dict:
+        """Edit a workspace file in place from literal anchors (agent -> host).
+
+        The round-trip this collapses is: pull the file, edit it locally, push it
+        back, then run something to confirm the edit landed. Instead the client
+        sends ``edits`` — ``old``/``new`` literals, each with the number of
+        occurrences it expects (default 1) — and the host applies them in order,
+        refusing the whole request unless every count matches exactly. An anchor
+        that has drifted or turns out to be ambiguous therefore fails loudly and
+        changes nothing, which is the property that makes a blind edit safe.
+
+        A patch is a host-side write, so the destination must clear the same rules
+        as ``files.push`` (secret sources, ``deny_read``, VCS internals, valet
+        state, program shadowing) — patching ``bin/aws`` is no safer than pushing
+        it. It also reads the file, so the pull-side identity checks apply: a file
+        that *is* a secret source by inode, or a copy of one, is refused even when
+        its path looked ordinary.
+
+        ``append`` adds a line at the end of the file after the edits — the one
+        change that has no anchor to aim at, and the reason a run log or a table
+        can be added to without first reading its last row. It is newline-
+        terminated, and so is the text it follows.
+
+        What comes back is a unified diff. At the default ``context = 0`` its every
+        line is one the client supplied (removed lines are its anchors, added lines
+        its replacements), so it discloses nothing the client did not already have.
+        Asking for context lines means asking to read the file around the edit,
+        which is ``files.pull``'s question: it needs ``allow_pull`` (and
+        ``allow_pull_lan`` off-machine), and the disclosed lines go through the
+        same content gate, so a patch next to a credential is refused before
+        anything is written rather than returning a doctored diff.
+        """
+        ws = self._workspace(request)
+        guard = TransferGuard.for_workspace(ws, self.cfg)
+        lexical, real = guard.resolve(request.get("path"))
+        if real == guard.root:
+            raise ValidationError("path is a directory")
+        guard.check_push(lexical, real)
+
+        edits = parse_edits(request.get("edits"))
+        ctx = self._patch_context(request, ws, context)
+        append = request.get("append")
+        if append is not None and not isinstance(append, str):
+            raise ValidationError("append must be a string")
+        dry_run = bool(request.get("dry_run"))
+
+        content, st = read_file(guard.root, real, FILE_PATCH_MAX_BYTES)
+        check_not_secret_file(st, content, ws.secret_files())
+        if st.st_mode & (stat.S_ISUID | stat.S_ISGID):
+            raise PolicyError("cannot patch a setuid/setgid file")
+        if is_binary(content):
+            raise ValidationError("cannot patch a binary file — its bytes have no "
+                                  "lines to anchor to; push a replacement instead")
+        before = content.decode("utf-8")
+
+        after, applied = apply_edits(before, edits)
+        if append:
+            if not after.endswith("\n") and after:
+                after += "\n"
+            after += append if append.endswith("\n") else append + "\n"
+        new_content = after.encode("utf-8")
+        if len(new_content) > FILE_PATCH_MAX_BYTES:
+            raise ValidationError(
+                f"the patched file would exceed the "
+                f"{FILE_PATCH_MAX_BYTES // (1024 * 1024)} MiB limit")
+
+        virtual = ws.to_virtual(real)
+        diff = render_diff(before, after, virtual, ctx)
+        if ctx:
+            check_content(diff_context_lines(diff).encode("utf-8"),
+                          ws.redactor_for(guard.root), allow_binary=False)
+
+        changed = new_content != content
+        if changed and not dry_run:
+            write_file(guard.root, real, new_content,
+                       stat.S_IMODE(st.st_mode) & 0o777,
+                       overwrite=True, expect=st)
+
+        return {
+            "op": "files.patch",
+            "ok": True,
+            "path": virtual,
+            "edits": applied,
+            "appended_bytes": len(append.encode("utf-8")) if append else 0,
+            "changed": changed,
+            "dry_run": dry_run,
+            "context": ctx,
+            "bytes_before": len(content),
+            "bytes_after": len(new_content),
+            "bytes_written": len(new_content) if (changed and not dry_run) else 0,
+            "sha256_before": hashlib.sha256(content).hexdigest(),
+            "sha256": hashlib.sha256(new_content).hexdigest(),
+            "diff": diff,
+        }
+
+    def _patch_context(self, request: dict, ws: "Workspace",
+                       context: AuditContext) -> int:
+        """Validate the requested diff context, and gate it like a pull."""
+        raw = request.get("context", 0)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValidationError("context must be an integer")
+        if not 0 <= raw <= MAX_DIFF_CONTEXT:
+            raise ValidationError(
+                f"context must be between 0 and {MAX_DIFF_CONTEXT}")
+        if raw:
+            if not ws.policy.allow_pull:
+                raise PolicyError(
+                    "diff context lines are file content this workspace does not "
+                    "hand back ([policy].allow_pull); patch without --context")
+            if context.transport not in _LOCAL_TRANSPORTS and not ws.policy.allow_pull_lan:
+                raise PolicyError(
+                    "diff context lines over the network are disabled "
+                    "([policy].allow_pull_lan)")
+        return raw
 
     @staticmethod
     def _decode_push_content(raw: Any) -> bytes:

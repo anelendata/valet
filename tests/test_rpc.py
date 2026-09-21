@@ -733,3 +733,11 @@ def test_files_pull_round_trips_through_the_rpc_envelope():
     envelope = _request_envelope("rid", "client-1", req)
     assert envelope["method"] == "files.pull"
     assert legacy_request_from_rpc(envelope) == req
+
+
+def test_files_patch_round_trips_through_the_rpc_envelope():
+    req = {"op": "files.patch", "path": "notes.md", "workspace": "w",
+           "edits": [{"old": "a", "new": "b", "count": 1}], "context": 2}
+    envelope = _request_envelope("rid", "client-1", req)
+    assert envelope["method"] == "files.patch"
+    assert legacy_request_from_rpc(envelope) == req

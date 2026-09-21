@@ -129,7 +129,7 @@ a secret before printing it defeats it. valet defends against secrets appearing
 verbatim (an accidental `cat .env`, `env`, error dumps) — not against a command
 deliberately obfuscating one.
 
-## File transfer (`files push` / `files pull`)
+## File transfer (`files push` / `files pull` / `files patch`)
 
 **Push** writes agent bytes into the workspace. The jail keeps it inside the
 root, but inside the root some files are trust anchors, so push also refuses:
@@ -154,6 +154,24 @@ off by default (`allow_pull`), separately gated for LAN clients
 | a command writes a token or credential dump to a file | text refused if the redactor would change anything |
 | FIFO / device / socket | regular-file requirement (opened non-blocking) |
 | compressed or binary copy | binary refused unless `allow_pull_binary`; then still scanned for known values and key shapes |
+
+**Patch** reads a workspace file and writes it back, so it takes both rule sets:
+the push destination rules (it must not edit `bin/ls`, a `.git` hook, or a secret
+source any more than push may create one) and the pull identity checks (the file
+must not *be* a secret source by inode, or a copy of one). Two further limits are
+its own: a setuid/setgid file is refused outright, since its content would become
+agent-supplied while staying privileged, and a file that changed between the read
+and the write is refused rather than silently reverted.
+
+The disclosure question for patch is the diff it returns. At the default
+`context = 0` every line of that diff is one the agent supplied — the removed
+lines are its anchors, the added lines its replacements — so the reply discloses
+only line numbers. Context lines are unseen file content, which is `files pull`'s
+question, so they take `allow_pull` (plus `allow_pull_lan` off-machine) and pass
+through the same content gate; the check runs before the write, so a refusal
+leaves the file untouched. The count assertion is an oracle of sorts — "does this
+exact string occur once in this file?" — but a narrower one than the `grep` that
+`exec` already allows, and it is subject to the same path rules and audit trail.
 
 **What pull does not stop:** a secret *transformed* into a workspace file by a
 command — `base64`, `gzip`, `openssl enc` — then pulled. This is the same limit

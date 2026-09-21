@@ -86,6 +86,7 @@ valet -c /path/to/config.toml --host my-computer ping
 valet files push ./local.py tools/local.py     # client -> workspace
 valet files pull out/report.csv ./report.csv   # workspace -> client (host opt-in)
 valet files pull out/summary.json -            # to stdout
+valet files patch notes.md --old-file old.txt --new-file new.txt   # edit in place
 ```
 
 - Push refuses secret files, `deny_read` paths, `.git/` internals, valet state,
@@ -94,6 +95,13 @@ valet files pull out/summary.json -            # to stdout
   files, copies of them, and any file whose content valet would redact (the
   error names the category). Treat a refusal as final; do not copy, encode, or
   split the file to get it out.
+- Patch edits a workspace file in place, in one round trip: send the exact text
+  to replace and its replacement, and the host applies it only if the anchor
+  occurs exactly `--count` times (default: once). A wrong count writes nothing —
+  re-read the file and retry with a real anchor rather than a looser one. Use
+  `--edits FILE` for several edits at once, `--append` to add a row at the end,
+  and `--dry-run` to see the diff first. Patch obeys the push rules, so the same
+  destinations are refused.
 
 ## Client Config
 

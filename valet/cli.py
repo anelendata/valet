@@ -11,6 +11,7 @@ Subcommands:
   valet sh 'CMDLINE'    run a shell command line when [exec].shell=true
   valet files push SRC DST  upload a local file into the workspace (agent->host)
   valet files pull SRC [DST]  download a workspace file (host->agent; opt-in)
+  valet files patch PATH     edit a workspace file in place, host-side
   valet call --json ..  send a raw request object to the daemon
   valet ping            check the selected host
   valet hosts           list configured client hosts
@@ -44,7 +45,7 @@ import sys
 from glob import has_magic
 from pathlib import Path
 
-from .broker import FILE_PUSH_MAX_BYTES
+from .broker import FILE_PUSH_MAX_BYTES, MAX_DIFF_CONTEXT
 
 from .client_config import (
     default_client_config_path,
@@ -892,6 +893,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print("                                        60s default before it is killed")
     print("  valet -w <ws> files push <src> <dst>  upload a local file into the")
     print("                                        workspace (any type)")
+    print("  valet -w <ws> files patch <path>      edit a workspace file in place:")
+    print("      --old-file <f> --new-file <f>     replaces the exact text, and")
+    print("                                        applies nothing unless it")
+    print("                                        occurs exactly --count times")
     print("  valet -w <ws> files pull <src> [dst]  download a workspace file, if the")
     print("                                        host enabled it; refused for secret")
     print("                                        files and content valet would redact")
@@ -1112,6 +1117,127 @@ def _cmd_files_pull(args: argparse.Namespace) -> int:
     where = f" from workspace {workspace!r}" if workspace else ""
     print(f"valet: pulled {resp.get('path')}{where} -> {dest} "
           f"({resp.get('bytes_read')} bytes)")
+    return 0
+
+
+def _read_text_arg(flag: str, text: str | None, path: str | None) -> str | None:
+    """The value of a ``--x`` / ``--x-file`` pair, read as UTF-8 text."""
+    if text is not None and path is not None:
+        raise ValidationError(f"pass either {flag} or {flag}-file, not both")
+    if text is not None:
+        return text
+    if path is None:
+        return None
+    src = Path(os.path.expanduser(os.path.expandvars(path)))
+    try:
+        return src.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValidationError(f"cannot read {src}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValidationError(f"{src} is not UTF-8 text") from exc
+
+
+def _patch_edits(args: argparse.Namespace) -> list:
+    """The edit list for ``files patch``, from the flags or an edits file.
+
+    Two shapes, because two things are being done. A single ``--old``/``--new``
+    pair is the common one-shot edit. ``--edits FILE`` carries a batch as JSON —
+    ``{"edits": [{"old", "new", "count"}], "append": "..."}``, or the
+    ``{"replacements": [[old, new], ...]}`` shape a hand-written edits file
+    tends to have — so a multi-part edit is still one round trip.
+    """
+    old = _read_text_arg("--old", args.old, args.old_file)
+    new = _read_text_arg("--new", args.new, args.new_file)
+    if args.edits:
+        if old is not None or new is not None:
+            raise ValidationError("--edits replaces --old/--new; pass one or the other")
+        spec = _read_text_arg("--edits", None, args.edits)
+        try:
+            loaded = json.loads(spec)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"{args.edits} is not valid JSON: {exc}") from exc
+        if isinstance(loaded, dict):
+            edits = loaded.get("edits") or loaded.get("replacements") or []
+            if args.append is None and args.append_file is None:
+                args.append = loaded.get("append")
+        else:
+            edits = loaded
+        if not isinstance(edits, list) or not edits:
+            raise ValidationError(
+                f"{args.edits} has no edits (expected a list under 'edits' or "
+                "'replacements', or a bare list)")
+        return edits
+    if old is None or new is None:
+        raise ValidationError(
+            "an edit needs both sides: --old/--old-file and --new/--new-file "
+            "(or --edits FILE)")
+    return [{"old": old, "new": new, "count": args.count}]
+
+
+def _cmd_files_patch(args: argparse.Namespace) -> int:
+    """Edit a workspace file in place, host-side (agent -> host).
+
+    Sends literal ``old``/``new`` anchors and lets the host apply them, so a small
+    edit costs one round trip instead of pull-edit-push-verify. Every anchor
+    carries the number of occurrences it expects (default: exactly one); if any
+    count is off the host applies nothing, so a drifted or ambiguous anchor fails
+    loudly rather than editing the wrong line. The printed diff is the receipt.
+    """
+    edits = _patch_edits(args)
+    append = _read_text_arg("--append", args.append, args.append_file)
+
+    req: dict = {"op": "files.patch", "path": args.path, "edits": edits}
+    if append is not None:
+        req["append"] = append
+    if args.context:
+        req["context"] = args.context
+    if args.dry_run:
+        req["dry_run"] = True
+    workspace = _effective_workspace(args)
+    if workspace:
+        req["workspace"] = workspace
+
+    try:
+        conn, _target, _cfg = _connect(args)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        resp = conn.request(req)
+    finally:
+        conn.close()
+
+    handled = _maybe_unknown_workspace_exit(args, resp)
+    if handled is not None:
+        return handled
+    if not resp.get("ok"):
+        print(f"valet files patch: {resp.get('error_class')}: "
+              f"{resp.get('detail', '')}", file=sys.stderr)
+        return 1
+
+    diff = resp.get("diff") or ""
+    if diff:
+        sys.stdout.write(diff if diff.endswith("\n") else diff + "\n")
+    if not resp.get("changed"):
+        print(f"valet: {resp.get('path')} already matches — nothing written")
+        return 0
+    edit_count = len(resp.get("edits") or [])
+    parts = [f"{edit_count} edit{'' if edit_count == 1 else 's'}"]
+    replaced = sum(e.get("count", 0) for e in resp.get("edits") or [])
+    if replaced != edit_count:
+        parts.append(f"{replaced} replacements")
+    if resp.get("appended_bytes"):
+        parts.append(f"+{resp['appended_bytes']} bytes appended")
+    where = f" in workspace {workspace!r}" if workspace else ""
+    verb = "would patch" if resp.get("dry_run") else "patched"
+    print(f"valet: {verb} {resp.get('path')} ({', '.join(parts)}; "
+          f"{resp.get('bytes_before')} -> {resp.get('bytes_after')} bytes){where}")
+    if resp.get("dry_run"):
+        print("valet: dry run — nothing was written")
     return 0
 
 
@@ -1888,6 +2014,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-clobber", action="store_true",
         help="fail if the local destination already exists (default: overwrite)")
     files_pull.set_defaults(func=_cmd_files_pull)
+    files_patch = files_sub.add_parser(
+        "patch", help="edit a file in the workspace in place, host-side")
+    files_patch.add_argument(
+        "path", help="file inside the workspace (virtual; './' is the root)")
+    files_patch.add_argument(
+        "--old", default=None, metavar="TEXT",
+        help="the exact text to replace (must occur --count times)")
+    files_patch.add_argument(
+        "--old-file", default=None, metavar="FILE",
+        help="read the text to replace from a local file, exactly as written "
+             "(a trailing newline is part of the anchor)")
+    files_patch.add_argument(
+        "--new", default=None, metavar="TEXT", help="the text to put in its place")
+    files_patch.add_argument(
+        "--new-file", default=None, metavar="FILE",
+        help="read the replacement text from a local file, exactly as written")
+    files_patch.add_argument(
+        "--edits", default=None, metavar="FILE",
+        help="apply several edits from a JSON file: {\"edits\": [{\"old\", \"new\", "
+             "\"count\"}], \"append\": \"...\"} (a {\"replacements\": [[old, new]]} "
+             "list works too)")
+    files_patch.add_argument(
+        "--count", type=int, default=1, metavar="N",
+        help="occurrences the anchor must have; anything else applies nothing "
+             "(default: 1, i.e. the anchor must be unique)")
+    files_patch.add_argument(
+        "--append", default=None, metavar="TEXT",
+        help="text to add at the end of the file, after the edits")
+    files_patch.add_argument(
+        "--append-file", default=None, metavar="FILE",
+        help="read the text to append from a local file")
+    files_patch.add_argument(
+        "--context", type=int, default=0, metavar="N",
+        help=f"unchanged lines to show around each hunk, 0-{MAX_DIFF_CONTEXT} "
+             "(default: 0; more than 0 reads the file back, so it needs "
+             "[policy].allow_pull)")
+    files_patch.add_argument(
+        "--dry-run", action="store_true",
+        help="print the diff without writing anything")
+    files_patch.set_defaults(func=_cmd_files_patch)
 
     call = sub.add_parser("call", help="send a raw JSON request to the daemon")
     call.add_argument("--json", required=True, help='e.g. \'{"op":"ping"}\'')
