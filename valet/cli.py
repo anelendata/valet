@@ -888,6 +888,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print("                                        e.g. valet -w <ws> run -- ls -la")
     print("  valet -w <ws> sh '<command line>'     run a shell command line")
     print("  valet -w <ws> run --cwd <dir> -- ...  run inside a subdirectory")
+    print("  --timeout <sec> on run/sh             let a slow command run past the")
+    print("                                        60s default before it is killed")
     print("  valet -w <ws> files push <src> <dst>  upload a local file into the")
     print("                                        workspace (any type)")
     print("  valet -w <ws> files pull <src> [dst]  download a workspace file, if the")
@@ -1843,14 +1845,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="run an argv (no shell), print redacted output")
     run.add_argument("--cwd", default=argparse.SUPPRESS)
-    run.add_argument("--timeout", type=int, default=60)
+    run.add_argument("--timeout", type=int, default=60,
+                     help="seconds before the command is killed (default: 60)")
     run.add_argument("command", nargs=argparse.REMAINDER,
                      help="the command and its arguments")
     run.set_defaults(func=_cmd_run)
 
     sh = sub.add_parser("sh", help="run a shell command line, print redacted output")
     sh.add_argument("--cwd", default=argparse.SUPPRESS)
-    sh.add_argument("--timeout", type=int, default=60)
+    sh.add_argument("--timeout", type=int, default=60,
+                    help="seconds before the command is killed (default: 60)")
     sh.add_argument("command", help="the command line to run via the shell")
     sh.set_defaults(func=_cmd_sh)
 
