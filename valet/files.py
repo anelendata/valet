@@ -20,7 +20,8 @@ goes further than "inside the workspace". A push may not:
     audit log, the sandbox profile);
   - shadow a program: a file in the workspace ``bin/`` (searched before PATH)
     named like a program already on PATH, or a file anywhere named like an
-    ``allow_exec`` entry (``valet run -- tools/aws`` passes an ``aws`` allowlist).
+    ``allow_exec`` entry. (Policy also refuses running a workspace file by path
+    under an allowlist; this keeps the name out of the workspace to begin with.)
 
 Path checks are case-insensitive and Unicode-normalised (macOS filesystems are
 both) and are applied to the lexical *and* the symlink-resolved destination, so

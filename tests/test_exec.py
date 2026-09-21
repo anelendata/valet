@@ -129,10 +129,8 @@ def test_stream_shebangless_path_script_runs_when_shell_enabled(cfg, workspace):
         "cmd": ["gcloud", "-p", ".", "-w", "workspace", "cloud", "schedule", "list"],
         "shell": False,
         "cwd": "zendesk-jira",
-        "env": {
-            "AWS_PROFILE": "tiny",
-            "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
-        },
+        # The workspace bin/ is first on PATH without a per-request override.
+        "env": {"AWS_PROFILE": "tiny"},
     }))
     resp = events[-1]
     output = "".join(event["data"] for event in events if event.get("op") == "exec_chunk")
@@ -155,7 +153,6 @@ def test_shebangless_path_script_requires_shell_fallback_enabled(cfg, workspace)
         "op": "exec",
         "cmd": ["gcloud"],
         "shell": False,
-        "env": {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"},
     }))
     resp = events[-1]
 
@@ -626,3 +623,90 @@ def test_valet_workspace_braced_expands_in_argv_args(cfg, workspace):
     })
     assert resp["ok"] is True
     assert resp["stdout"].strip() == "./sub"
+
+
+# --- per-request env that changes which code runs ------------------------------
+
+def _allowlisted(cfg, *names, env=None):
+    return dataclasses.replace(
+        cfg,
+        policy=dataclasses.replace(cfg.policy, allow_exec=names),
+        exec=dataclasses.replace(cfg.exec, env=env or {}),
+    )
+
+
+def _plant(path, marker):
+    """A workspace script that proves it ran by creating ``marker``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\ntouch {marker}\necho planted\n")
+    path.chmod(0o755)
+
+
+def test_request_path_cannot_redirect_an_allowed_bare_name(cfg, workspace):
+    marker = workspace / "ran"
+    _plant(workspace / "tools" / "aws", marker)
+    c = _allowlisted(cfg, "aws")
+    for request in (
+        {"cmd": ["aws", "s3", "ls"], "shell": False,
+         "env": {"PATH": f"./tools{os.pathsep}{os.environ.get('PATH', '')}"}},
+        {"cmd": ["PATH=./tools", "aws", "s3", "ls"], "shell": False},
+        {"cmd": ["env", "PATH=./tools", "aws"], "shell": False},
+    ):
+        resp = Broker(c).handle({"op": "exec", **request})
+        assert resp["ok"] is False, request
+        assert resp["error_class"] == "PolicyDenied", request
+        assert resp["detail"].startswith("PATH may not be set per command"), request
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("name", ["PYTHONPATH", "PYTHONSTARTUP", "LD_PRELOAD",
+                                  "DYLD_INSERT_LIBRARIES", "GIT_CONFIG_COUNT"])
+def test_request_code_injection_env_is_refused(cfg, name):
+    c = _allowlisted(cfg, os.path.basename(sys.executable))
+    resp = Broker(c).handle({
+        "op": "exec",
+        "cmd": [os.path.basename(sys.executable), "-c", "print('never')"],
+        "shell": False,
+        "env": {name: "./lib"},
+    })
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+    assert name in resp["detail"]
+
+
+def test_request_env_restrictions_apply_without_an_allowlist(cfg, workspace):
+    marker = workspace / "ran"
+    _plant(workspace / "tools" / "mytool", marker)
+    resp = Broker(cfg).handle({
+        "op": "exec", "cmd": "PATH=./tools:$PATH mytool", "shell": True,
+    })
+    assert resp["error_class"] == "PolicyDenied"
+    assert not marker.exists()
+
+
+def test_config_exec_env_may_still_set_restricted_names(cfg, workspace, tmp_path):
+    hostbin = tmp_path / "hostbin"
+    hostbin.mkdir()
+    tool = hostbin / "mytool"
+    tool.write_text("#!/bin/sh\necho \"host-tool $PYTHONPATH\"\n")
+    tool.chmod(0o755)
+    c = _allowlisted(cfg, "mytool", env={
+        "PATH": f"{hostbin}{os.pathsep}{os.environ.get('PATH', '')}",
+        "PYTHONPATH": "$VALET_WORKSPACE/lib",
+    })
+    resp = Broker(c).handle({"op": "exec", "cmd": ["mytool"], "shell": False})
+    assert resp["ok"] is True
+    assert resp["stdout"].strip() == "host-tool ./lib"
+    # ...and a path to that same host program passes the allowlist, since it is
+    # what the name finds on the configured PATH.
+    resp = Broker(c).handle({"op": "exec", "cmd": [str(tool)], "shell": False})
+    assert resp["ok"] is True
+
+
+def test_request_env_cannot_override_a_config_restricted_name(cfg, workspace):
+    c = _allowlisted(cfg, "echo", env={"PATH": os.environ.get("PATH", "")})
+    resp = Broker(c).handle({
+        "op": "exec", "cmd": ["echo", "hi"], "shell": False,
+        "env": {"PATH": "./tools"},
+    })
+    assert resp["error_class"] == "PolicyDenied"

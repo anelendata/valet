@@ -23,6 +23,19 @@ a banned glob. This catches the realistic reveals — ``cat``/``less``/``grep`` 
     to stop a determined reader.
   - ``enforce_workspace_reads`` — refuse existing command-line paths and an
     explicit working directory when they resolve outside the workspace.
+  - ``allow_exec`` — a non-empty list is default-deny: only these program names
+    run. A path-qualified program (``tools/aws``, ``/usr/bin/git``) must also
+    be the very file its bare name finds on the host ``PATH`` and lie outside
+    the workspace; otherwise an agent that can write a file anywhere (the
+    workspace, ``/tmp``) could name it after an allowed program. The workspace
+    ``bin/`` does not count here: it is admin-trusted and already first on
+    ``PATH``, so its programs run by bare name.
+
+Per-request environment variables that redirect program lookup or load code
+into the program (``PATH``, ``LD_PRELOAD``, ``PYTHONPATH``, ``GIT_CONFIG_*`` …,
+see :data:`RESTRICTED_ENV`) are refused in every mode, whether they come from
+``--env``, a ``NAME=value`` prefix, ``env NAME=value``, or ``export``. The host
+admin can still set them in ``[exec].env``, which is not checked here.
 
 Redaction is separate and always on; policy is about *whether a command may run
 at all*.
@@ -36,9 +49,11 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
+import unicodedata
 from glob import glob, has_magic
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Mapping, Optional, Union
 
 from .config import DEFAULT_CONFIG_NAME, PolicyConfig
 from .errors import PolicyError
@@ -82,6 +97,40 @@ SHELL_COMMANDS: tuple[str, ...] = (
     "sh", "bash", "zsh", "fish", "csh", "tcsh", "ksh",
 )
 
+# Environment variables a request may not set: each one makes an allowed program
+# run code it did not ship with — a different program found first on PATH, a
+# preloaded library, an interpreter startup/module path, or a config/helper that
+# a tool executes. Compared case-insensitively (zsh ties `path` to PATH).
+# Tool-specific config-file variables (AWS_CONFIG_FILE, KUBECONFIG, …) are not
+# listed; see docs/THREAT_MODEL.md.
+RESTRICTED_ENV: frozenset[str] = frozenset({
+    # Program lookup and the files most tools read their config from.
+    "PATH", "HOME", "XDG_CONFIG_HOME", "SHELL",
+    # Shell startup and hooks.
+    "ENV", "BASH_ENV", "ZDOTDIR", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND", "PS4",
+    # Interpreters.
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+    "PYTHONBREAKPOINT", "PYTHONWARNINGS", "PYTHONPLATLIBDIR",
+    "NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE",
+    "PERL5OPT", "PERL5LIB", "PERLLIB", "PERL5DB",
+    "RUBYOPT", "RUBYLIB",
+    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH",
+    "PHPRC", "PHP_INI_SCAN_DIR", "LUA_INIT", "LUA_PATH", "LUA_CPATH",
+    # git (GIT_CONFIG* is a prefix below).
+    "GIT_EXEC_PATH", "GIT_DIR", "GIT_COMMON_DIR", "GIT_TEMPLATE_DIR",
+    "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_EXTERNAL_DIFF", "GIT_PROXY_COMMAND",
+    # Helpers other tools exec.
+    "EDITOR", "VISUAL", "PAGER", "MANPAGER", "LESSOPEN", "LESSCLOSE", "BROWSER",
+    "SSH_ASKPASS", "SUDO_ASKPASS",
+})
+RESTRICTED_ENV_PREFIXES: tuple[str, ...] = (
+    "LD_", "DYLD_", "GIT_CONFIG", "NPM_CONFIG_", "BASH_FUNC_",
+)
+
+# Shell builtins whose arguments set variables (`export PATH=./tools`).
+_ENV_SETTING_BUILTINS = frozenset({"export", "declare", "typeset", "local", "readonly"})
+
 # Tokens made up entirely of these characters are shell control operators and
 # act as sub-command separators (";", "&&", "||", "|", "&", "(", ")", "<", ">").
 _OPERATOR_CHARS = set(";&|()<>")
@@ -104,6 +153,9 @@ class Policy:
     allow_pull: bool = False
     allow_pull_lan: bool = False
     allow_pull_binary: bool = False
+    # PATH that bare program names resolve against (the admin's [exec].env PATH,
+    # else the daemon's own); None means the daemon's PATH at check time.
+    search_path: Optional[str] = None
 
     @classmethod
     def from_config(
@@ -112,6 +164,7 @@ class Policy:
         workspace: Optional[str],
         *,
         allow_shell: bool = False,
+        search_path: Optional[str] = None,
     ) -> "Policy":
         return cls(
             workspace=workspace,
@@ -128,10 +181,22 @@ class Policy:
             allow_pull=cfg.allow_pull,
             allow_pull_lan=cfg.allow_pull_lan,
             allow_pull_binary=cfg.allow_pull_binary,
+            search_path=search_path,
         )
 
-    def check(self, cmd: Command, cwd: Optional[str]) -> None:
-        """Raise :class:`PolicyError` if ``cmd`` may not run."""
+    def check(
+        self,
+        cmd: Command,
+        cwd: Optional[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        """Raise :class:`PolicyError` if ``cmd`` may not run.
+
+        ``env`` is the per-request environment (``--env`` and argv ``NAME=value``
+        prefixes). The admin's ``[exec].env`` must not be passed here.
+        """
+        for name in env or ():
+            _check_env_name(name)
         effective_cwd = cwd
         if self.enforce_workspace_reads and self._is_outside_workspace(effective_cwd, None):
             raise PolicyError("working directory is outside the workspace")
@@ -145,7 +210,13 @@ class Policy:
             if any(self._is_protected_config_path(tok, effective_cwd) for tok in sub):
                 raise PolicyError("config.toml is protected")
 
-            command = _effective_command(sub)
+            assignments, programs = _parse_invocation(sub)
+            command = os.path.basename(programs[-1]).casefold() if programs else ""
+            if command in _ENV_SETTING_BUILTINS:
+                assignments += [tok for tok in sub[1:] if _is_env_assignment(tok)]
+            for tok in assignments:
+                _check_env_name(re.split(r"\+?=", tok, maxsplit=1)[0])
+
             is_navigation = command in ("cd", "pushd", "popd")
             if not self.allow_shell and command in SHELL_COMMANDS:
                 raise PolicyError("shell execution is disabled")
@@ -155,6 +226,15 @@ class Policy:
             if self.allow_exec and command and not is_navigation:
                 if command not in _casefold_names(self.allow_exec):
                     raise PolicyError("command is not on the allow list")
+                # The allowlist matched a basename; a path-qualified program
+                # (including an `env` wrapper's own path) must also be the
+                # host's, not a workspace file carrying an allowed name.
+                for program in programs:
+                    if "/" in program and not self._is_host_program(program, effective_cwd):
+                        raise PolicyError(
+                            "a program given as a path must be the host program "
+                            "its name finds on PATH; run it by name"
+                        )
 
             if command in _casefold_names(BUILTIN_DENY + self.deny_exec):
                 raise PolicyError("command is on the deny list")
@@ -171,9 +251,6 @@ class Policy:
             # Track directory changes so later sub-commands resolve correctly.
             if sub[0] in ("cd", "pushd") and len(sub) >= 2:
                 effective_cwd = self._resolve(sub[1], effective_cwd)
-
-        # Allow-list and workspace write-jail intentionally not enforced yet.
-        return
 
     def _resolve(self, token: str, cwd: Optional[str]) -> str:
         path = os.path.expanduser(os.path.expandvars(token))
@@ -228,6 +305,37 @@ class Policy:
             return False
         return self._escapes_workspace(self._resolve(token, cwd))
 
+    def _is_host_program(self, token: str, cwd: Optional[str]) -> bool:
+        """Whether a path-qualified program is the one its bare name would run.
+
+        It must be the same file that ``PATH`` lookup finds for its basename
+        (without the workspace ``bin/``), so a file the agent wrote anywhere —
+        the workspace or a host directory it can write, like ``/tmp`` — does not
+        qualify. The path as executed (directories resolved, final component
+        kept) and its resolved target must also lie outside the workspace, which
+        catches a workspace directory the admin put on ``PATH``. The token is not
+        normalised or ``$``/``~``-expanded: the shell and argv mode would
+        disagree on what it names, so any expansion character fails closed.
+        Without a workspace nothing qualifies.
+        """
+        if not self.workspace or any(ch in token for ch in "$`~*?[{\\"):
+            return False
+        path = os.path.join(cwd, token) if cwd else token
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            return False
+        workspace = os.path.realpath(os.path.expanduser(os.path.expandvars(self.workspace)))
+        as_run = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+        if any(_is_within(p, workspace) for p in (as_run, os.path.realpath(path))):
+            return False
+        search_path = self.search_path
+        if search_path is None:
+            search_path = os.environ.get("PATH", "")
+        found = shutil.which(os.path.basename(path), path=search_path)
+        try:
+            return found is not None and os.path.samefile(found, path)
+        except OSError:
+            return False
+
     def _escapes_workspace(self, path: str) -> bool:
         workspace = os.path.realpath(os.path.expanduser(os.path.expandvars(self.workspace)))
         target = os.path.realpath(path)
@@ -276,21 +384,30 @@ def _casefold_names(names: tuple[str, ...]) -> set[str]:
     return {name.casefold() for name in names}
 
 
-def _effective_command(tokens: list[str]) -> str:
+def _parse_invocation(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Split a sub-command into its env assignments and the programs it runs.
+
+    ``A=1 env B=2 aws s3 ls`` gives ``(["A=1", "B=2"], ["env", "aws"])``. The
+    last program is the effective command; an ``env`` wrapper is listed too
+    because its own path is executed.
+    """
+    assignments: list[str] = []
     i = 0
     while i < len(tokens) and _is_env_assignment(tokens[i]):
+        assignments.append(tokens[i])
         i += 1
     if i >= len(tokens):
-        return ""
+        return assignments, []
 
-    command = os.path.basename(tokens[i]).casefold()
-    if command != "env":
-        return command
+    programs = [tokens[i]]
+    if os.path.basename(tokens[i]).casefold() != "env":
+        return assignments, programs
 
     i += 1
     while i < len(tokens):
         tok = tokens[i]
         if _is_env_assignment(tok):
+            assignments.append(tok)
             i += 1
             continue
         if tok == "--":
@@ -300,15 +417,33 @@ def _effective_command(tokens: list[str]) -> str:
             # Keep env option handling intentionally conservative. Options with
             # their own arguments are treated as the env command itself rather
             # than guessing where the child command begins.
-            return command
+            return assignments, programs
         break
-    if i >= len(tokens):
-        return command
-    return os.path.basename(tokens[i]).casefold()
+    if i < len(tokens):
+        programs.append(tokens[i])
+    return assignments, programs
 
 
 def _is_env_assignment(token: str) -> bool:
-    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token) is not None
+    # `NAME+=value` appends in bash/zsh, so it sets NAME just the same.
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", token, re.DOTALL) is not None
+
+
+def _check_env_name(name: str) -> None:
+    upper = name.upper()
+    if upper in RESTRICTED_ENV or upper.startswith(RESTRICTED_ENV_PREFIXES):
+        raise PolicyError(
+            f"{name} may not be set per command (it can change which code runs); "
+            "a host admin can set it in [exec].env"
+        )
+
+
+def _is_within(path: str, base: str) -> bool:
+    """Case- and normalisation-insensitive containment (macOS filesystems are
+    both), so a differently-cased path cannot pass as outside."""
+    p = unicodedata.normalize("NFC", path).casefold()
+    b = unicodedata.normalize("NFC", base).casefold().rstrip(os.sep)
+    return p == b or p.startswith(b + os.sep)
 
 
 def _split_line(line: str) -> list[list[str]]:

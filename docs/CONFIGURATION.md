@@ -244,6 +244,32 @@ AWS_SHARED_CREDENTIALS_FILE = "$VALET_WORKSPACE/.aws/credentials"
 AWS_CONFIG_FILE = "$VALET_WORKSPACE/.aws/config"
 ```
 
+**Variables only `[exec.env]` may set.** A request cannot set variables that
+change which code a command runs — in every policy mode, and whether they come
+from `--env`, a `NAME=value` prefix, `env NAME=value`, or (shell mode) an
+assignment or `export`. valet refuses the command instead. The list
+(`RESTRICTED_ENV` in [`valet/policy.py`](../valet/policy.py), matched
+case-insensitively):
+
+- program lookup and config homes: `PATH`, `HOME`, `XDG_CONFIG_HOME`, `SHELL`
+- dynamic loader: anything starting `LD_` or `DYLD_`
+- shell startup: `ENV`, `BASH_ENV`, `ZDOTDIR`, `SHELLOPTS`, `BASHOPTS`,
+  `PROMPT_COMMAND`, `PS4`, `BASH_FUNC_*`
+- interpreters: `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONUSERBASE`,
+  `PYTHONBREAKPOINT`, `PYTHONWARNINGS`, `PYTHONPLATLIBDIR`, `NODE_OPTIONS`,
+  `NODE_PATH`, `NODE_REPL_EXTERNAL_MODULE`, `NPM_CONFIG_*`, `PERL5OPT`,
+  `PERL5LIB`, `PERLLIB`, `PERL5DB`, `RUBYOPT`, `RUBYLIB`, `JAVA_TOOL_OPTIONS`,
+  `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `CLASSPATH`, `PHPRC`, `PHP_INI_SCAN_DIR`,
+  `LUA_INIT`, `LUA_PATH`, `LUA_CPATH`
+- git: `GIT_CONFIG*`, `GIT_EXEC_PATH`, `GIT_DIR`, `GIT_COMMON_DIR`,
+  `GIT_TEMPLATE_DIR`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EDITOR`,
+  `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, `GIT_EXTERNAL_DIFF`, `GIT_PROXY_COMMAND`
+- helpers tools exec: `EDITOR`, `VISUAL`, `PAGER`, `MANPAGER`, `LESSOPEN`,
+  `LESSCLOSE`, `BROWSER`, `SSH_ASKPASS`, `SUDO_ASKPASS`
+
+If a workflow needs one (say `PYTHONPATH = "$VALET_WORKSPACE/src"`), set it here.
+A request cannot override a value you set.
+
 ### `[redaction]`
 
 Family 1 — the command runs; its **output** is scrubbed.
@@ -316,7 +342,7 @@ allow_pull_binary = false
 
 | Key | Default | What it does |
 |---|---|---|
-| `allow_exec` | `[]` | Empty = allow everything not otherwise denied. A **non-empty** list flips to **default-deny**: only these basenames run (`cd`/`pushd`/`popd` still allowed), e.g. `["python", "ls", "cat"]`. |
+| `allow_exec` | `[]` | Empty = allow everything not otherwise denied. A **non-empty** list flips to **default-deny**: only these basenames run (`cd`/`pushd`/`popd` still allowed), e.g. `["python", "ls", "cat"]`. Run them **by name**: a path (`tools/aws`, `/usr/bin/git`) is refused unless it is the very file the name finds on `PATH` and lies outside the workspace — see [Program paths under `allow_exec`](#program-paths-under-allow_exec). An allowed interpreter or build tool still runs whatever workspace code you hand it (`python3 script.py`, a `Makefile`, `.git/config`), so list those only if that is acceptable. |
 | `deny_exec` | `[]` | Extra program-name bans (by basename) on top of the built-ins, e.g. `["rm", "npm"]`. |
 | `deny_read` | `[]` | Globs of files a command may not name — valet refuses to **run** it, **and excludes the file from the redaction index** (a file that can't be read needs no redacting; keeps a big `.har` from over-masking). A hard block that also stops a trusted tool from *using* the file. Shell-aware (splits on `;` `&&` `||` `|`, tracks `cd`). Empty by default; see [`secret_file_paths` vs `deny_read`](#secret_file_paths-vs-deny_read). Examples: `["**/.env", "**/.secrets/**", "**/*.har", "~/.aws/**"]`. |
 | `enforce_workspace_reads` | `true` | Refuse a command whose existing path argument or `cwd` resolves outside the workspace (`../` and symlinks included). Best-effort, not a sandbox. |
@@ -324,6 +350,28 @@ allow_pull_binary = false
 | `allow_pull` | `false` | Enable [`valet files pull`](COMMANDS.md#files-pull) for local (Unix-socket) clients. A pull returns raw bytes, so it is refused for secret sources, `deny_read` paths, VCS internals, valet state, hard links, copies of secret files, and any text the redactor would change. Also required for [`files patch --context N`](COMMANDS.md#files-patch), which returns unseen file lines around each hunk; patching itself needs no opt-in. |
 | `allow_pull_lan` | `false` | Also allow pulls from WebSocket clients (another machine). Requires `allow_pull`. |
 | `allow_pull_binary` | `false` | Allow pulling binary (non-UTF-8 or NUL-containing) files. Binary content can hide a compressed or encoded secret the scan cannot see; known secret values and private-key/access-key shapes are still refused. |
+
+#### Program paths under `allow_exec`
+
+`allow_exec` matches a program's basename, so under a non-empty list valet also
+checks where a **path-qualified** program (argv[0], or the program after `env`)
+points. It runs only if **all** of these hold:
+
+- a workspace is configured;
+- the path has no `$`, `~`, glob, or brace characters (argv mode and the shell
+  would disagree on what it names);
+- it is the **same file** that `PATH` lookup finds for its basename — the
+  `[exec].env` `PATH` if you set one, else the daemon's own `PATH`, without the
+  workspace `bin/`;
+- neither the path (with its directories resolved) nor its final target is
+  inside the workspace.
+
+So `valet run -- /opt/homebrew/bin/aws` works when that is the `aws` on `PATH`,
+while `tools/aws`, `./aws`, a workspace symlink named `aws`, or `/tmp/aws` are
+refused with "run it by name". The workspace **`bin/`** is admin-trusted: it is
+first on `PATH`, so `mytool` runs `bin/mytool`, but `bin/mytool` as a path is
+refused like any other workspace file. Keep the agent from writing `bin/` (push
+already refuses names that shadow a program there).
 
 ## Workspaces and per-workspace overrides
 

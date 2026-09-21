@@ -108,6 +108,17 @@ def _split_leading_env(argv: list[str]) -> tuple[dict[str, str], list[str]]:
     return env, argv[index:]
 
 
+def _config_search_path(exec_cfg) -> Optional[str]:
+    """The admin's ``[exec].env`` PATH with ``$VALET_WORKSPACE`` expanded, if set."""
+    path = exec_cfg.env.get("PATH")
+    if path is None:
+        return None
+    root = None
+    if exec_cfg.workspace:
+        root = os.path.realpath(os.path.expanduser(os.path.expandvars(exec_cfg.workspace)))
+    return _expand_workspace(path, root)
+
+
 @dataclass
 class _ExecPlan:
     cmd: Any
@@ -432,7 +443,8 @@ class Broker:
                 wcfg.exec,
                 wcfg.redaction,
                 Policy.from_config(
-                    wcfg.policy, wcfg.exec.workspace, allow_shell=wcfg.exec.shell
+                    wcfg.policy, wcfg.exec.workspace, allow_shell=wcfg.exec.shell,
+                    search_path=_config_search_path(wcfg.exec),
                 ),
                 cfg.fingerprint_salt,
             )
@@ -1024,6 +1036,9 @@ class Broker:
             raise PolicyError("shell execution is disabled")
         cmd = self._normalize_cmd(raw_cmd, shell)
         extra_env = self._normalize_env(request.get("env"))
+        # What the request itself sets (checked by policy below). The admin's
+        # [exec].env is merged in afterwards and deliberately not checked.
+        request_env = extra_env
 
         # Support `NAME=value cmd ...` env-assignment prefixes in argv mode, the
         # way `env NAME=value cmd` does, so this common shell-ism works without
@@ -1038,6 +1053,7 @@ class Broker:
                     )
                 cmd = rest
                 extra_env = {**prefix_env, **extra_env}  # explicit env wins
+                request_env = extra_env
 
         # Config default env (with $VALET_WORKSPACE expanded) is the base layer;
         # per-command env (above) overrides it.
@@ -1064,8 +1080,8 @@ class Broker:
 
         timeout = int(request.get("timeout", self.cfg.timeout_seconds))
 
-        # Policy gate (permissive in v0.2; see valet/policy.py).
-        ws.policy.check(cmd, cwd)
+        # Policy gate (see valet/policy.py).
+        ws.policy.check(cmd, cwd, env=request_env)
 
         redactor = ws.redactor_for(cwd, extra_values=extra_env.values())
         echoed = cmd if isinstance(cmd, str) else shlex.join(cmd)

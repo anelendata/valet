@@ -41,6 +41,28 @@ Notable changes per release. Published to PyPI as
   program on PATH, and any file named like an `allow_exec` entry (so
   `valet run -- tools/aws` cannot pass an `aws` allowlist). Checks are
   case-insensitive and applied to both the lexical and symlink-resolved path.
+- **Security:** a non-empty `allow_exec` no longer trusts a program's basename
+  alone. A path-qualified argv[0] (`tools/aws`, `./aws`, `/usr/bin/git`, or the
+  program after an `env` wrapper) is refused unless it is the same file its bare
+  name finds on the host `PATH` (the `[exec].env` PATH, else the daemon's) and
+  it lies outside the workspace, so a workspace file renamed to an allowed name
+  (`git mv tools/x tools/aws`) or dropped in an agent-writable host directory
+  such as `/tmp` cannot run as `aws`. A path with `$`, `~`, or glob characters
+  is refused, and so is any path when no workspace is configured. The workspace
+  `bin/` is admin-trusted and runs by bare name only; `bin/aws` as a path is
+  refused like any other workspace file.
+- **Security:** a request may no longer set environment variables that change
+  which code runs, in any policy mode: `PATH`, `HOME`, `XDG_CONFIG_HOME`,
+  `SHELL`, the dynamic loader (`LD_*`, `DYLD_*`), shell startup (`ENV`,
+  `BASH_ENV`, `ZDOTDIR`, `PROMPT_COMMAND`, …), interpreter hooks (`PYTHONPATH`,
+  `PYTHONSTARTUP`, `NODE_OPTIONS`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`,
+  …), git (`GIT_CONFIG*`, `GIT_EXEC_PATH`, `GIT_DIR`, `GIT_SSH_COMMAND`, …),
+  `NPM_CONFIG_*`, and helper programs tools exec (`PAGER`, `EDITOR`,
+  `LESSOPEN`, …). This covers `--env`, a `NAME=value` argv prefix,
+  `env NAME=value`, and in shell mode a leading assignment, `NAME+=`, or
+  `export`/`declare`. Matching is case-insensitive. The host admin can still set
+  any of them in `[exec].env`. **Breaking:** a per-command `PYTHONPATH=src …` or
+  `--env PATH=…` is now refused; move it to `[exec].env`.
 - **Security:** the push path is no longer `$VAR`-expanded on the host (which
   could echo host environment values back in the returned path), the write walks
   the destination with `O_NOFOLLOW` so a directory swapped for a symlink after the

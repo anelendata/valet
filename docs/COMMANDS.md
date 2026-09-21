@@ -42,7 +42,7 @@ environment for `run`/`sh`/`repl`.
 | `--host` | `NAME` | — | Configured remote host (`[hosts.<name>]`) to use for client commands. |
 | `-w`, `--workspace` | `ID` | host default | Workspace to run in. Applies to `run`, `sh`, and the REPL. |
 | `--local` | — | off | Force the local Unix-domain socket transport (ignore any configured remote host). |
-| `-e`, `--env` | `NAME=VALUE` | — | Set an environment variable for `run`/`sh` without shell syntax. Repeatable. (`-env` is accepted too.) |
+| `-e`, `--env` | `NAME=VALUE` | — | Set an environment variable for `run`/`sh` without shell syntax. Repeatable. (`-env` is accepted too.) Variables that change which code runs (`PATH`, `PYTHONPATH`, `LD_PRELOAD`, …) are refused; the host sets those in [`[exec.env]`](CONFIGURATION.md#execenv-and-valet_workspace). |
 | `--cwd` | `DIR` | workspace root | Working directory for `run`/`sh` without shell syntax. |
 
 ## Command index

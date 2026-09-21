@@ -129,6 +129,52 @@ a secret before printing it defeats it. valet defends against secrets appearing
 verbatim (an accidental `cat .env`, `env`, error dumps) — not against a command
 deliberately obfuscating one.
 
+## Allowlist and environment (`allow_exec`, per-request env)
+
+`allow_exec` matches a program's **basename**, and an agent that can write files
+(push, or any allowed program that writes) chooses names. Two ways that used to
+turn an allowlist such as `["aws", "git", "python3"]` into running the agent's
+own code, and what now stops them:
+
+| Attempt | Stopped by |
+|---|---|
+| `valet run -- tools/aws`, after `git mv tools/x tools/aws` | a path-qualified program must be the same file its name finds on `PATH`, and outside the workspace |
+| `/tmp/aws` (outside the workspace, but agent-writable) | same-file-as-`PATH` requirement |
+| `tools/aws` symlink to another host binary; host symlink into the workspace | both the directory-resolved path and the final target are checked; case-insensitive |
+| `tools/env aws`, `env tools/aws` | every program in an `env` wrapper is checked |
+| `--env PATH=./tools:…` then bare `aws` | `PATH` is refused per request |
+| `PYTHONPATH`/`PYTHONSTARTUP`, `NODE_OPTIONS`, `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`, `GIT_CONFIG_*`/`GIT_EXEC_PATH`, `BASH_ENV`, `PERL5OPT`, `HOME`, `PAGER`, … | refused per request, in every policy mode (`RESTRICTED_ENV`) |
+
+**The workspace `bin/` is trusted.** It is prepended to `PATH`, so a bare name
+runs `bin/<name>` before the host's program. That is the admin's hook for
+workspace tools; it assumes the agent cannot write `bin/`. Push refuses a `bin/`
+name that shadows a `PATH` program, but an allowed program that can move files
+(`git mv`, `python3`) can still place one there.
+
+**Env restrictions apply in every mode**, not only under an allowlist. Without an
+allowlist the agent can already run a workspace file directly, so this mostly
+buys consistency; under a sandbox profile that restricts which files may be
+executed it also stops code arriving by library or module path, which needs only
+a read. The admin's
+`[exec].env` is not restricted.
+
+**What this does not stop:**
+
+- **An allowed program that runs code by design.** `python3 script.py`,
+  `python3 -c`, `git -c core.pager=…`, `git` reading a workspace `.git/config` or
+  hooks, `make`, `npm run`: allowing the program allows that. Only list
+  interpreters and build tools you are willing to let run workspace code.
+- **Tool-specific config variables.** `AWS_CONFIG_FILE` (a `credential_process`
+  runs a command), `KUBECONFIG` (exec credential plugins), `DOCKER_CONFIG`
+  (credential helpers) and similar are not on the list; a request can point
+  them at a workspace file. Pin the ones your allowed tools read in
+  `[exec].env` if that matters.
+- **Shell mode beyond static analysis.** A variable set by `read`, `eval`,
+  `printf -v`, or a computed name is not seen. Shell mode is off by default.
+- **A race.** The program path is checked, then executed by name; a directory on
+  the way that the agent can swap in between could redirect it. The OS sandbox is
+  the hard boundary.
+
 ## File transfer (`files push` / `files pull` / `files patch`)
 
 **Push** writes agent bytes into the workspace. The jail keeps it inside the
