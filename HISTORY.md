@@ -5,6 +5,11 @@ Notable changes per release. Published to PyPI as
 
 ## Unreleased
 
+- **Added:** `valet run` now says so when it is handed what looks like a shell
+  operator (`>`, `|`, `&&`, …). Argv mode runs no shell, so the token is an
+  ordinary argument: the command succeeds, prints its own `>`, and redirects
+  nothing. The note points at `sh` or `--stdin-file` instead.
+
 - **Fixed:** a redirect's target is no longer treated as a command. `echo hi >
   out.txt` lexes into two sub-commands, and checking the second against
   `allow_exec` refused every redirect, heredoc and `<` under an allowlist —

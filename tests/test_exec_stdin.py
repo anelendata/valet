@@ -234,3 +234,29 @@ def test_cli_missing_stdin_file(conn, capsys):
     from valet.cli import main
     assert main(["run", "--stdin-file", "/no/such/file", "--", "cat"]) == 2
     assert "cannot read" in capsys.readouterr().err
+
+
+# -- argv mode runs no shell, and says so ------------------------------------------
+
+@pytest.mark.parametrize("token", [">", ">>", "<", "|", "&&", ";", "2>"])
+def test_cli_warns_when_argv_mode_is_handed_a_shell_operator(conn, capsys, token):
+    from valet.cli import main
+    # It is not an error — the token really is an argument — but silence made a
+    # command that redirected nothing look like a redirect that failed.
+    assert main(["run", "--", "echo", "hi", token, "out.txt"]) == 0
+    err = capsys.readouterr().err
+    assert repr(token) in err
+    assert "runs no shell" in err
+    assert conn.requests[0]["cmd"] == ["echo", "hi", token, "out.txt"]
+
+
+def test_cli_does_not_warn_about_ordinary_arguments(conn, capsys):
+    from valet.cli import main
+    assert main(["run", "--", "grep", "-E", "a>b|c", "--color=always", "f.txt"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_does_not_warn_in_shell_mode(conn, capsys):
+    from valet.cli import main
+    assert main(["sh", "echo hi > out.txt"]) == 0
+    assert capsys.readouterr().err == ""

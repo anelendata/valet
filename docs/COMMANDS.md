@@ -97,7 +97,8 @@ with the command's own exit code.
 
 Since argv mode runs no shell, a `>` or `|` among the arguments is an ordinary
 argument — nothing is redirected or piped — so use `sh` for that, or
-`--stdin-file` to feed the command its input.
+`--stdin-file` to feed the command its input. valet prints a note on stderr when
+it spots one, because the command otherwise succeeds while writing no file.
 
 **`--stdin-file` is how a local script runs on the host** without being written
 there and without a shell parsing it:

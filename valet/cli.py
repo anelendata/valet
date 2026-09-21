@@ -829,6 +829,26 @@ def _read_stdin_arg(source: str | None, *, consumed: bool = False) -> str | None
     return data
 
 
+_ARGV_OPERATORS = frozenset({">", ">>", "<", "<<", "|", "||", "&&", ";", "&", "2>"})
+
+
+def _warn_about_argv_operators(command: list[str]) -> None:
+    """Warn when argv mode is handed what looks like a shell operator.
+
+    No shell runs here, so ``>`` is an ordinary argument: the command succeeds,
+    prints its own ``>``, and writes nothing. Silence made that look like a
+    failed redirect rather than a misunderstanding.
+    """
+    found = [tok for tok in command if tok in _ARGV_OPERATORS]
+    if not found:
+        return
+    print(f"valet run: note: {' '.join(repr(t) for t in found)} "
+          f"{'is' if len(found) == 1 else 'are'} being passed to the command as "
+          "plain argument(s) — argv mode runs no shell, so nothing is redirected "
+          "or piped. Use `valet sh '<line>'`, or --stdin-file to feed input.",
+          file=sys.stderr)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     command = list(args.command)
     if command and command[0] == "--":  # `valet run -- cmd ...`
@@ -836,6 +856,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not command:
         print("valet run: no command given", file=sys.stderr)
         return 2
+    _warn_about_argv_operators(command)
     req = {"op": "exec", "cmd": command, "shell": False,
            "timeout": args.timeout}
     stdin = _read_stdin_arg(args.stdin_file)
