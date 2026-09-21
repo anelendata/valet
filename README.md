@@ -26,47 +26,6 @@ Benefits:
      rejects SVG and does not resolve relative paths). SVG source is in images/. -->
 ![Valet-mediated agent interaction](https://raw.githubusercontent.com/anelendata/valet/main/images/valet-interaction.png)
 
-## Table of contents
-
-- [Quick demo](#quick-demo)
-- [Use cases](#use-cases)
-  - [Use case 1: Running AWS CLI commands in a hardened sandbox](#use-case-1-running-aws-cli-commands-in-a-hardened-sandbox)
-  - [Use case 2: Database query](#use-case-2-database-query)
-- [Features](#features)
-  - [Valet serve](#valet-serve)
-  - [Interactive shell (REPL)](#interactive-shell-repl)
-  - [Audit logging](#audit-logging)
-  - [Multi-transport: one host, many agents](#multi-transport-one-host-many-agents)
-  - [Valet is not...](#valet-is-not)
-- [Before getting started](#before-getting-started)
-  - [Recommended architecture](#recommended-architecture)
-  - [Sandbox hardening](#sandbox-hardening)
-- [Install & run](#install--run)
-  - [On the host](#on-the-host)
-  - [Run commands through valet](#run-commands-through-valet)
-  - [Interactive mode — a redacting shell](#interactive-mode--a-redacting-shell)
-  - [Multiple workspaces under one host](#multiple-workspaces-under-one-host)
-  - [Running from a node in the local network](#running-from-a-node-in-the-local-network)
-- [Configuration](#configuration)
-- [Agent orientation and guardrails](#agent-orientation-and-guardrails)
-  - [Self-orientation: the agent onboards itself](#self-orientation-the-agent-onboards-itself)
-  - [Wiring valet into an agent](#wiring-valet-into-an-agent)
-  - [Built-in guardrails](#built-in-guardrails)
-  - [Scoped credentials per workspace](#scoped-credentials-per-workspace)
-- [Limitations](#limitations)
-- [Development](#development)
-  - [Tests](#tests)
-
-More...
-- [Threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md)
-- [Configuration reference](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md)
-- [Command reference](https://github.com/anelendata/valet/blob/main/docs/COMMANDS.md)
-- [Redaction internals](https://github.com/anelendata/valet/blob/main/docs/redaction-internals.md)
-- [How to separate credentials for workspaces](https://github.com/anelendata/valet/blob/main/docs/separate-creds.md)
-- [How to set up a workspace-wide Python venv](https://github.com/anelendata/valet/blob/main/docs/workspace-python-venv.md)
-- [How to use Google Workspace CLI (`gws`) through valet](https://github.com/anelendata/valet/blob/main/docs/google-workspace-cli.md)
-- [Roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md)
-
 ## Quick demo
 
 Install, set up a workspace, and read a secret file *through* valet:
@@ -111,6 +70,47 @@ Here is the default workspace content:
 ```
 Agents can pick up skills and tools (e.g. CLIs) from workspace instead of
 installing in the agent box. This allows lightweight agents spawn quickly.
+
+
+## Table of contents
+
+- [Use cases](#use-cases)
+  - [Use case 1: Running AWS CLI commands in a hardened sandbox](#use-case-1-running-aws-cli-commands-in-a-hardened-sandbox)
+  - [Use case 2: Database query](#use-case-2-database-query)
+- [Features](#features)
+  - [Valet serve](#valet-serve)
+  - [Interactive shell (REPL)](#interactive-shell-repl)
+  - [Audit logging](#audit-logging)
+  - [Multi-transport: one host, many agents](#multi-transport-one-host-many-agents)
+  - [Valet is not...](#valet-is-not)
+- [Before getting started](#before-getting-started)
+  - [Recommended architecture](#recommended-architecture)
+  - [Sandbox hardening](#sandbox-hardening)
+- [Install & run](#install--run)
+  - [On the host](#on-the-host)
+  - [Run commands through valet](#run-commands-through-valet)
+  - [Interactive mode — a redacting shell](#interactive-mode--a-redacting-shell)
+  - [Multiple workspaces under one host](#multiple-workspaces-under-one-host)
+  - [Running from a node in the local network](#running-from-a-node-in-the-local-network)
+- [Configuration](#configuration)
+- [Agent orientation and guardrails](#agent-orientation-and-guardrails)
+  - [Self-orientation: the agent onboards itself](#self-orientation-the-agent-onboards-itself)
+  - [Wiring valet into an agent](#wiring-valet-into-an-agent)
+  - [Built-in guardrails](#built-in-guardrails)
+  - [Scoped credentials per workspace](#scoped-credentials-per-workspace)
+- [Limitations](#limitations)
+- [Development](#development)
+  - [Tests](#tests)
+
+More...
+- [Threat model](https://github.com/anelendata/valet/blob/main/docs/THREAT_MODEL.md)
+- [Configuration reference](https://github.com/anelendata/valet/blob/main/docs/CONFIGURATION.md)
+- [Command reference](https://github.com/anelendata/valet/blob/main/docs/COMMANDS.md)
+- [Redaction internals](https://github.com/anelendata/valet/blob/main/docs/redaction-internals.md)
+- [How to separate credentials for workspaces](https://github.com/anelendata/valet/blob/main/docs/separate-creds.md)
+- [How to set up a workspace-wide Python venv](https://github.com/anelendata/valet/blob/main/docs/workspace-python-venv.md)
+- [How to use Google Workspace CLI (`gws`) through valet](https://github.com/anelendata/valet/blob/main/docs/google-workspace-cli.md)
+- [Roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md)
 
 ## Use cases
 
