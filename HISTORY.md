@@ -5,6 +5,19 @@ Notable changes per release. Published to PyPI as
 
 ## Unreleased
 
+- **Added:** `--stdin-file FILE` on `run` and `sh` feeds a command its input as
+  text (UTF-8, 1 MiB cap), and `valet sh -` reads the command line itself from
+  stdin. Both exist because a `sh` command line is parsed twice — by the client's
+  shell and by the host's — which is where quotes, `<`, `>` and heredocs get
+  mangled. `valet run --stdin-file ./plan.py -- python3 -` runs a local script on
+  the host without writing it there and without either shell touching it, and
+  `valet sh - <<'VALET'` delivers a command line with no parsing at all. The
+  audit records `stdin_bytes`, never the content.
+- **Fixed:** a command no longer inherits the daemon's stdin. It used to, so on a
+  daemon started in a terminal any command that reads stdin blocked on the
+  operator's keyboard and returned what they typed to the agent; a command with
+  no input now sees EOF immediately.
+
 - **Added:** `valet files patch <path>` edits a workspace file in place on the
   host, so a small edit costs one round trip instead of pull-edit-push-verify.
   Edits are literal `--old`/`--new` text (or `--edits FILE` for a batch, plus

@@ -158,6 +158,17 @@ executed it also stops code arriving by library or module path, which needs only
 a read. The admin's
 `[exec].env` is not restricted.
 
+**Command stdin is not analysed.** `--stdin-file` hands a command bytes that
+policy never inspects — but that is not new ground: `python3 -c` and a heredoc
+already put arbitrary program text past static analysis, and an allowlist that
+includes an interpreter is a decision to allow that. What stdin changes is that
+the text no longer has to survive two shell parses, and no longer has to be
+written to the host to be run. It is capped at 1 MiB, never logged (the audit
+records `stdin_bytes` only), and reaches the child through an unlinked temp file
+that no other process can open by name. Without it a command's stdin is empty:
+before, the child inherited the daemon's, so on a daemon started in a terminal a
+command reading stdin consumed the operator's keystrokes.
+
 **What this does not stop:**
 
 - **An allowed program that runs code by design.** `python3 script.py`,

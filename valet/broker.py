@@ -67,6 +67,10 @@ FILE_PUSH_MAX_BYTES = 8 * 1024 * 1024
 FILE_PULL_MAX_BYTES = FILE_PUSH_MAX_BYTES
 # A patched file is read and rewritten host-side; only the diff crosses the wire.
 FILE_PATCH_MAX_BYTES = FILE_PUSH_MAX_BYTES
+# Text a request may feed the command on stdin. Generous for a script or a patch,
+# far below the file-transfer cap: stdin is for what a command reads, and a file
+# belongs in `files push`.
+EXEC_STDIN_MAX_BYTES = 1024 * 1024
 # Diff context beyond this is a file dump wearing a diff's clothes; `files pull`
 # is the op for reading a file.
 MAX_DIFF_CONTEXT = 10
@@ -128,6 +132,7 @@ class _ExecPlan:
     extra_env: dict[str, str]
     redactor: Redactor
     echoed: str
+    stdin: Optional[str] = None  # text fed to the command on stdin
     run_shell: bool = False  # how the executor actually runs it (a sandbox
                              # wrapper makes this an argv even for shell mode)
     path_prepend: Optional[str] = None  # a workspace-local bin to search first
@@ -565,6 +570,7 @@ class Broker:
                 allow_script_fallback=ws.exec.shell,
                 path_prepend=plan.path_prepend,
                 workspace_root=plan.workspace_root,
+                stdin=plan.stdin,
             )
         except (TimeoutError_, CommandError) as exc:
             return {
@@ -573,7 +579,7 @@ class Broker:
                 "shell": plan.shell,
             }
 
-        return {
+        response = {
             "op": "exec",
             "ok": result.exit_code == 0,
             "exit_code": result.exit_code,
@@ -584,6 +590,9 @@ class Broker:
             "stderr": self._safe(plan.redactor, result.stderr),
             "redacted_value_count": len(plan.redactor.secret_values),
         }
+        if plan.stdin is not None:
+            response["stdin_bytes"] = len(plan.stdin.encode("utf-8"))
+        return response
 
     def handle_stream(
         self,
@@ -625,6 +634,7 @@ class Broker:
                 allow_script_fallback=ws.exec.shell,
                 path_prepend=plan.path_prepend,
                 workspace_root=plan.workspace_root,
+                stdin=plan.stdin,
             ):
                 if isinstance(item, OutputChunk):
                     for text in buffers[item.stream].feed(item.text):
@@ -659,6 +669,8 @@ class Broker:
                 "streamed": True,
                 "redacted_value_count": len(plan.redactor.secret_values),
             }
+            if plan.stdin is not None:
+                response["stdin_bytes"] = len(plan.stdin.encode("utf-8"))
             yield response
         except (TimeoutError_, CommandError) as exc:
             response = {
@@ -1088,8 +1100,29 @@ class Broker:
         run_cmd, run_shell = ws.maybe_sandbox(cmd, shell)
         return _ExecPlan(cmd=run_cmd, shell=shell, cwd=cwd, timeout=timeout,
                          extra_env=extra_env, redactor=redactor, echoed=echoed,
+                         stdin=self._normalize_stdin(request.get("stdin")),
                          run_shell=run_shell, path_prepend=ws.workspace_bin(),
                          workspace_root=root)
+
+    @staticmethod
+    def _normalize_stdin(raw: Any) -> Optional[str]:
+        """Validate the text a request feeds the command on stdin.
+
+        Text, not base64: stdin here exists so a script, patch or JSON document
+        can reach a command without being parsed by two shells on the way. A
+        command's stdin is not policy-checked — what a program does with its
+        input is beyond static analysis, exactly as with ``python3 -c``.
+        """
+        if raw is None:
+            return None
+        if not isinstance(raw, str):
+            raise ValidationError("stdin must be a string")
+        size = len(raw.encode("utf-8"))
+        if size > EXEC_STDIN_MAX_BYTES:
+            raise ValidationError(
+                f"stdin is {size} bytes, over the "
+                f"{EXEC_STDIN_MAX_BYTES // 1024} KiB limit")
+        return raw
 
     @staticmethod
     def _normalize_cmd(raw_cmd, shell: bool):
@@ -1267,6 +1300,8 @@ class Broker:
             push_path = request_dict.get("path")
         event["path"] = self._safe(redactor, str(push_path)) if push_path else None
         event["bytes_written"] = response.get("bytes_written")
+        # How much a command was fed on stdin — the content itself is never logged.
+        event["stdin_bytes"] = response.get("stdin_bytes")
         event["bytes_read"] = response.get("bytes_read")
         event["sha256"] = response.get("sha256")
         event["request"] = {
