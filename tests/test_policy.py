@@ -93,7 +93,7 @@ def test_recon_and_network_commands_are_denied_by_default(cfg):
         resp = Broker(cfg).handle({"op": "exec", "cmd": [command], "shell": False})
         assert resp["ok"] is False, command
         assert resp["error_class"] == "PolicyDenied", command
-        assert resp["detail"] == "command is on the deny list", command
+        assert resp["detail"] == f"command is on the deny list: {command!r}", command
 
 
 # --- allow-list (default-deny when non-empty) --------------------------------
@@ -119,7 +119,7 @@ def test_allow_list_blocks_unlisted_command(cfg):
     resp = Broker(c).handle({"op": "exec", "cmd": ["ls"], "shell": False})
     assert resp["ok"] is False
     assert resp["error_class"] == "PolicyDenied"
-    assert resp["detail"] == "command is not on the allow list"
+    assert resp["detail"] == "command is not on the allow list: 'ls'"
 
 
 def test_allow_list_still_honors_builtin_deny(cfg):
@@ -127,7 +127,7 @@ def test_allow_list_still_honors_builtin_deny(cfg):
     c = _allow_cfg(cfg, ("kill",))
     resp = Broker(c).handle({"op": "exec", "cmd": ["kill", "1"], "shell": False})
     assert resp["ok"] is False
-    assert resp["detail"] == "command is on the deny list"
+    assert resp["detail"] == "command is on the deny list: 'kill'"
 
 
 def test_allow_list_exempts_navigation_builtins(cfg):
@@ -392,7 +392,9 @@ def test_write_jail_blocks_absolute_path_outside_workspace(cfg, tmp_path):
     )
     assert resp["ok"] is False
     assert resp["error_class"] == "PolicyDenied"
-    assert resp["detail"] == "command targets a path outside the workspace"
+    # The message names the token as the request wrote it, never its resolution.
+    assert resp["detail"].startswith("command targets a path outside the workspace: ")
+    assert str(target)[:20] in resp["detail"]
     assert not target.exists()
 
 
@@ -418,7 +420,7 @@ def test_builtin_dangerous_commands_are_denied(cfg):
 
     assert resp["ok"] is False
     assert resp["error_class"] == "PolicyDenied"
-    assert resp["detail"] == "command is on the deny list"
+    assert resp["detail"] == "command is on the deny list: 'kill'"
 
 
 def test_builtin_env_command_is_denied(cfg):
@@ -640,3 +642,139 @@ def test_workspace_read_jail_resolves_symlinks(cfg, tmp_path):
     c = _workspace_read_cfg(cfg)
     resp = Broker(c).handle({"op": "exec", "cmd": "cat linked.txt"})
     assert resp["error_class"] == "PolicyDenied"
+
+
+# --- redirect operands are files, not commands -------------------------------
+
+def _redirect_cfg(cfg, allow=("echo", "wc", "cat", "sort"), **policy):
+    return dataclasses.replace(
+        cfg, policy=PolicyConfig(allow_exec=allow, **policy))
+
+
+@pytest.mark.parametrize("line", [
+    "echo hi > out.txt",
+    "echo hi >> out.txt",
+    "wc -l < in.txt",
+    "cat in.txt 2> err.txt",
+    "sort < in.txt > out.txt",
+    "cat <<'EOF'\nbody\nEOF",
+])
+def test_redirects_are_not_checked_against_the_allow_list(cfg, workspace, line):
+    # The target of a redirect used to be lexed as the next sub-command, so
+    # every redirect under an allowlist was refused for "not on the allow list"
+    # — naming a filename that was never going to be run.
+    (workspace / "in.txt").write_text("a\nb\n")
+    resp = Broker(_redirect_cfg(cfg)).handle(
+        {"op": "exec", "cmd": line, "shell": True})
+    assert resp["ok"] is True, resp
+
+
+def test_a_command_after_a_redirect_is_still_checked(cfg, workspace):
+    # `;` starts a real sub-command again — being downstream of a redirect does
+    # not make it an operand.
+    resp = Broker(_redirect_cfg(cfg)).handle(
+        {"op": "exec", "cmd": "echo hi > out.txt; rm -rf x", "shell": True})
+    assert resp["ok"] is False
+    assert "rm" in resp["detail"]
+
+
+def test_process_substitution_is_not_treated_as_an_operand(cfg, workspace):
+    # `<(` is not a redirect: its first word really is a command to check.
+    resp = Broker(_redirect_cfg(cfg)).handle(
+        {"op": "exec", "cmd": "cat <(rm -rf x)", "shell": True})
+    assert resp["ok"] is False
+    assert "rm" in resp["detail"]
+
+
+def test_redirect_targets_are_still_path_checked(cfg, workspace):
+    # Not being a command does not make it unchecked: clobbering a denied file
+    # through a redirect is still refused. (deny_read only bans paths that
+    # exist — a pattern that matches nothing on disk has nothing to reveal.)
+    (workspace / "prod.creds").write_text("REAL=1\n")
+    c = _redirect_cfg(cfg, deny_read=("**/*.creds",))
+    resp = Broker(c).handle(
+        {"op": "exec", "cmd": "echo stolen > prod.creds", "shell": True})
+    assert resp["ok"] is False
+    assert resp["error_class"] == "PolicyDenied"
+    assert "prod.creds" in resp["detail"]
+    assert (workspace / "prod.creds").read_text() == "REAL=1\n"
+
+
+def test_reading_a_denied_file_through_a_redirect_is_still_denied(cfg, workspace):
+    # The read-side twin of the test above: `< denied` is an operand, and an
+    # operand's paths are exactly what still gets checked.
+    (workspace / "prod.creds").write_text("REAL=1\n")
+    c = _redirect_cfg(cfg, deny_read=("**/*.creds",))
+    resp = Broker(c).handle(
+        {"op": "exec", "cmd": "cat < prod.creds", "shell": True})
+    assert resp["ok"] is False
+    assert "prod.creds" in resp["detail"]
+    assert "REAL=1" not in resp.get("stdout", "")
+
+
+def test_a_heredoc_body_is_input_not_commands(cfg, workspace):
+    # The body is what the command reads; it is not parsed as sub-commands, so
+    # a denied name inside it is data. The command itself is still checked.
+    resp = Broker(_redirect_cfg(cfg)).handle(
+        {"op": "exec", "cmd": "cat <<'EOF'\nrm -rf /\nEOF", "shell": True})
+    assert resp["ok"] is True, resp
+    assert "rm -rf /" in resp["stdout"]
+
+
+def test_commands_after_a_heredoc_terminator_are_checked_again(cfg, workspace):
+    resp = Broker(_redirect_cfg(cfg)).handle(
+        {"op": "exec", "cmd": "cat <<'EOF'\nbody\nEOF\nrm -rf x", "shell": True})
+    assert resp["ok"] is False
+    assert "rm" in resp["detail"]
+
+
+def test_redirect_out_of_the_workspace_is_still_jailed(cfg, tmp_path, workspace):
+    target = tmp_path / "escaped.txt"
+    c = _redirect_cfg(cfg, enforce_workspace_writes=True)
+    resp = Broker(c).handle(
+        {"op": "exec", "cmd": f"echo out > {target}", "shell": True})
+    assert resp["ok"] is False
+    assert not target.exists()
+
+
+def test_unbalanced_quotes_mark_nothing_as_an_operand(cfg):
+    # The fallback tokenisation is a guess, not the shell's parse, so it is not
+    # trusted to say which token is a redirect's target.
+    from valet.policy import _split_line
+    subs = _split_line('echo "a > b; rm -rf c')
+    assert not any(sub.is_operand for sub in subs)
+
+
+def test_argv_mode_has_no_operands(cfg):
+    from valet.policy import _split_subcommands
+    subs = _split_subcommands(["echo", "hi", ">", "out.txt"])
+    assert len(subs) == 1 and subs[0].is_operand is False
+
+
+# --- denials name the token that caused them ----------------------------------
+
+def test_allow_list_denial_names_the_program(cfg):
+    resp = Broker(_allow_cfg(cfg, ("echo",))).handle(
+        {"op": "exec", "cmd": ["/usr/bin/curl", "x"], "shell": False})
+    assert resp["detail"] == "command is not on the allow list: '/usr/bin/curl'"
+
+
+def test_path_denial_names_the_token_not_its_resolution(cfg, tmp_path):
+    secret = tmp_path / "outside.txt"
+    secret.write_text("x")
+    c = dataclasses.replace(
+        cfg, policy=PolicyConfig(enforce_workspace_reads=True))
+    resp = Broker(c).handle(
+        {"op": "exec", "cmd": ["cat", "../outside.txt"], "shell": False})
+    assert resp["ok"] is False
+    # The token as written, so the reply never spells out the host's layout.
+    assert resp["detail"].endswith("'../outside.txt'")
+    assert str(tmp_path) not in resp["detail"]
+
+
+def test_a_long_token_is_truncated_in_the_message(cfg):
+    long_name = "z" * 200
+    resp = Broker(_allow_cfg(cfg, ("echo",))).handle(
+        {"op": "exec", "cmd": [long_name], "shell": False})
+    assert len(resp["detail"]) < 130
+    assert "…" in resp["detail"]

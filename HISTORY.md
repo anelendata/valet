@@ -5,6 +5,20 @@ Notable changes per release. Published to PyPI as
 
 ## Unreleased
 
+- **Fixed:** a redirect's target is no longer treated as a command. `echo hi >
+  out.txt` lexes into two sub-commands, and checking the second against
+  `allow_exec` refused every redirect, heredoc and `<` under an allowlist —
+  reporting `command is not on the allow list` for a filename that was never
+  going to run. Redirect operands and heredoc bodies now skip the allow/deny
+  lists and keep every path check (`deny_read`, the workspace jail,
+  `config.toml`). Process substitution (`<(cmd)`) and unbalanced-quote lines
+  keep the stricter reading, so nothing that is a command escapes a check.
+- **Changed:** policy denials name the token that caused them — `command is not
+  on the allow list: '/usr/bin/curl'`, `command references a denied path:
+  'prod.creds'` — instead of leaving the caller to guess which of a dozen
+  arguments was the problem. The token is echoed as the request wrote it, never
+  as the host path it resolves to.
+
 - **Added:** `--stdin-file FILE` on `run` and `sh` feeds a command its input as
   text (UTF-8, 1 MiB cap), and `valet sh -` reads the command line itself from
   stdin. Both exist because a `sh` command line is parsed twice — by the client's

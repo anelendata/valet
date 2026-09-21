@@ -145,6 +145,16 @@ own code, and what now stops them:
 | `--env PATH=./tools:…` then bare `aws` | `PATH` is refused per request |
 | `PYTHONPATH`/`PYTHONSTARTUP`, `NODE_OPTIONS`, `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`, `GIT_CONFIG_*`/`GIT_EXEC_PATH`, `BASH_ENV`, `PERL5OPT`, `HOME`, `PAGER`, … | refused per request, in every policy mode (`RESTRICTED_ENV`) |
 
+**A redirect's target is a file, not a command.** `echo hi > out.txt` lexes
+into two sub-commands, and treating the second as a program denied every
+redirect under an allowlist — for a filename that was never going to run. The
+target is now checked as what it is: the path rules (`deny_read`, the workspace
+jail, `config.toml`) still apply to it, the allow/deny lists do not. The same
+goes for a heredoc's body, which is the command's input. Only a *pure* redirect
+operator qualifies: `<(` is process substitution, whose first word really is a
+command, and an unbalanced-quote line is not trusted to say which token is
+which — both keep the stricter reading.
+
 **The workspace `bin/` is trusted.** It is prepended to `PATH`, so a bare name
 runs `bin/<name>` before the host's program. That is the admin's hook for
 workspace tools; it assumes the agent cannot write `bin/`. Push refuses a `bin/`
