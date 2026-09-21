@@ -71,6 +71,9 @@ Here is the default workspace content:
 **Agents can pick up skills and tools (e.g. CLIs) from workspace** instead of
 installing in the agent box. This allows lightweight agents spawn quickly.
 
+If you want an AI agent in the local network to access the host computer, jump to
+[Running from a node in local network](#running-from-a-node-in-the-local-network)
+section.
 
 ## Table of contents
 
