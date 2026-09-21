@@ -99,6 +99,19 @@ valet run -- grep secret_key .secrets/demo.yaml
 its value from the output an agent would get, yet the file stays usable — a trusted
 tool can still receive it as an argument (`my_command --key-file ./.secrets/demo.yaml`).
 
+Here is the default workspace content:
+```
+├── README.md
+├── .config
+├── bin
+├── projects
+├── skills
+├── tmp
+└── tools
+```
+Agents can pick up skills and tools (e.g. CLIs) from workspace instead of
+installing in the agent box. This allows lightweight agents spawn quickly.
+
 ## Use cases
 
 ### Use case 1: Running AWS CLI commands in a hardened sandbox
