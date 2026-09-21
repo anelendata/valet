@@ -446,6 +446,7 @@ Agents on another machine on a trusted LAN can use the host over WebSocket.
 add` prints a client snippet and hot-reloads the daemon:
 
 ```toml
+# This is host's ~/.valet/config.toml
 [host]
 lan = true
 listen = "0.0.0.0:8766"
@@ -457,6 +458,7 @@ valet clients list              # also: block / unblock / remove <id>
 ```
 
 ```toml
+# Write this in client (agent)'s ~/.valet/config.toml
 [client]
 id = "my-ai-box"
 key = "xxxxxxxxxxxxxxxxxxxxxxxx"
