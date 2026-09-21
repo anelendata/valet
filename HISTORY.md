@@ -3,8 +3,41 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
-## Unreleased
+## 0.0.13 — 2026-09-20
 
+- **Added:** `valet files pull <src> [dst|-]` downloads a workspace file. Off by
+  default (`[policy].allow_pull`), with separate opt-ins for WebSocket clients
+  (`allow_pull_lan`) and binary files (`allow_pull_binary`). A pulled file is not
+  redacted, so the host refuses it instead whenever redaction would matter: the
+  push path rules (secret sources, `deny_read`, VCS internals, valet state), a
+  symlink swap (`O_NOFOLLOW` walk), a hard link, a FIFO/device, the secret file
+  itself by inode or a byte-for-byte copy of any secret file, text the workspace
+  redactor would change (the error names the category, never the value), and
+  binary content unless enabled — which is then still searched for known secret
+  values and key shapes. Every pull is audited with path, size, and sha256.
+- **Added:** `valet files patch <path>` edits a workspace file in place on the
+  host, so a small edit costs one round trip instead of pull-edit-push-verify.
+  Edits are literal `--old`/`--new` text (or `--edits FILE` for a batch, plus
+  `--append` for a trailing row) and each carries the number of occurrences it
+  expects, default exactly one: if a count is off, nothing is written, so a
+  drifted or ambiguous anchor fails loudly instead of editing the wrong line.
+  The reply is a unified diff. A patch obeys every `files push` destination rule
+  (it may not edit a secret source, a `deny_read` path, VCS internals, valet
+  state, or a program-shadowing name) and the pull-side identity checks (not a
+  secret file by inode, nor a copy of one); binary and setuid/setgid files are
+  refused, other permission bits are kept, and a file that changed between the
+  read and the write is refused rather than silently reverted. `--context N`
+  returns unseen lines around each hunk, so it needs `[policy].allow_pull`
+  (`allow_pull_lan` off-machine) and passes those lines through the pull content
+  gate — checked before the write, so a refusal leaves the file untouched.
+- **Added:** `--stdin-file FILE` on `run` and `sh` feeds a command its input as
+  text (UTF-8, 1 MiB cap), and `valet sh -` reads the command line itself from
+  stdin. Both exist because a `sh` command line is parsed twice — by the client's
+  shell and by the host's — which is where quotes, `<`, `>` and heredocs get
+  mangled. `valet run --stdin-file ./plan.py -- python3 -` runs a local script on
+  the host without writing it there and without either shell touching it, and
+  `valet sh - <<'VALET'` delivers a command line with no parsing at all. The
+  audit records `stdin_bytes`, never the content.
 - **Added:** `valet run` now says so when it is handed what looks like a shell
   operator (`>`, `|`, `&&`, …). Argv mode runs no shell, so the token is an
   ordinary argument: the command succeeds, prints its own `>`, and redirects
@@ -24,44 +57,11 @@ Notable changes per release. Published to PyPI as
   arguments was the problem. The token is echoed as the request wrote it, never
   as the host path it resolves to.
 
-- **Added:** `--stdin-file FILE` on `run` and `sh` feeds a command its input as
-  text (UTF-8, 1 MiB cap), and `valet sh -` reads the command line itself from
-  stdin. Both exist because a `sh` command line is parsed twice — by the client's
-  shell and by the host's — which is where quotes, `<`, `>` and heredocs get
-  mangled. `valet run --stdin-file ./plan.py -- python3 -` runs a local script on
-  the host without writing it there and without either shell touching it, and
-  `valet sh - <<'VALET'` delivers a command line with no parsing at all. The
-  audit records `stdin_bytes`, never the content.
 - **Fixed:** a command no longer inherits the daemon's stdin. It used to, so on a
   daemon started in a terminal any command that reads stdin blocked on the
   operator's keyboard and returned what they typed to the agent; a command with
   no input now sees EOF immediately.
 
-- **Added:** `valet files patch <path>` edits a workspace file in place on the
-  host, so a small edit costs one round trip instead of pull-edit-push-verify.
-  Edits are literal `--old`/`--new` text (or `--edits FILE` for a batch, plus
-  `--append` for a trailing row) and each carries the number of occurrences it
-  expects, default exactly one: if a count is off, nothing is written, so a
-  drifted or ambiguous anchor fails loudly instead of editing the wrong line.
-  The reply is a unified diff. A patch obeys every `files push` destination rule
-  (it may not edit a secret source, a `deny_read` path, VCS internals, valet
-  state, or a program-shadowing name) and the pull-side identity checks (not a
-  secret file by inode, nor a copy of one); binary and setuid/setgid files are
-  refused, other permission bits are kept, and a file that changed between the
-  read and the write is refused rather than silently reverted. `--context N`
-  returns unseen lines around each hunk, so it needs `[policy].allow_pull`
-  (`allow_pull_lan` off-machine) and passes those lines through the pull content
-  gate — checked before the write, so a refusal leaves the file untouched.
-- **Added:** `valet files pull <src> [dst|-]` downloads a workspace file. Off by
-  default (`[policy].allow_pull`), with separate opt-ins for WebSocket clients
-  (`allow_pull_lan`) and binary files (`allow_pull_binary`). A pulled file is not
-  redacted, so the host refuses it instead whenever redaction would matter: the
-  push path rules (secret sources, `deny_read`, VCS internals, valet state), a
-  symlink swap (`O_NOFOLLOW` walk), a hard link, a FIFO/device, the secret file
-  itself by inode or a byte-for-byte copy of any secret file, text the workspace
-  redactor would change (the error names the category, never the value), and
-  binary content unless enabled — which is then still searched for known secret
-  values and key shapes. Every pull is audited with path, size, and sha256.
 - **Fixed:** the redactor no longer appends each command's env values to the
   secret index's cached value list, which grew with every command.
 - **Security:** `valet files push` now refuses destinations that let an upload
@@ -73,6 +73,12 @@ Notable changes per release. Published to PyPI as
   program on PATH, and any file named like an `allow_exec` entry (so
   `valet run -- tools/aws` cannot pass an `aws` allowlist). Checks are
   case-insensitive and applied to both the lexical and symlink-resolved path.
+- **Security:** the push path is no longer `$VAR`-expanded on the host (which
+  could echo host environment values back in the returned path), the write walks
+  the destination with `O_NOFOLLOW` so a directory swapped for a symlink after the
+  check cannot redirect it outside the workspace, and pushed permission bits are
+  capped at `0755` (no setuid/setgid/sticky, no group/other write). A refused push
+  is audited with the requested path.
 - **Security:** a non-empty `allow_exec` no longer trusts a program's basename
   alone. A path-qualified argv[0] (`tools/aws`, `./aws`, `/usr/bin/git`, or the
   program after an `env` wrapper) is refused unless it is the same file its bare
@@ -95,12 +101,6 @@ Notable changes per release. Published to PyPI as
   `export`/`declare`. Matching is case-insensitive. The host admin can still set
   any of them in `[exec].env`. **Breaking:** a per-command `PYTHONPATH=src …` or
   `--env PATH=…` is now refused; move it to `[exec].env`.
-- **Security:** the push path is no longer `$VAR`-expanded on the host (which
-  could echo host environment values back in the returned path), the write walks
-  the destination with `O_NOFOLLOW` so a directory swapped for a symlink after the
-  check cannot redirect it outside the workspace, and pushed permission bits are
-  capped at `0755` (no setuid/setgid/sticky, no group/other write). A refused push
-  is audited with the requested path.
 
 ## 0.0.12 — 2026-09-05
 
