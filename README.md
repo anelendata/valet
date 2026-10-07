@@ -112,6 +112,7 @@ More...
 - [Redaction internals](https://github.com/anelendata/valet/blob/main/docs/redaction-internals.md)
 - [How to separate credentials for workspaces](https://github.com/anelendata/valet/blob/main/docs/separate-creds.md)
 - [How to set up a workspace-wide Python venv](https://github.com/anelendata/valet/blob/main/docs/workspace-python-venv.md)
+- [How to run Node.js, npm, and npx (incl. nvm)](https://github.com/anelendata/valet/blob/main/docs/workspace-node-npm.md)
 - [How to use Google Workspace CLI (`gws`) through valet](https://github.com/anelendata/valet/blob/main/docs/google-workspace-cli.md)
 - [Roadmap](https://github.com/anelendata/valet/blob/main/docs/ROADMAP.md)
 

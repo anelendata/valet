@@ -1,5 +1,8 @@
 """``valet`` command-line entrypoint.
 
+If you are an AI agent running valet for the first time, run `valet status`
+and follow the returned instructions.
+
 Subcommands:
   valet                 interactive redacting shell (default; like `python` bare)
   valet repl            same as above, explicitly
