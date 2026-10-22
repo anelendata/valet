@@ -85,6 +85,7 @@ section.
   - [Interactive shell (REPL)](#interactive-shell-repl)
   - [Audit logging](#audit-logging)
   - [Multi-transport: one host, many agents](#multi-transport-one-host-many-agents)
+  - [Checkpoints: survive a full context window](#checkpoints-survive-a-full-context-window)
   - [Valet is not...](#valet-is-not)
 - [Before getting started](#before-getting-started)
   - [Recommended architecture](#recommended-architecture)
@@ -215,7 +216,7 @@ rules at work before you trust an agent to them:
 
 ```
 $ valet
-valet 0.0.13 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
+valet 0.0.14 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
 
 valet> aws logs tail mystack/some-task --since 60m --profile prod-readonly
 
@@ -271,6 +272,24 @@ The same `valet run` / `valet sh` / REPL commands work over either transport:
 
 Every request records its transport (`uds` or `lan`) in the audit log, so a
 shared host stays accountable.
+
+### Checkpoints: survive a full context window
+
+An agent's context window is finite and its session can die mid-task. A
+checkpoint is a Markdown hand-off note the agent keeps in the workspace, so the
+next session picks up where the last one left off instead of starting over:
+
+```bash
+sandbox$ valet -w demo checkpoint create notes.md   # or `-` for stdin, or --text '...'
+sandbox$ valet -w demo checkpoint resume            # new session: print it, archive it
+sandbox$ valet -w demo checkpoint archive           # set the current one aside unread
+```
+
+Notes live on the host at `<workspace>/checkpoint/<timestamp>-<brief-title>.md`;
+a new checkpoint archives the previous one to `checkpoint/archive/`, and a
+resumed one is archived once read, so nothing is lost. `valet status` and
+`valet -w <ws> info` tell a fresh agent when a checkpoint is waiting and how to
+resume it, and the note comes back redacted like any other output.
 
 ### Valet is not...
 
@@ -390,7 +409,7 @@ you type is run as a command**, and the output comes back redacted:
 
 ```
 $ valet
-valet 0.0.13 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
+valet 0.0.14 — redacting shell. Type a command to run it; ':help' for meta-commands, ':quit' to exit.
 (default) ws valet> cat .secrets
 DB_PASSWORD=[REDACTED:secret:h:38673aad]
 API_TOKEN=[REDACTED:secret:h:3bc13a30]

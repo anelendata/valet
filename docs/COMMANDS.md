@@ -55,6 +55,7 @@ environment for `run`/`sh`/`repl`.
 | [`files push`](#files-push) | client | Upload a local file into the workspace. |
 | [`files pull`](#files-pull) | client | Download a workspace file (host opt-in). |
 | [`files patch`](#files-patch) | client | Edit a workspace file in place, host-side. |
+| [`checkpoint`](#checkpoints) | client | `create` / `resume` / `archive` a hand-off note between agent sessions. |
 | [`repl`](#repl) | client | Interactive redacting shell. |
 | [`status`](#status) | client | Connection status + agent orientation. |
 | [`info`](#info) | client | Show the selected workspace's README guide. |
@@ -269,6 +270,65 @@ valet files patch ETL_MONITOR.md --edits edits.json --append '| 2026-09-20 | 24h
 valet files patch config.yaml --old 'retries: 3' --new 'retries: 5' --dry-run
 ```
 
+## Checkpoints
+
+A checkpoint is a Markdown note an agent leaves in the workspace so a later
+session can pick up the task: a safeguard against a context window filling up or
+an agent dying mid-task. Checkpoints live on the host, at the workspace root:
+
+```
+checkpoint/<YYYY-MM-DD-HH-MM-SS>-<brief-title>.md          the current one
+checkpoint/archive/<YYYY-MM-DD-HH-MM-SS>-<brief-title>.md  superseded or read
+```
+
+The timestamp is the host's local time; the brief title comes from `--title`, or
+else the note's first line (at most six words). Nothing is deleted: creating a
+new checkpoint archives the current one, and resuming archives the one it read,
+so each note is handed to exactly one successor. The destination obeys the
+[`files push`](#files-push) rules, and a `checkpoint` directory symlinked outside
+the workspace is refused. [`status`](#status) lists the workspaces with a
+checkpoint waiting, and [`info`](#info) ends with a notice and the resume
+command when the selected workspace has one.
+
+### `checkpoint create`
+
+```
+valet [-w ID] checkpoint create [<file>|-] [--text TEXT] [--title TITLE]
+```
+
+Save a note — from a local file, stdin (`-`), or `--text` (exactly one) — as the
+workspace's current checkpoint, archiving the previous one. UTF-8 text, up to
+1 MiB; keep bulky material in workspace files and reference their paths. Write
+what a newcomer needs: the goal, what is done, the next steps, and open
+questions.
+
+```bash
+valet -w demo checkpoint create notes.md
+valet -w demo checkpoint create --title "Migrate billing" - <<'EOF'
+# Migrate billing
+Done: schema. Next: backfill (see scripts/backfill.py).
+EOF
+```
+
+### `checkpoint resume`
+
+```
+valet [-w ID] checkpoint resume
+```
+
+Print the latest checkpoint — redacted, like any other output — and move it to
+`checkpoint/archive/`. Exits 1 when there is none. If redaction would withhold the
+whole note, it is left in place and the command fails.
+
+### `checkpoint archive`
+
+```
+valet [-w ID] checkpoint archive
+```
+
+Move the current checkpoint to `checkpoint/archive/` without reading it, leaving
+no checkpoint to resume.
+
 ## Interactive & orientation
 
 ### `valet` (no command)
@@ -298,7 +358,9 @@ valet status
 ```
 
 Orient an agent with no prior context: prints the connection status, the command
-vocabulary, the workspaces on offer, and the next step (`valet -w <id> info`).
+vocabulary (including [checkpoints](#checkpoints)), the workspaces on offer and
+which of them hold a checkpoint waiting to be resumed, and the next step
+(`valet -w <id> info`).
 Degrades cleanly when no host is reachable — the unreachable state is itself the
 status. Also produced by a bare `valet` over a pipe.
 
@@ -310,7 +372,8 @@ valet [-w ID] info
 
 Print the selected workspace's `README.md` guide (the one scaffolded by
 `workspaces add`), so an agent can read the layout and conventions of the tree it
-is working in.
+is working in. When the workspace holds a [checkpoint](#checkpoints), the output
+ends with a notice and the command to resume it.
 
 ### `ping`
 

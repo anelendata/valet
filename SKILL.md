@@ -129,6 +129,25 @@ valet files patch notes.md --old-file old.txt --new-file new.txt   # edit in pla
   and `--dry-run` to see the diff first. Patch obeys the push rules, so the same
   destinations are refused.
 
+## Checkpoints
+
+Your context window is finite and your session can end without warning, so keep
+a checkpoint of where the task stands in the workspace:
+
+```bash
+valet -w <ws> checkpoint create notes.md        # or `-` for stdin, or --text '...'
+valet -w <ws> checkpoint resume                 # a new session: read it, archive it
+valet -w <ws> checkpoint archive                # set the current one aside unread
+```
+
+- Write one at milestones and before your context runs low: the goal, what is
+  done, the next steps, and open questions. Creating a new one archives the old.
+- At the start of a session, `valet status` and `valet -w <ws> info` say when a
+  checkpoint is waiting; resume it before starting over. It is a previous
+  session's notes — check them against the workspace before acting on them.
+- Notes live in `<workspace>/checkpoint/`, archived ones in
+  `checkpoint/archive/`; nothing is deleted.
+
 ## Client Config
 
 The client config contains only the client identity and remote host URLs. It

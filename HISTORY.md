@@ -3,6 +3,20 @@
 Notable changes per release. Published to PyPI as
 [`valet-ai`](https://pypi.org/project/valet-ai/).
 
+## 0.0.14 — 2026-10-21
+
+- **Added:** `valet checkpoint create|resume|archive` — a hand-off note between
+  agent sessions, as a safeguard against a full context window or an agent that
+  dies mid-task. `create` saves a file, stdin, or `--text` to
+  `<workspace>/checkpoint/<timestamp>-<brief-title>.md`, archiving the current
+  one to `checkpoint/archive/`; `resume` prints the latest (redacted) and
+  archives it; `archive` sets it aside unread. `valet --help` and `valet status`
+  describe the feature, `status` lists workspaces with a checkpoint waiting, and
+  `valet -w <ws> info` ends with a resume notice when one is available.
+- **Changed:** `valet --help` opens by pointing a first-time agent at
+  `valet status`.
+- **Docs:** README quick demo moved up, workspace tree shown, logo added.
+
 ## 0.0.13 — 2026-09-20
 
 - **Added:** `valet files pull <src> [dst|-]` downloads a workspace file. Off by

@@ -15,6 +15,9 @@ Subcommands:
   valet files push SRC DST  upload a local file into the workspace (agent->host)
   valet files pull SRC [DST]  download a workspace file (host->agent; opt-in)
   valet files patch PATH     edit a workspace file in place, host-side
+  valet checkpoint create [FILE|-] [--text T]  save a hand-off note for the next session
+  valet checkpoint resume    print the latest checkpoint and archive it
+  valet checkpoint archive   set the current checkpoint aside unread
   valet call --json ..  send a raw request object to the daemon
   valet ping            check the selected host
   valet hosts           list configured client hosts
@@ -31,6 +34,12 @@ Subcommands:
 
 The agent uses `valet run` / `valet sh` / the REPL — they read no secrets
 themselves; the daemon does the privileged work and redacts before replying.
+
+Checkpoints guard against a full context window or a session that dies mid-task.
+Agents: save where the task stands with `valet -w <ws> checkpoint create` (from a
+file, `-` for stdin, or --text) at milestones and before your context runs low;
+a new session continues with `valet -w <ws> checkpoint resume`. Notes live in
+<workspace>/checkpoint/, and superseded or read ones in checkpoint/archive/.
 """
 from __future__ import annotations
 
@@ -49,6 +58,7 @@ from glob import has_magic
 from pathlib import Path
 
 from .broker import EXEC_STDIN_MAX_BYTES, FILE_PUSH_MAX_BYTES, MAX_DIFF_CONTEXT
+from .checkpoint import CHECKPOINT_MAX_BYTES
 
 from .client_config import (
     default_client_config_path,
@@ -978,6 +988,23 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print("                                        files and content valet would redact")
     print("  Omit -w to use the host's default workspace.")
     print()
+    print("Checkpoints (a safeguard against a full context window or a session")
+    print("that dies mid-task):")
+    print("  valet -w <ws> checkpoint create <file|->")
+    print("      [--text '<notes>'] [--title <t>]  save where the task stands (goal,")
+    print("                                        done, next steps, open")
+    print("                                        questions) — do it at milestones")
+    print("                                        and before your context runs low")
+    print("  valet -w <ws> checkpoint resume       print the latest one and archive")
+    print("                                        it, to pick up where it left off")
+    print("  valet -w <ws> checkpoint archive      set the current one aside unread")
+    print()
+    pending = [w for w in (ping or {}).get("checkpoints") or [] if w in workspaces]
+    if pending:
+        print("Checkpoint waiting to be resumed in: " + ", ".join(pending))
+        for w in pending:
+            print(f"  valet -w {w} checkpoint resume")
+        print()
     if ping is not None and workspaces:
         nxt = default_ws or workspaces[0]
         print("Next: read a workspace's guide, then follow it to scan the folders:")
@@ -1032,6 +1059,132 @@ def _cmd_info(args: argparse.Namespace) -> int:
     else:
         print("(No README.md in this workspace yet — list its contents with the "
               "commands above.)")
+    checkpoint = resp.get("checkpoint")
+    if checkpoint:
+        print()
+        print("## Checkpoint available")
+        print()
+        print(f"A previous session left a checkpoint: {checkpoint.get('path')} "
+              f"({checkpoint.get('bytes')} bytes). To pick up the task where it "
+              "left off, run:")
+        print(f"  valet -w {wid} checkpoint resume")
+        print("This prints it and moves it to checkpoint/archive/. To set it aside "
+              f"unread instead: valet -w {wid} checkpoint archive")
+    return 0
+
+
+def _checkpoint_request(args: argparse.Namespace, op: str) -> tuple[dict | None, int]:
+    """Send one ``checkpoint.*`` request; ``(response, 0)`` or ``(None, exit code)``."""
+    req: dict = {"op": op}
+    workspace = _effective_workspace(args)
+    if workspace:
+        req["workspace"] = workspace
+    if op == "checkpoint.create":
+        req["content"] = args.content
+        if args.title:
+            req["title"] = args.title
+    try:
+        conn, _target, _cfg = _connect(args)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("valet: no daemon at socket. Start it with `valet serve`.",
+              file=sys.stderr)
+        return None, 2
+    except (ConnectionError, RpcError) as exc:
+        print(f"valet: could not connect: {exc}", file=sys.stderr)
+        return None, 2
+    try:
+        resp = conn.request(req)
+    finally:
+        conn.close()
+    handled = _maybe_unknown_workspace_exit(args, resp)
+    if handled is not None:
+        return None, handled
+    if not resp.get("ok"):
+        print(f"valet {op.replace('.', ' ')}: {resp.get('error_class')}: "
+              f"{resp.get('detail', '')}", file=sys.stderr)
+        return None, 1
+    return resp, 0
+
+
+def _cmd_checkpoint_create(args: argparse.Namespace) -> int:
+    """Save a hand-off note in the workspace for the next agent session."""
+    if (args.source is None) == (args.text is None):
+        print("valet checkpoint create: give a file (or '-' for stdin) or --text, "
+              "not both", file=sys.stderr)
+        return 2
+    if args.text is not None:
+        content = args.text
+    elif args.source == "-":
+        content = sys.stdin.read()
+    else:
+        src = Path(os.path.expanduser(os.path.expandvars(args.source)))
+        try:
+            content = src.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"valet checkpoint create: cannot read {src}: {exc}", file=sys.stderr)
+            return 2
+        except UnicodeDecodeError:
+            print(f"valet checkpoint create: {src} is not UTF-8 text", file=sys.stderr)
+            return 2
+    if not content.strip():
+        print("valet checkpoint create: the checkpoint is empty", file=sys.stderr)
+        return 2
+    if len(content.encode("utf-8")) > CHECKPOINT_MAX_BYTES:
+        print(f"valet checkpoint create: over the {CHECKPOINT_MAX_BYTES // 1024} KiB "
+              "limit — a checkpoint is a summary; keep bulky material in workspace "
+              "files and reference their paths", file=sys.stderr)
+        return 2
+    args.content = content
+    resp, rc = _checkpoint_request(args, "checkpoint.create")
+    if resp is None:
+        return rc
+    wid = resp.get("workspace")
+    for path in resp.get("archived") or []:
+        print(f"valet: archived the previous checkpoint -> {path}")
+    print(f"valet: saved checkpoint {resp.get('path')} in workspace {wid!r} "
+          f"({resp.get('bytes_written')} bytes)")
+    print(f"A new session continues with: valet -w {wid} checkpoint resume")
+    return 0
+
+
+def _cmd_checkpoint_resume(args: argparse.Namespace) -> int:
+    """Print the latest checkpoint and archive it, so a new session can continue."""
+    resp, rc = _checkpoint_request(args, "checkpoint.resume")
+    if resp is None:
+        return rc
+    wid = resp.get("workspace")
+    if resp.get("withheld"):
+        print(f"valet checkpoint resume: {resp.get('path')} was withheld — it holds "
+              "a secret value. It stays in place; inspect it on the host.",
+              file=sys.stderr)
+        return 1
+    content = resp.get("content") or ""
+    print(f"# valet checkpoint: {resp.get('path')} (workspace {wid})")
+    print()
+    print("Notes a previous agent session left to continue its task. Check them "
+          "against the workspace's current state before acting on them.")
+    print()
+    print(content, end="" if content.endswith("\n") else "\n")
+    print()
+    print(f"[valet: archived to {resp.get('archived_to')}. Save your own progress with "
+          f"`valet -w {wid} checkpoint create <file|->` as you go.]")
+    remaining = resp.get("remaining") or 0
+    if remaining:
+        print(f"[valet: {remaining} older checkpoint(s) remain — run resume again "
+              "to read the next.]")
+    return 0
+
+
+def _cmd_checkpoint_archive(args: argparse.Namespace) -> int:
+    """Move the current checkpoint to checkpoint/archive/ without reading it."""
+    resp, rc = _checkpoint_request(args, "checkpoint.archive")
+    if resp is None:
+        return rc
+    archived = resp.get("archived") or []
+    if not archived:
+        print(f"valet: no current checkpoint in workspace {resp.get('workspace')!r}")
+    for path in archived:
+        print(f"valet: archived -> {path}")
     return 0
 
 
@@ -2140,6 +2293,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="print the diff without writing anything")
     files_patch.set_defaults(func=_cmd_files_patch)
+
+    checkpoint_p = sub.add_parser(
+        "checkpoint", help="save or resume a hand-off note between agent sessions")
+    checkpoint_sub = checkpoint_p.add_subparsers(dest="checkpoint_cmd", required=True)
+    cp_create = checkpoint_sub.add_parser(
+        "create", help="save a checkpoint (archives the current one)")
+    cp_create.add_argument(
+        "source", nargs="?", default=None,
+        help="local Markdown file with the notes ('-' for stdin)")
+    cp_create.add_argument("--text", default=None, help="the notes, inline")
+    cp_create.add_argument(
+        "--title", default=None,
+        help="brief title for the file name (default: the notes' first line)")
+    cp_create.set_defaults(func=_cmd_checkpoint_create)
+    checkpoint_sub.add_parser(
+        "resume", help="print the latest checkpoint and move it to the archive"
+    ).set_defaults(func=_cmd_checkpoint_resume)
+    checkpoint_sub.add_parser(
+        "archive", help="move the current checkpoint to the archive unread"
+    ).set_defaults(func=_cmd_checkpoint_archive)
 
     call = sub.add_parser("call", help="send a raw JSON request to the daemon")
     call.add_argument("--json", required=True, help='e.g. \'{"op":"ping"}\'')

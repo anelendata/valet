@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from . import __version__
 from .audit import AuditContext, AuditLogger
+from .checkpoint import CheckpointStore
 from .config import BrokerConfig, resolve_workspaces
 from .errors import (
     CommandError,
@@ -506,6 +507,9 @@ class Broker:
             if op == "files.patch":
                 response = {**base, **self._files_patch(request, context)}
                 return response
+            if isinstance(op, str) and op.startswith("checkpoint."):
+                response = {**base, **self._checkpoint(request, op)}
+                return response
             if op == "ping":
                 default_ws = self.workspaces[self.default_workspace]
                 response = {
@@ -515,6 +519,7 @@ class Broker:
                     "shell_default": default_ws.exec.shell,
                     "default_workspace": self.default_workspace,
                     "workspaces": sorted(self.workspaces),
+                    "checkpoints": self._pending_checkpoints(),
                 }
                 return response
             if op == "workspaces":
@@ -990,6 +995,7 @@ class Broker:
             "op": "workspace_info", "ok": True, "workspace": ws.id,
             "default": ws.id == self.default_workspace, "shell": ws.exec.shell,
             "has_readme": False, "readme": None, "truncated": False,
+            "checkpoint": self._checkpoint_summary(ws),
         }
         root = ws.root()
         if root is None:
@@ -1006,6 +1012,67 @@ class Broker:
         result["readme"] = self._safe(redactor, text[:_README_MAX_BYTES])
         result["truncated"] = truncated
         return result
+
+    def _checkpoint_store(self, ws: "Workspace") -> CheckpointStore:
+        return CheckpointStore(TransferGuard.for_workspace(ws, self.cfg))
+
+    def _checkpoint_summary(self, ws: "Workspace") -> Optional[dict]:
+        """The current checkpoint's name and size, or None — never its content."""
+        if ws.root() is None:
+            return None
+        try:
+            store = self._checkpoint_store(ws)
+            latest = store.latest()
+        except (ValetError, OSError):
+            return None
+        if latest is None:
+            return None
+        return {"name": latest.name, "path": f"./checkpoint/{latest.name}",
+                "bytes": latest.size, "count": len(store.current())}
+
+    def _pending_checkpoints(self) -> list[str]:
+        """Ids of the workspaces that hold a checkpoint waiting to be resumed."""
+        return [wid for wid, ws in sorted(self.workspaces.items())
+                if self._checkpoint_summary(ws) is not None]
+
+    def _checkpoint(self, request: dict, op: str) -> dict:
+        """Save, resume, or archive the hand-off note between agent sessions.
+
+        ``checkpoint.create`` takes the note as UTF-8 text (``content``, plus an
+        optional ``title`` for the file name); ``checkpoint.resume`` returns the
+        latest note — redacted like any other output — and archives it;
+        ``checkpoint.archive`` sets the current one aside unread. See
+        :mod:`valet.checkpoint` for the layout.
+        """
+        ws = self._workspace(request)
+        store = self._checkpoint_store(ws)
+        if op == "checkpoint.create":
+            content = request.get("content")
+            if not isinstance(content, str):
+                raise ValidationError("content must be a string")
+            title = request.get("title")
+            if title is not None and not isinstance(title, str):
+                raise ValidationError("title must be a string")
+            path, archived = store.create(content, title)
+            return {"op": op, "ok": True, "workspace": ws.id, "path": path,
+                    "archived": archived,
+                    "bytes_written": len(content.encode("utf-8"))}
+        if op == "checkpoint.resume":
+            redactor = ws.redactor_for(ws.root())
+
+            def redact(text: str) -> Optional[str]:
+                out = self._safe(redactor, text)
+                return None if out == _WITHHELD else out
+
+            return {"op": op, "ok": True, "workspace": ws.id,
+                    **store.resume(redact)}
+        if op == "checkpoint.archive":
+            return {"op": op, "ok": True, "workspace": ws.id,
+                    "archived": store.archive()}
+        if op == "checkpoint.status":
+            return {"op": op, "ok": True, "workspace": ws.id,
+                    "checkpoint": self._checkpoint_summary(ws)}
+        raise ValidationError(f"unknown op: {op!r}")
 
     def _processes_list(self, request: dict) -> dict:
         ws = self.workspaces[self.default_workspace]
